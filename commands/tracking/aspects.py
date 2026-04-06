@@ -18,6 +18,8 @@ REQUIRED_ROLES = [
 
 ASPECTS_FILE = DATA_DIR / "aspects.json"
 
+RANK_PRIORITY = {'owner': 6, 'chief': 5, 'strategist': 4, 'captain': 3, 'recruiter': 2, 'recruit': 1}
+
 
 def load_aspects_data():
     """Load aspects tracking data from JSON file."""
@@ -139,7 +141,7 @@ def build_aspects_embed(aspects_data, current_members):
         timestamp=datetime.now(timezone.utc)
     )
     
-    # Build member list sorted by owed (then by graids)
+    # Build member list sorted by owed, then rank, then alphabetically
     member_entries = []
     total_owed = 0
     
@@ -152,18 +154,19 @@ def build_aspects_embed(aspects_data, current_members):
             'uuid': uuid,
             'name': member['name'],
             'graids': member['graids'],
-            'owed': owed
+            'owed': owed,
+            'rank': member.get('rank', 'recruit')
         })
     
-    # Sort: owed first (desc), then graids (desc)
-    member_entries.sort(key=lambda x: (-x['owed'], -x['graids']))
+    member_entries.sort(key=lambda x: (-x['owed'], -RANK_PRIORITY.get(x['rank'], 0), x['name'].lower()))
     
     # Members owed aspects
     owed_lines = []
     for entry in member_entries:
         if entry['owed'] > 0:
+            rank_label = entry['rank'].capitalize()
             owed_lines.append(
-                f"**{entry['name']}**: {entry['owed']} aspect{'s' if entry['owed'] != 1 else ''}"
+                f"**{entry['name']}** [{rank_label}]: {entry['owed']} aspect{'s' if entry['owed'] != 1 else ''}"
             )
     
     if owed_lines:
@@ -200,8 +203,9 @@ class GiveAspectsSelect(Select):
     
     def __init__(self, members_chunk, aspects_data, current_members, chunk_index):
         options = []
-        for uuid, name, graids, owed in members_chunk:
-            label = f"{name}"
+        for uuid, name, graids, owed, rank in members_chunk:
+            rank_label = rank.capitalize()
+            label = f"{name} [{rank_label}]"
             if len(label) > 100:
                 label = label[:97] + "..."
             
@@ -273,10 +277,11 @@ class AspectsView(View):
             stored = aspects_data['members'].get(uuid, {})
             owed = stored.get('owed', 0)
             if owed > 0:
-                member_list.append((uuid, member['name'], member['graids'], owed))
+                rank = member.get('rank', 'recruit')
+                member_list.append((uuid, member['name'], member['graids'], owed, rank))
         
-        # Sort by owed (desc), then name
-        member_list.sort(key=lambda x: (-x[3], x[1]))
+        # Sort by owed (desc), then rank (desc), then name (asc)
+        member_list.sort(key=lambda x: (-x[3], -RANK_PRIORITY.get(x[4], 0), x[1].lower()))
         
         # Split into chunks of 25 (Discord select limit)
         # Max 5 action rows per view

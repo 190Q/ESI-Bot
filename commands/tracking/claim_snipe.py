@@ -3,6 +3,7 @@ import os
 import discord
 from discord import app_commands
 from datetime import datetime
+from typing import Optional
 from utils.permissions import has_roles
 
 REQUIRED_ROLES = []
@@ -15,7 +16,7 @@ def load_username_matches():
         return json.load(f)
 
 
-def resolve_player(user: discord.Member, matches: dict) -> dict | None:
+def resolve_player(user: discord.Member, matches: dict) -> Optional[dict]:
     """
     Resolve a Discord member to their Minecraft username and UUID.
     Returns a dict with keys: mention, username, uuid
@@ -122,7 +123,7 @@ class AddPlayerView(discord.ui.View):
     def __init__(self, parent_view: "ClaimSnipeView"):
         super().__init__(timeout=60)
         self.parent_view = parent_view
-        self.selected_member: discord.Member | None = None
+        self.selected_member: Optional[discord.Member] = None
 
     @discord.ui.select(cls=discord.ui.UserSelect, placeholder="Select a player to add…", min_values=1, max_values=1, row=0)
     async def user_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
@@ -240,8 +241,8 @@ class EditPlayerView(discord.ui.View):
     def __init__(self, parent_view: "ClaimSnipeView"):
         super().__init__(timeout=60)
         self.parent_view = parent_view
-        self.old_player_id: int | None = None
-        self.new_member: discord.Member | None = None
+        self.old_player_id: Optional[int] = None
+        self.new_member: Optional[discord.Member] = None
 
         # Row 0 — pick which player to replace
         pick_select = discord.ui.Select(
@@ -354,7 +355,7 @@ class ClaimSnipeView(discord.ui.View):
         self.base_damage = base_damage
         self.base_speed = base_speed
         self.requester = requester
-        self.message: discord.Message | None = None
+        self.message: Optional[discord.Message] = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.requester.id:

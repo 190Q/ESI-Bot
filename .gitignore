@@ -203,7 +203,29 @@ marimo/_lsp/
 __marimo__/
 
 # Database folder
-databases
+api_tracking
+playtime_tracking
+blacklist.db
+guild_stats_data.db
+playtime_tracking.db
+rank_changes.db
+recruited_data.db
+ship_scores.db
 
 # Data folders
-data
+alt_accounts.json
+app_notifications.json
+aspects.json
+auto_reactions.json
+birthdays.json
+channel_openers.json
+forwarded_applications.json
+guild_member_queue.json
+guild_territories.json
+inactivity_exemptions.json
+pending_applications.json
+support_tickets.json
+ticket_panels.json
+tracked_guild.json
+username_matches.json
+user_bans.json

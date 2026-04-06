@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import uuid as uuid_mod
 import discord
 from discord import app_commands
 from datetime import datetime
@@ -10,12 +11,14 @@ from utils.paths import DB_DIR
 
 REQUIRED_ROLES = []
 
-DB_FILE = str(DB_DIR / "esi_points.db")
+POINTS_DB = str(DB_DIR / "esi_points.db")
+SNIPES_DB = str(DB_DIR / "claim_snipes.db")
 
 
 def init_database():
-    """Create the esi_points table if it doesn't exist."""
-    conn = sqlite3.connect(DB_FILE)
+    """Create the esi_points table and snipes tables."""
+    # Points DB
+    conn = sqlite3.connect(POINTS_DB)
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS esi_points (
@@ -27,10 +30,31 @@ def init_database():
     conn.commit()
     conn.close()
 
+    # Snipes DB
+    conn = sqlite3.connect(SNIPES_DB)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS snipes (
+            snipe_id TEXT PRIMARY KEY,
+            base_damage REAL NOT NULL,
+            base_speed REAL NOT NULL,
+            points INTEGER NOT NULL,
+            player_uuids TEXT NOT NULL,
+            timestamp TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def _player_table(player_uuid):
+    """Return a safe table name for a player UUID."""
+    return "player_" + player_uuid.replace("-", "_")
+
 
 def save_points(resolved_players, points):
-    """Add points for each resolved player in the database."""
-    conn = sqlite3.connect(DB_FILE)
+    """Add points for each resolved player in the esi_points database."""
+    conn = sqlite3.connect(POINTS_DB)
     c = conn.cursor()
     for player in resolved_players:
         uuid = player.get("uuid")
@@ -43,6 +67,39 @@ def save_points(resolved_players, points):
                 username = excluded.username,
                 points = esi_points.points + excluded.points
         """, (uuid, player["username"], points))
+    conn.commit()
+    conn.close()
+
+
+def save_snipe(resolved_players, base_damage, base_speed, points):
+    """Record a snipe and update each player's individual table."""
+    player_uuids = [p["uuid"] for p in resolved_players if p.get("uuid")]
+    if not player_uuids:
+        return
+
+    snipe_id = str(uuid_mod.uuid4())
+    conn = sqlite3.connect(SNIPES_DB)
+    c = conn.cursor()
+
+    # Main snipes table
+    c.execute("""
+        INSERT INTO snipes (snipe_id, base_damage, base_speed, points, player_uuids, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (snipe_id, base_damage, base_speed, points, json.dumps(player_uuids), datetime.utcnow().isoformat()))
+
+    # Per-player tables
+    for player in resolved_players:
+        uuid = player.get("uuid")
+        if not uuid:
+            continue
+        table = _player_table(uuid)
+        c.execute('CREATE TABLE IF NOT EXISTS "{}" ('
+                  'snipe_id TEXT NOT NULL, '
+                  'username TEXT NOT NULL, '
+                  'role TEXT NOT NULL)'.format(table))
+        c.execute('INSERT INTO "{}" (snipe_id, username, role) VALUES (?, ?, ?)'.format(table),
+                  (snipe_id, player["username"], player.get("role", "Unknown")))
+
     conn.commit()
     conn.close()
 
@@ -454,18 +511,20 @@ class ClaimSnipeView(discord.ui.View):
         embed.title = "✅ Claim Snipe — Confirmed"
         embed.color = 0x57F287
 
-        # Save points to database
+        # Save to databases
         points = int(round(calculate_points(self.base_damage, self.base_speed)))
         matches = load_username_matches()
         resolved = []
         for entry in self.players:
             data = resolve_player(entry["member"], matches)
             if data:
+                data["role"] = entry["role"]
                 resolved.append(data)
         try:
             save_points(resolved, points)
+            save_snipe(resolved, self.base_damage, self.base_speed, points)
         except Exception as e:
-            print(f"[claim_snipe] Failed to save points: {e}")
+            print(f"[claim_snipe] Failed to save data: {e}")
 
         # Disable all buttons on the original ephemeral message
         for child in self.children:

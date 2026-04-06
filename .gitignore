@@ -206,6 +206,7 @@ __marimo__/
 api_tracking
 playtime_tracking
 blacklist.db
+claim_snipes.db
 esi_points.db
 guild_stats_data.db
 playtime_tracking.db

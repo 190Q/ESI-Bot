@@ -46,7 +46,6 @@ async def staggered_api_call(func, tracker_name):
 
 async def playtime_loop():
     """Playtime tracker loop"""
-    print("[MAIN] Starting playtime tracker...")
     playtime_init()
     
     while True:
@@ -56,8 +55,6 @@ async def playtime_loop():
 
 async def guild_loop():
     """Guild member tracker loop"""
-    print("[MAIN] Starting guild tracker...")
-    
     # Initialize guild tracker state
     loaded_identifier, loaded_is_prefix, loaded_data, loaded_member_history, loaded_event_history = load_tracked_guild()
     
@@ -95,8 +92,6 @@ async def guild_loop():
 
 async def claim_loop():
     """Territory/claim tracker loop"""
-    print("[MAIN] Starting claim tracker...")
-    
     # Initialize claim tracker state
     loaded_guild, loaded_territories, loaded_history = claim_load_tracked_guild()
     
@@ -119,8 +114,6 @@ async def claim_loop():
 
 async def api_loop():
     """API stats tracker loop"""
-    print("[MAIN] Starting API tracker...")
-    
     while True:
         await staggered_api_call(api_run_once, "API")
         await asyncio.sleep(API_INTERVAL)

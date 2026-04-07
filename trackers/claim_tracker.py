@@ -20,7 +20,7 @@ WYNNCRAFT_API_KEY = os.getenv('WYNNCRAFT_KEY_7')
 TERRITORY_API_URL = "https://api.wynncraft.com/v3/guild/list/territory"
 
 # Data file path (relative to ESI-Bot root)
-BASE_DIR = Path(__file__).parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_FILE = BASE_DIR / "data/guild_territories.json"
 
 # State

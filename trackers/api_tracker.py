@@ -85,7 +85,7 @@ while True:
 print(f"[API] Loaded {len(WYNNCRAFT_KEYS)} valid API keys")
 
 # Paths (relative to ESI-Bot root)
-BASE_DIR = Path(__file__).parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 DB_FOLDER = BASE_DIR / "databases"
 API_TRACKING_FOLDER = DB_FOLDER / "api_tracking"
 RECRUITED_DB_PATH = DB_FOLDER / "recruited_data.db"

@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # Import all trackers
 from playtime_tracker import run_once as playtime_run_once, init_database as playtime_init, FETCH_INTERVAL_SECONDS as PLAYTIME_INTERVAL

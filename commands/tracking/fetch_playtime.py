@@ -17,7 +17,7 @@ REQUIRED_ROLES = [int(OWNER_ID_RAW)] if OWNER_ID_RAW else []
 WYNNCRAFT_KEY_11 = os.getenv('WYNNCRAFT_KEY_11')
 
 # Database paths
-DB_FOLDER = Path("databases")
+DB_FOLDER = Path(__file__).resolve().parent.parent.parent / "databases"
 PLAYTIME_DB_PATH = DB_FOLDER / "playtime_tracking.db"
 PLAYTIME_TRACKING_FOLDER = DB_FOLDER / "playtime_tracking"
 

@@ -17,7 +17,7 @@ load_dotenv()
 WYNNCRAFT_API_KEY = os.getenv('WYNNCRAFT_KEY_7')
 
 # Data file path (relative to ESI-Bot root)
-BASE_DIR = Path(__file__).parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_FILE = BASE_DIR / "data/tracked_guild.json"
 
 # State

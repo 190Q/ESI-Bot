@@ -19,7 +19,7 @@ load_dotenv()
 WYNNCRAFT_KEY_11 = os.getenv('WYNNCRAFT_KEY_11')
 
 # Database paths (relative to ESI-Bot root)
-BASE_DIR = Path(__file__).parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 DB_FOLDER = BASE_DIR / "databases"
 PLAYTIME_DB_PATH = DB_FOLDER / "playtime_tracking.db"
 PLAYTIME_TRACKING_FOLDER = DB_FOLDER / "playtime_tracking"

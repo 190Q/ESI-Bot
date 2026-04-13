@@ -8,29 +8,15 @@ from datetime import datetime
 from typing import Optional
 from utils.permissions import has_roles
 from utils.paths import DB_DIR
+from commands.helpers.esi_points import init_points_database, save_points
 
 REQUIRED_ROLES = []
 
-POINTS_DB = str(DB_DIR / "esi_points.db")
 SNIPES_DB = str(DB_DIR / "claim_snipes.db")
 
 
-def init_database():
-    """Create the esi_points table and snipes tables."""
-    # Points DB
-    conn = sqlite3.connect(POINTS_DB)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS esi_points (
-            uuid TEXT PRIMARY KEY,
-            username TEXT NOT NULL,
-            points INTEGER NOT NULL DEFAULT 0
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-    # Snipes DB
+def init_snipes_database():
+    """Create the snipes table."""
     conn = sqlite3.connect(SNIPES_DB)
     c = conn.cursor()
     c.execute("""
@@ -52,25 +38,6 @@ def _player_table(player_uuid):
     return "player_" + player_uuid.replace("-", "_")
 
 
-def save_points(resolved_players, points):
-    """Add points for each resolved player in the esi_points database."""
-    conn = sqlite3.connect(POINTS_DB)
-    c = conn.cursor()
-    for player in resolved_players:
-        uuid = player.get("uuid")
-        if not uuid:
-            continue
-        c.execute("""
-            INSERT INTO esi_points (uuid, username, points)
-            VALUES (?, ?, ?)
-            ON CONFLICT(uuid) DO UPDATE SET
-                username = excluded.username,
-                points = esi_points.points + excluded.points
-        """, (uuid, player["username"], points))
-    conn.commit()
-    conn.close()
-
-
 def save_snipe(resolved_players, base_damage, base_speed, points):
     """Record a snipe and update each player's individual table."""
     player_uuids = [p["uuid"] for p in resolved_players if p.get("uuid")]
@@ -81,13 +48,11 @@ def save_snipe(resolved_players, base_damage, base_speed, points):
     conn = sqlite3.connect(SNIPES_DB)
     c = conn.cursor()
 
-    # Main snipes table
     c.execute("""
         INSERT INTO snipes (snipe_id, base_damage, base_speed, points, player_uuids, timestamp)
         VALUES (?, ?, ?, ?, ?, ?)
     """, (snipe_id, base_damage, base_speed, points, json.dumps(player_uuids), datetime.utcnow().isoformat()))
 
-    # Per-player tables
     for player in resolved_players:
         uuid = player.get("uuid")
         if not uuid:
@@ -102,7 +67,6 @@ def save_snipe(resolved_players, base_damage, base_speed, points):
 
     conn.commit()
     conn.close()
-
 
 def load_username_matches():
     """Load the username_matches.json file"""
@@ -136,20 +100,20 @@ def resolve_player(user: discord.Member, matches: dict) -> Optional[dict]:
     }
 
 
-ROLE_EMOJIS = {
-    "DPS": "⚔️",
-    "Tank": "🛡️",
-    "Healer": "❤️",
-    "Solo": "🔱",
-}
-
-
 def calculate_points(base_damage: float, base_speed: float) -> float:
     """Calculate points from damage and speed."""
     raw = base_damage * base_speed / 4.7 / 2000
     if raw >= 50:
         return base_damage * base_speed / 4.7 / 5000
     return raw
+
+
+ROLE_EMOJIS = {
+    "DPS": "⚔️",
+    "Tank": "🛡️",
+    "Healer": "❤️",
+    "Solo": "🔱",
+}
 
 
 def build_claim_snipe_embed(players, base_damage, base_speed, requester):
@@ -548,7 +512,8 @@ class ClaimSnipeView(discord.ui.View):
 def setup(bot, has_required_role, config):
     """Setup function for bot integration"""
 
-    init_database()
+    init_points_database()
+    init_snipes_database()
 
     @bot.tree.command(
         name="claim_snipe",

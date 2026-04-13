@@ -485,7 +485,7 @@ class ClaimSnipeView(discord.ui.View):
                 data["role"] = entry["role"]
                 resolved.append(data)
         try:
-            save_points(resolved, points)
+            save_points(resolved, points, reason="Claim Snipe")
             save_snipe(resolved, self.base_damage, self.base_speed, points)
         except Exception as e:
             print(f"[claim_snipe] Failed to save data: {e}")

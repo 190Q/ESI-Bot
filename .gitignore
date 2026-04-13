@@ -231,3 +231,5 @@ ticket_panels.json
 tracked_guild.json
 username_matches.json
 user_bans.json
+
+playtime_tracking.db.filepart

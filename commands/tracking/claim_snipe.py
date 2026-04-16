@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional
 from utils.permissions import has_roles
 from utils.paths import DB_DIR
-from commands.helpers.esi_points import init_points_database, save_points
+from utils.esi_points import init_points_database, save_points
 
 REQUIRED_ROLES = []
 

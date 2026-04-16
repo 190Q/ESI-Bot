@@ -213,6 +213,7 @@ playtime_tracking.db
 rank_changes.db
 recruited_data.db
 ship_scores.db
+points_baseline.db
 
 # Data folders
 alt_accounts.json

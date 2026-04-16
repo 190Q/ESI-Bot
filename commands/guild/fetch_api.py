@@ -10,12 +10,20 @@ import json
 from pathlib import Path
 from utils.permissions import has_roles
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
+from utils.esi_points import save_points, init_points_database
+
+# Initialize the points DB on load
+init_points_database()
 
 OWNER_ID_RAW = os.getenv('OWNER_ID')
 REQUIRED_ROLES = [int(OWNER_ID_RAW)] if OWNER_ID_RAW else []
 GUILDS = ["ESI"]
 
 ASPECTS_FILE = DATA_DIR / "aspects.json"
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DB_FOLDER = BASE_DIR / "databases"
+POINTS_BASELINE_DB = DB_FOLDER / "points_baseline.db"
 
 BADGE_ROLES = {
     "War Badges": {
@@ -140,6 +148,82 @@ def update_aspects_from_guild_data(guild_members):
     except Exception as e:
         print(f"[ASPECTS] Error updating aspects data: {e}")
 
+
+def init_points_baseline():
+    """Create the baseline table for tracking previous wars/graids per player."""
+    conn = sqlite3.connect(POINTS_BASELINE_DB)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS baseline (
+            uuid TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            wars INTEGER NOT NULL DEFAULT 0,
+            total_graids INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def award_points_from_diff(member_stats: list, guild_members: list):
+    """
+    Compare current wars/graids against the stored baseline.
+    Award 1 point per new war, 10 points per new guild raid.
+    """
+    init_points_baseline()
+
+    graids_by_uuid = {}
+    for member in (guild_members or []):
+        uuid = member.get("uuid")
+        if not uuid:
+            continue
+        graids_data = member.get("guildRaids", {})
+        total_graids = graids_data.get("total", 0) if isinstance(graids_data, dict) else 0
+        graids_by_uuid[uuid] = total_graids
+
+    conn = sqlite3.connect(POINTS_BASELINE_DB)
+    c = conn.cursor()
+
+    for stats in member_stats:
+        uuid = stats.get("uuid")
+        username = stats.get("username")
+        if not uuid or not username:
+            continue
+
+        current_wars = stats.get("wars", 0) or 0
+        current_graids = graids_by_uuid.get(uuid, 0)
+
+        c.execute("SELECT wars, total_graids FROM baseline WHERE uuid = ?", (uuid,))
+        row = c.fetchone()
+
+        if row is None:
+            c.execute(
+                "INSERT INTO baseline (uuid, username, wars, total_graids) VALUES (?, ?, ?, ?)",
+                (uuid, username, current_wars, current_graids)
+            )
+            continue
+
+        prev_wars, prev_graids = row
+        new_wars = max(0, current_wars - prev_wars)
+        new_graids = max(0, current_graids - prev_graids)
+
+        player = [{"uuid": uuid, "username": username}]
+
+        if new_wars > 0:
+            save_points(player, new_wars * 1, reason="War")
+            print(f"[POINTS] {username}: +{new_wars} war point(s)")
+
+        if new_graids > 0:
+            save_points(player, new_graids * 10, reason="Guild Raid")
+            print(f"[POINTS] {username}: +{new_graids * 10} guild raid point(s) ({new_graids} new raid(s))")
+
+        c.execute(
+            "UPDATE baseline SET username = ?, wars = ?, total_graids = ? WHERE uuid = ?",
+            (username, current_wars, current_graids, uuid)
+        )
+
+    conn.commit()
+    conn.close()
 
 class FetchAPI:
     def __init__(self, guild_name: str = None):
@@ -1075,7 +1159,10 @@ class FetchAPI:
             # Commit and close
             conn.commit()
             conn.close()
-            
+
+            # Award ESI points based on war/raid increases
+            award_points_from_diff(member_stats, guild_members)
+
             print(f"[API] Saved data to {db_path}")
             
             # Cleanup current day's folder (keep 30-min intervals)

@@ -6,7 +6,7 @@ from utils.paths import DB_DIR
 POINTS_DB = str(DB_DIR / "esi_points.db")
 
 # Anchor: start of cycle 1
-CYCLE_ANCHOR = datetime(2026, 4, 7, 16, 0, 0, tzinfo=timezone.utc)
+CYCLE_ANCHOR = datetime(2026, 4, 21, 16, 0, 0, tzinfo=timezone.utc)
 CYCLE_DURATION = timedelta(weeks=2)
 
 

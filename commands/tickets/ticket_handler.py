@@ -619,7 +619,7 @@ class ApplicationVoteView(View):
                 save_forwarded_apps(apps)
                 
                 # Add to guild queue if guild member app and guild is full
-                if approve_threshold_reached and app_data.get('app_type', '').lower() == 'guild member':
+                if approve_threshold_reached and app_data.get('app_type', '').lower() != 'envoy':
                     try:
                         capacity = get_guild_capacity()
                         if capacity['is_full']:
@@ -639,69 +639,100 @@ class ApplicationVoteView(View):
                             # Notify in the application channel
                             try:
                                 queue_msg = f"⏳ <@{discord_id}> has been placed in the guild waiting queue (position #{pos}) as the guild is currently at full capacity."
-                                await interaction.channel.send(queue_msg)
+                                
+                                # Try multiple approaches to send notification
+                                notification_sent = False
+                                
+                                # Approach 1: Try to reply to parent message if it exists
+                                if app_data.get('parent_message_id'):
+                                    try:
+                                        parent_channel = interaction.channel.parent
+                                        if parent_channel:
+                                            parent_message = await parent_channel.fetch_message(app_data['parent_message_id'])
+                                            await parent_message.reply(queue_msg)
+                                            notification_sent = True
+                                    except (discord.NotFound, discord.HTTPException) as e:
+                                        print(f"Could not reply to parent message: {e}")
+                                
+                                # Approach 2: Try to get starter message
+                                if not notification_sent:
+                                    try:
+                                        starter_message = interaction.channel.starter_message
+                                        if starter_message:
+                                            await starter_message.reply(queue_msg)
+                                            notification_sent = True
+                                    except (discord.NotFound, discord.HTTPException, AttributeError) as e:
+                                        print(f"Could not use starter message: {e}")
+                                
+                                # Approach 3: Fallback to sending in thread
+                                if not notification_sent:
+                                    await interaction.channel.send(queue_msg)
+
+                                # Send DM notifications
+                                    await self.send_threshold_notifications(interaction, app_data, approve_threshold_reached, deny_threshold_reached, approve_count, deny_count, threshold)
                             except Exception as notify_err:
                                 print(f"[WARN] Failed to send queue notification: {notify_err}")
                     except Exception as e:
                         print(f"[WARN] Failed to add player to queue at threshold: {e}")
                 
-                try:
-                    applicant = interaction.guild.get_member(app_data['user_id'])
-                    applicant_mention = applicant.mention if applicant else f"<@{app_data['user_id']}>"
+                if not notification_sent:
+                    try:
+                        applicant = interaction.guild.get_member(app_data['user_id'])
+                        applicant_mention = applicant.mention if applicant else f"<@{app_data['user_id']}>"
 
-                    # Build notification messages
-                    approve_msg = f"✅ **Approval threshold reached** for {applicant_mention}'s application!"
-                    deny_msg = f"❌ **Denial threshold reached** for {applicant_mention}'s application!"
-                    
-                    # Check if we're in a thread
-                    if isinstance(interaction.channel, discord.Thread):
-                        # Try multiple approaches to send notification
-                        notification_sent = False
+                        # Build notification messages
+                        approve_msg = f"✅ **Approval threshold reached** for {applicant_mention}'s application!"
+                        deny_msg = f"❌ **Denial threshold reached** for {applicant_mention}'s application!"
                         
-                        # Approach 1: Try to reply to parent message if it exists
-                        if app_data.get('parent_message_id'):
-                            try:
-                                parent_channel = interaction.channel.parent
-                                if parent_channel:
-                                    parent_message = await parent_channel.fetch_message(app_data['parent_message_id'])
-                                    if approve_threshold_reached:
-                                        await parent_message.reply(approve_msg)
-                                    if deny_threshold_reached:
-                                        await parent_message.reply(deny_msg)
-                                    notification_sent = True
-                            except (discord.NotFound, discord.HTTPException) as e:
-                                print(f"Could not reply to parent message: {e}")
-                        
-                        # Approach 2: Try to get starter message
-                        if not notification_sent:
-                            try:
-                                starter_message = interaction.channel.starter_message
-                                if starter_message:
-                                    if approve_threshold_reached:
-                                        await starter_message.reply(approve_msg)
-                                    if deny_threshold_reached:
-                                        await starter_message.reply(deny_msg)
-                                    notification_sent = True
-                            except (discord.NotFound, discord.HTTPException, AttributeError) as e:
-                                print(f"Could not use starter message: {e}")
-                        
-                        # Approach 3: Fallback to sending in thread
-                        if not notification_sent:
+                        # Check if we're in a thread
+                        if isinstance(interaction.channel, discord.Thread):
+                            # Try multiple approaches to send notification
+                            notification_sent = False
+                            
+                            # Approach 1: Try to reply to parent message if it exists
+                            if app_data.get('parent_message_id'):
+                                try:
+                                    parent_channel = interaction.channel.parent
+                                    if parent_channel:
+                                        parent_message = await parent_channel.fetch_message(app_data['parent_message_id'])
+                                        if approve_threshold_reached:
+                                            await parent_message.reply(approve_msg)
+                                        if deny_threshold_reached:
+                                            await parent_message.reply(deny_msg)
+                                        notification_sent = True
+                                except (discord.NotFound, discord.HTTPException) as e:
+                                    print(f"Could not reply to parent message: {e}")
+                            
+                            # Approach 2: Try to get starter message
+                            if not notification_sent:
+                                try:
+                                    starter_message = interaction.channel.starter_message
+                                    if starter_message:
+                                        if approve_threshold_reached:
+                                            await starter_message.reply(approve_msg)
+                                        if deny_threshold_reached:
+                                            await starter_message.reply(deny_msg)
+                                        notification_sent = True
+                                except (discord.NotFound, discord.HTTPException, AttributeError) as e:
+                                    print(f"Could not use starter message: {e}")
+                            
+                            # Approach 3: Fallback to sending in thread
+                            if not notification_sent:
+                                if approve_threshold_reached:
+                                    await interaction.channel.send(approve_msg)
+                                if deny_threshold_reached:
+                                    await interaction.channel.send(deny_msg)
+                        else:
+                            # Regular channel - reply to the application message
                             if approve_threshold_reached:
-                                await interaction.channel.send(approve_msg)
+                                await interaction.message.reply(approve_msg)
                             if deny_threshold_reached:
-                                await interaction.channel.send(deny_msg)
-                    else:
-                        # Regular channel - reply to the application message
-                        if approve_threshold_reached:
-                            await interaction.message.reply(approve_msg)
-                        if deny_threshold_reached:
-                            await interaction.message.reply(deny_msg)
-                except Exception as e:
-                    print(f"Error sending threshold notification to channel: {e}")
-                
-                # Send DM notifications
-                await self.send_threshold_notifications(interaction, app_data, approve_threshold_reached, deny_threshold_reached, approve_count, deny_count, threshold)
+                                await interaction.message.reply(deny_msg)
+                    except Exception as e:
+                        print(f"Error sending threshold notification to channel: {e}")
+                    
+                    # Send DM notifications
+                    await self.send_threshold_notifications(interaction, app_data, approve_threshold_reached, deny_threshold_reached, approve_count, deny_count, threshold)
             except Exception as e:
                 print(f"Error updating message with mixed buttons: {e}")
                 import traceback
@@ -923,6 +954,16 @@ class ApplicationMixedView(View):
     def __init__(self, app_data, approve_count=0, deny_count=0, show_approve_action=False, show_deny_action=False, threshold=None):
         super().__init__(timeout=None)
         self.app_data = app_data
+
+        # is guild full
+        is_guild_full = False
+        if app_data.get('app_type', '').lower() != 'envoy':
+            try:
+                capacity = get_guild_capacity()
+                if capacity['is_full']:
+                    is_guild_full = True
+            except Exception:
+                pass
         
         # Add approve button (either vote or action)
         if show_approve_action:
@@ -932,15 +973,10 @@ class ApplicationMixedView(View):
                 style=discord.ButtonStyle.success,
                 custom_id=f"app_accept_{app_data['message_id']}"
             )
-            # Disable accept if guild is at max capacity (only for non-envoy apps)
-            if app_data.get('app_type', '').lower() != 'envoy':
-                try:
-                    capacity = get_guild_capacity()
-                    if capacity['is_full']:
-                        accept_button.disabled = True
-                        accept_button.label = "⏳ Guild Full"
-                except Exception:
-                    pass
+            # Disable accept if guild is at max capacity
+            if is_guild_full:
+                accept_button.disabled = True
+                accept_button.label = "⏳ Guild Full"
             accept_button.callback = self.accept_callback
             self.add_item(accept_button)
         else:
@@ -980,6 +1016,9 @@ class ApplicationMixedView(View):
                 style=discord.ButtonStyle.danger,
                 custom_id=f"app_vote_deny_{app_data['message_id']}"
             )
+            # Disable deny if guild is at max capacity
+            if is_guild_full:
+                deny_button.disabled = True
             deny_button.callback = self.deny_callback
             self.add_item(deny_button)
         
@@ -1157,7 +1196,7 @@ class ApplicationMixedView(View):
                 save_forwarded_apps(apps)
                 
                 # Add to guild queue if guild member app and guild is full
-                if approve_threshold_reached and app_data.get('app_type', '').lower() == 'guild member':
+                if approve_threshold_reached and app_data.get('app_type', '').lower() != 'envoy':
                     try:
                         capacity = get_guild_capacity()
                         if capacity['is_full']:
@@ -1177,7 +1216,34 @@ class ApplicationMixedView(View):
                             # Notify in the application channel
                             try:
                                 queue_msg = f"⏳ <@{discord_id}> has been placed in the guild waiting queue (position #{pos}) as the guild is currently at full capacity."
-                                await interaction.channel.send(queue_msg)
+                                
+                                # Try multiple approaches to send notification
+                                notification_sent = False
+                                
+                                # Approach 1: Try to reply to parent message if it exists
+                                if app_data.get('parent_message_id'):
+                                    try:
+                                        parent_channel = interaction.channel.parent
+                                        if parent_channel:
+                                            parent_message = await parent_channel.fetch_message(app_data['parent_message_id'])
+                                            await parent_message.reply(queue_msg)
+                                            notification_sent = True
+                                    except (discord.NotFound, discord.HTTPException) as e:
+                                        print(f"Could not reply to parent message: {e}")
+                                
+                                # Approach 2: Try to get starter message
+                                if not notification_sent:
+                                    try:
+                                        starter_message = interaction.channel.starter_message
+                                        if starter_message:
+                                            await starter_message.reply(queue_msg)
+                                            notification_sent = True
+                                    except (discord.NotFound, discord.HTTPException, AttributeError) as e:
+                                        print(f"Could not use starter message: {e}")
+                                
+                                # Approach 3: Fallback to sending in thread
+                                if not notification_sent:
+                                    await interaction.channel.send(queue_msg)
                             except Exception as notify_err:
                                 print(f"[WARN] Failed to send queue notification: {notify_err}")
                     except Exception as e:

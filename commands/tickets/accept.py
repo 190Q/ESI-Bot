@@ -667,7 +667,18 @@ class ApplicationMixedView(View):
     def __init__(self, app_data, approve_count=0, deny_count=0, show_approve_action=False, show_deny_action=False, threshold=None):
         super().__init__(timeout=None)
         self.app_data = app_data
-        
+
+        # is guild full
+        is_guild_full = True
+        if app_data.get('app_type', '').lower() != 'envoy':
+            try:
+                capacity = get_guild_capacity()
+                if capacity['is_full']:
+                    is_guild_full = True
+            except Exception:
+                pass
+
+
         # Add approve button (either vote or action)
         if show_approve_action:
             # Show action button
@@ -676,15 +687,10 @@ class ApplicationMixedView(View):
                 style=discord.ButtonStyle.success,
                 custom_id=f"app_accept_{app_data['message_id']}"
             )
-            # Disable accept if guild is at max capacity (only for non-envoy apps)
-            if app_data.get('app_type', '').lower() != 'envoy':
-                try:
-                    capacity = get_guild_capacity()
-                    if capacity['is_full']:
-                        accept_button.disabled = True
-                        accept_button.label = "⏳ Guild Full"
-                except Exception:
-                    pass
+            # Disable accept if guild is at max capacity
+            if is_guild_full:
+                accept_button.disabled = True
+                accept_button.label = "⏳ Guild Full"
             accept_button.callback = self.accept_callback
             self.add_item(accept_button)
         else:
@@ -724,6 +730,9 @@ class ApplicationMixedView(View):
                 style=discord.ButtonStyle.danger,
                 custom_id=f"app_vote_deny_{app_data['message_id']}"
             )
+            # Disable deny if guild is at max capacity
+            if is_guild_full:
+                deny_button.disabled = True
             deny_button.callback = self.deny_callback
             self.add_item(deny_button)
         
@@ -880,7 +889,7 @@ class ApplicationMixedView(View):
                 save_forwarded_apps(apps)
                 
                 # Add to guild queue if guild member app and guild is full
-                if approve_threshold_reached and app_data.get('app_type', '').lower() == 'guild member':
+                if approve_threshold_reached and app_data.get('app_type', '').lower() != 'envoy':
                     try:
                         capacity = get_guild_capacity()
                         if capacity['is_full']:

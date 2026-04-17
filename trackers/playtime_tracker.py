@@ -143,6 +143,15 @@ def create_daily_backup():
     
     # Copy the database
     if PLAYTIME_DB_PATH.exists():
+        # Check size against the most recent existing backup
+        existing_backups = sorted(day_folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
+        if existing_backups:
+            last_backup_size = existing_backups[-1].stat().st_size
+            current_size = PLAYTIME_DB_PATH.stat().st_size
+            if last_backup_size > 0 and current_size < last_backup_size * 0.85:
+                print(f"[PLAYTIME] Skipping backup: size too small ({current_size} bytes)")
+                return None
+        
         shutil.copy2(PLAYTIME_DB_PATH, backup_path)
         print(f"[PLAYTIME] Created backup: {backup_path}")
     

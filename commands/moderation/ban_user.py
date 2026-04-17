@@ -12,7 +12,7 @@ from utils.bans import load_bans, save_bans, is_user_banned, remove_ban
 
 OWNER_ID = int(os.getenv('OWNER_ID', 0))
 
-REQUIRED_ROLES = []
+REQUIRED_ROLES = [728858956575014964]
 
 # Duration options in seconds
 DURATION_OPTIONS = {

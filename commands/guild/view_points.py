@@ -14,7 +14,7 @@ from utils.esi_points import (
 )
 
 # Paths — mirror what api_tracker.py uses
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DB_FOLDER = BASE_DIR / "databases"
 API_TRACKING_FOLDER = DB_FOLDER / "api_tracking"
 
@@ -48,7 +48,7 @@ def _calc_le(username: str, total_points: int, history: list[dict], guild_ranks:
     """
     rank = guild_ranks.get(username.lower(), "")
     if rank in HR_RANKS:
-        hq_points = sum(r["points_gained"] for r in history if r["reason"].lower() == "hq snipe")
+        hq_points = sum(r["points_gained"] for r in history if r["reason"].lower() == "claim snipe")
         return hq_points / 10
     return total_points / 10
 
@@ -265,7 +265,6 @@ def setup(bot, has_required_role, config):
                         title="Player Not Found",
                         description=f"No points records found for **{username}**.",
                         color=0xFF4444,
-                        timestamp=datetime.utcnow(),
                     ),
                     ephemeral=True,
                 )
@@ -300,7 +299,6 @@ def setup(bot, has_required_role, config):
                 title=f"Points for {resolved_name}",
                 description=cycle_title,
                 color=0x5865F2,
-                timestamp=datetime.utcnow(),
             )
 
             for cid in cycle_ids:
@@ -352,7 +350,6 @@ def setup(bot, has_required_role, config):
                     title="No Data",
                     description=f"No points records found for {cycle_title}.",
                     color=0xFF4444,
-                    timestamp=datetime.utcnow(),
                 ),
                 ephemeral=True,
             )
@@ -364,7 +361,6 @@ def setup(bot, has_required_role, config):
             title="ESI Points Leaderboard",
             description=cycle_title,
             color=0xFFD700,
-            timestamp=datetime.utcnow(),
         )
 
         guild_ranks = _get_guild_ranks()

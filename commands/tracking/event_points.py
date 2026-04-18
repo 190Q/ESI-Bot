@@ -8,6 +8,7 @@ import os
 import json
 from utils.permissions import has_roles
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
+import utils.esi_points as esi
 
 DB_FILE = os.path.join(str(PROJECT_ROOT), "databases", "recruited_data.db")
 
@@ -83,9 +84,10 @@ def setup(bot, has_required_role, config):
     @app_commands.describe(
         player="Discord user of the player.",
         points="Number of event points to modify (positive to add, negative to remove, cannot be 0).",
-        reason="Optional reason for the event points change."
+        esi_points="ESI points to award alongside events points.",
+        reason="Optional reason for the event points change.",
     )
-    async def event(interaction: discord.Interaction, player: discord.User, points: int, reason: str = ""):
+    async def event(interaction: discord.Interaction, player: discord.User, points: int, esi_points: int, reason: str = ""):
         """Manage event points and badges for players"""
         
         await interaction.response.defer()
@@ -99,6 +101,16 @@ def setup(bot, has_required_role, config):
                 timestamp=datetime.utcnow()
             )
             await interaction.followup.send(embed=missing_roles_embed)
+            return
+        
+        if esi_points <= 0:
+            invalid_points = discord.Embed(
+                title="Invalid Input",
+                description="ESI points has to be 1 or higher.",
+                color=0xFF0000,
+                timestamp=datetime.utcnow()
+            )
+            await interaction.followup.send(embed=invalid_points)
             return
 
         if points == 0:
@@ -209,6 +221,8 @@ def setup(bot, has_required_role, config):
         
         if reason:
             description += f"\n\n**Reason:** {reason}"
+        if esi_points:
+            description += f"\n\nAdded **{abs(esi_points)}** ESI Points"
 
         result_embed = discord.Embed(
             title=f"{abs(points)} Event Points {'Added' if points > 0 else 'Removed'}",
@@ -217,5 +231,11 @@ def setup(bot, has_required_role, config):
             timestamp=datetime.utcnow()
         )
         await interaction.followup.send(embed=result_embed)
+        
+        resolved = [{
+            "uuid": player_uuid,
+            "username": player_username
+        }]
+        esi.save_points(resolved, esi_points, reason or "Quest points command")
     
     print("[OK] Loaded event command")

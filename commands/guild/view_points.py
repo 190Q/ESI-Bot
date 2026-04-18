@@ -43,13 +43,13 @@ def _get_guild_ranks() -> dict[str, str]:
 def _calc_le(username: str, total_points: int, history: list[dict], guild_ranks: dict) -> float:
     """
     Calculate LE for a player.
-    - HR players (strategist/chief/owner): only HQ Snipe points count toward LE.
+    - HR players (strategist/chief/owner): Guild Raids and Wars do not count toward LE.
     - Everyone else: all points count (10 pts = 1 LE).
     """
     rank = guild_ranks.get(username.lower(), "")
     if rank in HR_RANKS:
-        hq_points = sum(r["points_gained"] for r in history if r["reason"].lower() == "claim snipe")
-        return hq_points / 10
+        real_points = sum(r["points_gained"] for r in history if r["reason"].lower() not in {"guild raid", "war"})
+        return real_points / 10
     return total_points / 10
 
 

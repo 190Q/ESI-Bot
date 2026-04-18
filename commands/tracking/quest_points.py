@@ -8,6 +8,7 @@ import os
 import json
 from utils.permissions import has_roles
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
+import utils.esi_points as esi
 
 DB_FILE = os.path.join(str(PROJECT_ROOT), "databases", "recruited_data.db")
 
@@ -86,12 +87,34 @@ def setup(bot, has_required_role, config):
     @app_commands.describe(
         player="Discord user to manage quest points for.",
         points="Number of quest points to modify (positive to add, negative to remove, cannot be 0).",
-        reason="Optional reason for the quest points change."
+        esi_points="ESI points to award alongside quest points.",
+        reason="Optional reason for the quest points change.",
     )
-    async def quest(interaction: discord.Interaction, player: discord.Member, points: int, reason: str = ""):
+    async def quest(interaction: discord.Interaction, player: discord.Member, points: int, esi_points: int, reason: str = ""):
         """Manage quest points and badges for players"""
         
         await interaction.response.defer()
+        
+        if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
+            print(f"User {interaction.user} does not have required roles to use the /quest command.")
+            missing_roles_embed = discord.Embed(
+                title="Permission Denied",
+                description="You don't have permission to use this command!",
+                color=0xFF0000,
+                timestamp=datetime.utcnow()
+            )
+            await interaction.followup.send(embed=missing_roles_embed)
+            return
+        
+        if esi_points <= 0:
+            invalid_points = discord.Embed(
+                title="Invalid Input",
+                description="ESI points has to be 1 or higher.",
+                color=0xFF0000,
+                timestamp=datetime.utcnow()
+            )
+            await interaction.followup.send(embed=invalid_points)
+            return
         
         # Get username and UUID from Discord user
         username_db = _load_username_match_db()
@@ -119,17 +142,6 @@ def setup(bot, has_required_role, config):
                 timestamp=datetime.utcnow()
             )
             await interaction.followup.send(embed=missing_embed)
-            return
-
-        if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            print(f"User {interaction.user} does not have required roles to use the /quest command.")
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=missing_roles_embed)
             return
 
         if points == 0:
@@ -212,6 +224,8 @@ def setup(bot, has_required_role, config):
         
         if reason:
             description += f"\n\n**Reason:** {reason}"
+        if esi_points:
+            description += f"\n\nAdded **{abs(esi_points)}** ESI Points"
 
         result_embed = discord.Embed(
             title=f"{abs(points)} Quest Points {'Added' if points > 0 else 'Removed'}",
@@ -220,5 +234,11 @@ def setup(bot, has_required_role, config):
             timestamp=datetime.utcnow()
         )
         await interaction.followup.send(embed=result_embed)
+        
+        resolved = [{
+            "uuid": player_uuid,
+            "username": player_username
+        }]
+        esi.save_points(resolved, esi_points, reason or "Quest points command")
     
     print("[OK] Loaded quest command")

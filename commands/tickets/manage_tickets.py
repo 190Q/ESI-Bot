@@ -13,12 +13,25 @@ if str(current_dir) not in sys.path:
 from ticket_handler import (
     ApplicationVoteView, 
     ApplicationMixedView, 
+    ApplicationActionView,
+    DenyReasonModal,
     calculate_threshold,
     save_forwarded_apps,
     load_pending_apps,
-    save_pending_apps
+    save_pending_apps,
 )
-from guild_queue import get_queue_position
+from guild_queue import (
+    get_queue_position,
+    add_to_queue,
+    remove_from_queue,
+    load_queue,
+    get_guild_capacity,
+    get_capacity_override,
+    set_capacity_override,
+    clear_capacity_override,
+    extract_username_from_embeds,
+    VETERAN_ROLE_ID,
+)
 from utils.permissions import has_roles
 
 REQUIRED_ROLES = [
@@ -58,6 +71,15 @@ def is_restricted_user(user):
     has_owner = user.id == int(os.getenv('OWNER_ID', '0'))
     has_restricted = any(role_id in user_role_ids for role_id in RESTRICTED_ROLES)
     return has_restricted and not has_parliament and not has_owner
+
+
+def is_bot_owner(user) -> bool:
+    """Return True when ``user`` is the bot owner (``OWNER_ID`` env var)."""
+    try:
+        owner_id = int(os.getenv('OWNER_ID', '0'))
+    except (TypeError, ValueError):
+        return False
+    return bool(owner_id) and getattr(user, 'id', None) == owner_id
 
 class EmbedBuilder:
     """Utility class for building ticket-related embeds"""
@@ -143,7 +165,7 @@ class EmbedBuilder:
                     queue_pos, queue_type = result
                     embed.add_field(
                         name="\u23f3 Guild Queue",
-                        value=f"Position **#{queue_pos}** — guild is at full capacity",
+                        value=f"Position **#{queue_pos}** - guild is at full capacity",
                         inline=False
                     )
             except Exception:
@@ -525,6 +547,16 @@ class TicketDetailView(View):
             )
             manage_button.callback = self.manage_votes_callback
             self.add_item(manage_button)
+
+        # Owner‑only debug button for end‑to‑end ticket + queue testing
+        if is_bot_owner(user):
+            debug_button = discord.ui.Button(
+                label="Debug",
+                style=discord.ButtonStyle.secondary,
+                emoji="🛠️",
+            )
+            debug_button.callback = self.debug_callback
+            self.add_item(debug_button)
     
     async def send_reminder_callback(self, interaction: discord.Interaction):
         """Send a reminder to vote on the application"""
@@ -632,6 +664,22 @@ class TicketDetailView(View):
         embed.set_footer(text=f"Application submitted")
         
         view = VoteManagementView(self.message_id, self.tickets_data, self.guild)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    async def debug_callback(self, interaction: discord.Interaction):
+        """Open the owner‑only debug panel for this ticket."""
+        if not is_bot_owner(interaction.user):
+            await interaction.response.send_message(
+                "❌ Debug tools are restricted to the bot owner.", ephemeral=True
+            )
+            return
+
+        embed, _ = build_debug_embed(self.message_id, interaction.guild)
+        if embed is None:
+            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            return
+
+        view = DebugTicketView(self.message_id, self.tickets_data, self.guild, interaction.user)
         await interaction.response.edit_message(embed=embed, view=view)
 
 class TicketDetailViewStandalone(View):
@@ -2632,6 +2680,693 @@ class TicketSelectorView(View):
             embed=embed,
             view=detail_view
         )
+
+# Owner‑only debug panel for end‑to‑end ticket and queue testing
+
+def build_debug_embed(message_id, guild):
+    """Build the debug panel embed for a ticket.
+
+    Returns ``(embed, app_data)`` or ``(None, None)`` if the ticket is missing.
+    """
+    apps = load_forwarded_apps()
+    app_data = apps.get(message_id)
+    if not app_data:
+        return None, None
+
+    threshold = app_data.get('threshold', calculate_threshold(guild))
+    approve_count = app_data.get('approve_count', 0)
+    deny_count = app_data.get('deny_count', 0)
+    status = app_data.get('status', 'pending')
+    buttons_enabled = app_data.get('buttons_enabled', True)
+
+    embed = EmbedBuilder.build_ticket_embed(app_data, guild, "🛠️ Debug Ticket")
+    embed.color = 0xE67E22
+
+    state_lines = [
+        f"**Status:** `{status}`",
+        f"**Buttons enabled:** `{buttons_enabled}`",
+        f"**Approve notified:** `{app_data.get('approve_notified', False)}`",
+        f"**Deny notified:** `{app_data.get('deny_notified', False)}`",
+        f"**Approve votes:** `{approve_count}/{threshold}`",
+        f"**Deny votes:** `{deny_count}/{threshold}`",
+    ]
+    embed.add_field(name="Ticket state", value="\n".join(state_lines), inline=False)
+
+    # Queue summary
+    queue_lines = []
+    try:
+        capacity = get_guild_capacity()
+        player_count = capacity.get('player_count')
+        max_slots = capacity.get('max_slots')
+        is_full = capacity.get('is_full')
+        queue_lines.append(
+            f"**Guild capacity:** `{player_count}/{max_slots}` (full: `{is_full}`)"
+        )
+        if capacity.get('capacity_overridden'):
+            override_open = capacity.get('override', {}).get('open_slots')
+            queue_lines.append(
+                f"**⚠️ Capacity override active:** simulating `{override_open}` open slot(s)"
+            )
+    except Exception as e:
+        queue_lines.append(f"**Guild capacity:** *unavailable ({e})*")
+
+    try:
+        result = get_queue_position(app_data['user_id'])
+        if result is None:
+            queue_lines.append("**Queue position:** *not queued*")
+        else:
+            pos, qt = result
+            queue_lines.append(f"**Queue position:** `#{pos}` in `{qt}` queue")
+    except Exception as e:
+        queue_lines.append(f"**Queue position:** *error ({e})*")
+
+    if app_data.get('queued'):
+        queue_lines.append(
+            f"**Stored queue:** `#{app_data.get('queue_position')}` in `{app_data.get('queue_type')}` (locked: `{app_data.get('queue_locked', False)}`)"
+        )
+
+    embed.add_field(name="Queue", value="\n".join(queue_lines), inline=False)
+    embed.set_footer(text="Owner debug panel - changes are applied immediately")
+    return embed, app_data
+
+
+async def _edit_forwarded_message_view(interaction, app_data, forced_view=None):
+    """Re‑render the forwarded application message with an up‑to‑date view."""
+    try:
+        channel = interaction.guild.get_channel(app_data['channel_id'])
+        if not channel:
+            channel = interaction.guild.get_thread(app_data['channel_id'])
+        if not channel:
+            return False
+        message = await channel.fetch_message(app_data['message_id'])
+
+        if forced_view is not None:
+            view = forced_view
+        else:
+            threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
+            approve_count = app_data.get('approve_count', 0)
+            deny_count = app_data.get('deny_count', 0)
+            approve_met = approve_count >= threshold or app_data.get('approve_notified', False)
+            deny_met = deny_count >= threshold or app_data.get('deny_notified', False)
+            if approve_met or deny_met:
+                view = ApplicationMixedView(
+                    app_data, approve_count, deny_count,
+                    show_approve_action=approve_met,
+                    show_deny_action=deny_met,
+                    threshold=threshold,
+                )
+            else:
+                view = ApplicationVoteView(app_data, approve_count, deny_count, threshold=threshold)
+            if not app_data.get('buttons_enabled', True):
+                for item in view.children:
+                    item.disabled = True
+
+        await message.edit(view=view)
+        return True
+    except Exception as e:
+        print(f"[DEBUG] Failed to re‑render forwarded message view: {e}")
+        return False
+
+
+class DebugTicketView(View):
+    """Owner‑only debug panel for a ticket.
+
+    Exposes direct hooks into the ticket state and the guild queue so the bot
+    owner can drive every state transition without needing real voters, real
+    applicants, or a full/empty guild.
+    """
+
+    def __init__(self, message_id, tickets_data, guild, user):
+        super().__init__(timeout=None)
+        self.message_id = message_id
+        self.tickets_data = tickets_data
+        self.guild = guild
+        self.user = user
+
+        # Row 0 - navigation + diagnostics
+        back_button = discord.ui.Button(
+            label="Back", style=discord.ButtonStyle.secondary, emoji="◀️", row=0,
+        )
+        back_button.callback = self.back_callback
+        self.add_item(back_button)
+
+        refresh_button = discord.ui.Button(
+            label="Refresh", style=discord.ButtonStyle.secondary, emoji="🔄", row=0,
+        )
+        refresh_button.callback = self.refresh_callback
+        self.add_item(refresh_button)
+
+        raw_button = discord.ui.Button(
+            label="Show Raw JSON", style=discord.ButtonStyle.secondary, emoji="📄", row=0,
+        )
+        raw_button.callback = self.show_raw_callback
+        self.add_item(raw_button)
+
+        # Row 1 - ticket state resets and triggers
+        reset_button = discord.ui.Button(
+            label="Reset Ticket", style=discord.ButtonStyle.danger, emoji="🧹", row=1,
+        )
+        reset_button.callback = self.reset_callback
+        self.add_item(reset_button)
+
+        force_approve = discord.ui.Button(
+            label="Trigger Approval", style=discord.ButtonStyle.success, emoji="⚡", row=1,
+        )
+        force_approve.callback = self.trigger_approval_callback
+        self.add_item(force_approve)
+
+        force_deny = discord.ui.Button(
+            label="Trigger Denial", style=discord.ButtonStyle.danger, emoji="⚡", row=1,
+        )
+        force_deny.callback = self.trigger_denial_callback
+        self.add_item(force_deny)
+
+        # Row 2 - real accept / deny modal flows
+        sim_accept = discord.ui.Button(
+            label="Simulate Accept Button", style=discord.ButtonStyle.success, emoji="🟢", row=2,
+        )
+        sim_accept.callback = self.simulate_accept_callback
+        self.add_item(sim_accept)
+
+        sim_deny = discord.ui.Button(
+            label="Simulate Deny Button", style=discord.ButtonStyle.danger, emoji="🔴", row=2,
+        )
+        sim_deny.callback = self.simulate_deny_callback
+        self.add_item(sim_deny)
+
+        # Row 3 - queue controls
+        queue_add = discord.ui.Button(
+            label="Force Queue Add", style=discord.ButtonStyle.primary, emoji="⏳", row=3,
+        )
+        queue_add.callback = self.force_queue_add_callback
+        self.add_item(queue_add)
+
+        queue_add_vet = discord.ui.Button(
+            label="Force Queue Add (Veteran)", style=discord.ButtonStyle.primary, emoji="⭐", row=3,
+        )
+        queue_add_vet.callback = self.force_queue_add_vet_callback
+        self.add_item(queue_add_vet)
+
+        queue_remove = discord.ui.Button(
+            label="Remove from Queue", style=discord.ButtonStyle.secondary, emoji="➖", row=3,
+        )
+        queue_remove.callback = self.force_queue_remove_callback
+        self.add_item(queue_remove)
+
+        # Row 4 - guild capacity override (simulate slots opening)
+        set_override_btn = discord.ui.Button(
+            label="Set Capacity Override", style=discord.ButtonStyle.primary, emoji="🚧", row=4,
+        )
+        set_override_btn.callback = self.set_capacity_override_callback
+        self.add_item(set_override_btn)
+
+        open_one_btn = discord.ui.Button(
+            label="Open +1 Slot", style=discord.ButtonStyle.success, emoji="➕", row=4,
+        )
+        open_one_btn.callback = self.open_one_slot_callback
+        self.add_item(open_one_btn)
+
+        force_full_btn = discord.ui.Button(
+            label="Force Guild Full", style=discord.ButtonStyle.danger, emoji="🚫", row=4,
+        )
+        force_full_btn.callback = self.force_full_callback
+        self.add_item(force_full_btn)
+
+        clear_override_btn = discord.ui.Button(
+            label="Clear Override", style=discord.ButtonStyle.secondary, emoji="♻️", row=4,
+        )
+        clear_override_btn.callback = self.clear_capacity_override_callback
+        self.add_item(clear_override_btn)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _guard(self, interaction) -> bool:
+        if is_bot_owner(interaction.user):
+            return True
+        return False
+
+    async def _reject_non_owner(self, interaction):
+        await interaction.response.send_message(
+            "❌ Debug tools are restricted to the bot owner.", ephemeral=True
+        )
+
+    async def _refresh_panel(self, interaction, note: str | None = None):
+        embed, _ = build_debug_embed(self.message_id, self.guild)
+        if embed is None:
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Ticket data not found!", ephemeral=True)
+            else:
+                await interaction.response.send_message(
+                    "❌ Ticket data not found!", ephemeral=True
+                )
+            return
+        if note:
+            embed.description = (embed.description or "") + f"\n\nℹ️ {note}"
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    # Callbacks
+    async def back_callback(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            await self._reject_non_owner(interaction)
+            return
+
+        apps = load_forwarded_apps()
+        app_data = apps.get(self.message_id)
+        if not app_data:
+            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            return
+
+        threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
+        embed = EmbedBuilder.build_ticket_embed(app_data, interaction.guild, "Manage Ticket")
+        approve_field = EmbedBuilder.build_vote_display(app_data.get('approve_voters', []), threshold, "Approve")
+        deny_field = EmbedBuilder.build_vote_display(app_data.get('deny_voters', []), threshold, "Deny")
+        embed.add_field(**approve_field)
+        embed.add_field(**deny_field)
+        EmbedBuilder.add_queue_field(embed, app_data)
+        embed.set_footer(text="Application submitted")
+
+        view = TicketDetailView(self.message_id, self.tickets_data, self.guild, interaction.user)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    async def refresh_callback(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            await self._reject_non_owner(interaction)
+            return
+        await self._refresh_panel(interaction, note="Panel refreshed.")
+
+    async def show_raw_callback(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            await self._reject_non_owner(interaction)
+            return
+
+        apps = load_forwarded_apps()
+        app_data = apps.get(self.message_id)
+        if not app_data:
+            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            return
+
+        raw = json.dumps(app_data, indent=2, ensure_ascii=False)
+        # Discord message limit is 2000 chars; wrap in a code block with truncation.
+        content = f"```json\n{raw[:1900]}{'\n...[truncated]' if len(raw) > 1900 else ''}\n```"
+        await interaction.response.send_message(content, ephemeral=True)
+
+    async def reset_callback(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            await self._reject_non_owner(interaction)
+            return
+
+        apps = load_forwarded_apps()
+        app_data = apps.get(self.message_id)
+        if not app_data:
+            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        app_data['approve_voters'] = []
+        app_data['deny_voters'] = []
+        app_data['approve_count'] = 0
+        app_data['deny_count'] = 0
+        app_data['approve_notified'] = False
+        app_data['deny_notified'] = False
+        app_data['buttons_enabled'] = True
+        for key in ('status', 'queued', 'queue_position', 'queue_type', 'queue_locked'):
+            app_data.pop(key, None)
+        apps[self.message_id] = app_data
+        save_forwarded_apps(apps)
+
+        # Also clear any queue entry for this applicant.
+        try:
+            remove_from_queue(app_data['user_id'])
+        except Exception as e:
+            print(f"[DEBUG] Queue remove during reset failed: {e}")
+
+        await _edit_forwarded_message_view(interaction, app_data)
+        await self._refresh_panel(interaction, note="Ticket state reset - votes, status, notified flags, and queue entry cleared.")
+
+    async def trigger_approval_callback(self, interaction: discord.Interaction):
+        """Fill approvals to threshold and run the full approve‑threshold flow."""
+        if not self._guard(interaction):
+            await self._reject_non_owner(interaction)
+            return
+
+        apps = load_forwarded_apps()
+        app_data = apps.get(self.message_id)
+        if not app_data:
+            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
+        approve_voters = app_data.get('approve_voters', [])
+        while len(approve_voters) < threshold:
+            approve_voters.append(VoteManager.generate_admin_vote_id(approve_voters, app_data.get('deny_voters', [])))
+        app_data['approve_voters'] = approve_voters
+        app_data['approve_count'] = len(approve_voters)
+        app_data['approve_notified'] = True
+        app_data.pop('status', None)
+        apps[self.message_id] = app_data
+        save_forwarded_apps(apps)
+
+        await _edit_forwarded_message_view(interaction, app_data)
+        await self._refresh_panel(
+            interaction,
+            note="Forced approval - votes filled to threshold and `approve_notified` set. Use `Force Queue Add` to simulate the full‑guild path.",
+        )
+
+    async def trigger_denial_callback(self, interaction: discord.Interaction):
+        """Fill denials to threshold and run the full deny‑threshold flow."""
+        if not self._guard(interaction):
+            await self._reject_non_owner(interaction)
+            return
+
+        apps = load_forwarded_apps()
+        app_data = apps.get(self.message_id)
+        if not app_data:
+            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
+        deny_voters = app_data.get('deny_voters', [])
+        while len(deny_voters) < threshold:
+            deny_voters.append(VoteManager.generate_admin_vote_id(app_data.get('approve_voters', []), deny_voters))
+        app_data['deny_voters'] = deny_voters
+        app_data['deny_count'] = len(deny_voters)
+        app_data['deny_notified'] = True
+        app_data.pop('status', None)
+        apps[self.message_id] = app_data
+        save_forwarded_apps(apps)
+
+        await _edit_forwarded_message_view(interaction, app_data)
+        await self._refresh_panel(
+            interaction,
+            note="Forced denial - votes filled to threshold and `deny_notified` set.",
+        )
+
+    async def simulate_accept_callback(self, interaction: discord.Interaction):
+        """Invoke the real accept modal for this ticket as if the owner pressed the button on the forwarded message."""
+        if not self._guard(interaction):
+            await self._reject_non_owner(interaction)
+            return
+
+        apps = load_forwarded_apps()
+        app_data = apps.get(self.message_id)
+        if not app_data:
+            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            return
+
+        try:
+            channel = interaction.guild.get_channel(app_data['channel_id']) or interaction.guild.get_thread(app_data['channel_id'])
+            target_message = await channel.fetch_message(app_data['message_id']) if channel else None
+        except Exception:
+            target_message = None
+
+        if target_message is None:
+            await interaction.response.send_message(
+                "❌ Could not fetch the forwarded application message to replay the accept flow.",
+                ephemeral=True,
+            )
+            return
+
+        # Proxy the interaction so the callback sees the forwarded message as ``interaction.message``.
+        proxy = _InteractionMessageProxy(interaction, target_message)
+        view = ApplicationActionView({**app_data, 'message_id': app_data['message_id']}, show_deny=False)
+        await view.accept_callback(proxy)
+
+    async def simulate_deny_callback(self, interaction: discord.Interaction):
+        """Open the real deny‑reason modal as if the owner pressed the deny button on the forwarded message."""
+        if not self._guard(interaction):
+            await self._reject_non_owner(interaction)
+            return
+
+        apps = load_forwarded_apps()
+        app_data = apps.get(self.message_id)
+        if not app_data:
+            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            return
+
+        try:
+            channel = interaction.guild.get_channel(app_data['channel_id']) or interaction.guild.get_thread(app_data['channel_id'])
+            target_message = await channel.fetch_message(app_data['message_id']) if channel else None
+        except Exception:
+            target_message = None
+
+        if target_message is None:
+            await interaction.response.send_message(
+                "❌ Could not fetch the forwarded application message to replay the deny flow.",
+                ephemeral=True,
+            )
+            return
+
+        modal = DenyReasonModal(app_data, target_message)
+        await interaction.response.send_modal(modal)
+
+    async def force_queue_add_callback(self, interaction: discord.Interaction):
+        await self._do_queue_add(interaction, is_veteran=False)
+
+    async def force_queue_add_vet_callback(self, interaction: discord.Interaction):
+        await self._do_queue_add(interaction, is_veteran=True)
+
+    async def _do_queue_add(self, interaction: discord.Interaction, is_veteran: bool):
+        if not self._guard(interaction):
+            await self._reject_non_owner(interaction)
+            return
+
+        apps = load_forwarded_apps()
+        app_data = apps.get(self.message_id)
+        if not app_data:
+            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        # Try to resolve the applicant's in‑game username from the forwarded embed.
+        username = "Unknown"
+        try:
+            ch = interaction.guild.get_channel(app_data['channel_id']) or interaction.guild.get_thread(app_data['channel_id'])
+            if ch:
+                msg = await ch.fetch_message(app_data['message_id'])
+                extracted = extract_username_from_embeds(msg.embeds)
+                if extracted:
+                    username = extracted
+        except Exception as e:
+            print(f"[DEBUG] Could not extract username for queue add: {e}")
+
+        # If the caller didn't request veteran explicitly, still respect the veteran role.
+        if not is_veteran:
+            member = interaction.guild.get_member(app_data['user_id'])
+            is_veteran = bool(member) and any(r.id == VETERAN_ROLE_ID for r in member.roles)
+
+        try:
+            pos, qt = add_to_queue(username, None, app_data['user_id'], is_veteran=is_veteran)
+        except Exception as e:
+            await self._refresh_panel(interaction, note=f"Queue add failed: `{e}`")
+            return
+
+        app_data['queued'] = True
+        app_data['queue_position'] = pos
+        app_data['queue_type'] = qt
+        apps[self.message_id] = app_data
+        save_forwarded_apps(apps)
+
+        await _edit_forwarded_message_view(interaction, app_data)
+        await self._refresh_panel(
+            interaction,
+            note=f"Forced add to `{qt}` queue at position `#{pos}` (veteran: `{is_veteran}`).",
+        )
+
+    async def force_queue_remove_callback(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            await self._reject_non_owner(interaction)
+            return
+
+        apps = load_forwarded_apps()
+        app_data = apps.get(self.message_id)
+        if not app_data:
+            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        removed = False
+        try:
+            removed = remove_from_queue(app_data['user_id'])
+        except Exception as e:
+            await self._refresh_panel(interaction, note=f"Queue remove failed: `{e}`")
+            return
+
+        for key in ('queued', 'queue_position', 'queue_type', 'queue_locked'):
+            app_data.pop(key, None)
+        apps[self.message_id] = app_data
+        save_forwarded_apps(apps)
+
+        await _edit_forwarded_message_view(interaction, app_data)
+        await self._refresh_panel(
+            interaction,
+            note="Removed from queue." if removed else "No queue entry existed for this applicant.",
+        )
+
+    # Guild capacity override
+    async def set_capacity_override_callback(self, interaction: discord.Interaction):
+        """Open a modal to set the number of simulated open slots."""
+        if not self._guard(interaction):
+            await self._reject_non_owner(interaction)
+            return
+
+        current = get_capacity_override() or {}
+        default_value = str(current.get('open_slots', 0))
+        await interaction.response.send_modal(
+            CapacityOverrideModal(
+                message_id=self.message_id,
+                tickets_data=self.tickets_data,
+                guild=self.guild,
+                user=self.user,
+                default_value=default_value,
+            )
+        )
+
+    async def open_one_slot_callback(self, interaction: discord.Interaction):
+        """Bump the simulated open‑slot count by +1 (creates an override if none yet)."""
+        if not self._guard(interaction):
+            await self._reject_non_owner(interaction)
+            return
+
+        await interaction.response.defer()
+
+        current = get_capacity_override() or {}
+        new_open = int(current.get('open_slots', 0)) + 1
+        set_capacity_override(new_open)
+
+        # Re‑render the forwarded message since the buttons' disabled state depends on capacity.
+        apps = load_forwarded_apps()
+        app_data = apps.get(self.message_id)
+        if app_data:
+            await _edit_forwarded_message_view(interaction, app_data)
+
+        await self._refresh_panel(
+            interaction,
+            note=f"Capacity override set to `{new_open}` open slot(s). `get_guild_capacity()` now reports `is_full = False`.",
+        )
+
+    async def force_full_callback(self, interaction: discord.Interaction):
+        """Override the reported capacity to 0 open slots (guild is full)."""
+        if not self._guard(interaction):
+            await self._reject_non_owner(interaction)
+            return
+
+        await interaction.response.defer()
+
+        set_capacity_override(0)
+
+        apps = load_forwarded_apps()
+        app_data = apps.get(self.message_id)
+        if app_data:
+            await _edit_forwarded_message_view(interaction, app_data)
+
+        await self._refresh_panel(
+            interaction,
+            note="Capacity override set to `0` open slots — simulating a full guild.",
+        )
+
+    async def clear_capacity_override_callback(self, interaction: discord.Interaction):
+        """Remove any active capacity override and fall back to the real tracked data."""
+        if not self._guard(interaction):
+            await self._reject_non_owner(interaction)
+            return
+
+        await interaction.response.defer()
+
+        cleared = clear_capacity_override()
+
+        apps = load_forwarded_apps()
+        app_data = apps.get(self.message_id)
+        if app_data:
+            await _edit_forwarded_message_view(interaction, app_data)
+
+        await self._refresh_panel(
+            interaction,
+            note="Capacity override cleared — real guild capacity is back in effect." if cleared
+            else "No capacity override was active.",
+        )
+
+
+class CapacityOverrideModal(discord.ui.Modal, title="Simulate Guild Capacity"):
+    """Modal for setting the simulated number of open guild slots."""
+
+    open_slots_input = discord.ui.TextInput(
+        label="Open slots to simulate (0 = full)",
+        placeholder="e.g. 1 for one slot open, 0 to force full",
+        required=True,
+        max_length=4,
+    )
+
+    def __init__(self, message_id, tickets_data, guild, user, default_value: str = "0"):
+        super().__init__()
+        self.message_id = message_id
+        self.tickets_data = tickets_data
+        self.guild = guild
+        self.user = user
+        self.open_slots_input.default = default_value
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not is_bot_owner(interaction.user):
+            await interaction.response.send_message(
+                "❌ Debug tools are restricted to the bot owner.", ephemeral=True
+            )
+            return
+
+        raw = (self.open_slots_input.value or "").strip()
+        try:
+            open_slots = int(raw)
+        except ValueError:
+            await interaction.response.send_message(
+                f"❌ `{raw}` is not a valid integer.", ephemeral=True
+            )
+            return
+
+        stored = set_capacity_override(open_slots)
+
+        apps = load_forwarded_apps()
+        app_data = apps.get(self.message_id)
+        if app_data:
+            await _edit_forwarded_message_view(interaction, app_data)
+
+        embed, _ = build_debug_embed(self.message_id, self.guild)
+        if embed is None:
+            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            return
+
+        embed.description = (embed.description or "") + (
+            f"\n\nℹ️ Capacity override set to `{stored['open_slots']}` open slot(s)."
+        )
+        view = DebugTicketView(self.message_id, self.tickets_data, self.guild, self.user)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class _InteractionMessageProxy:
+    """Wrap a ``discord.Interaction`` so ``interaction.message`` points at a
+    different message than the one that originally triggered it.
+
+    Used by the debug panel to replay ``ApplicationActionView.accept_callback``
+    against the forwarded application message while preserving the owner's
+    current interaction context.
+    """
+
+    def __init__(self, inner, message):
+        self._inner = inner
+        self.message = message
+
+    def __getattr__(self, item):
+        return getattr(self._inner, item)
+
 
 def setup(bot, has_required_role, config):
     """Setup function for bot integration"""

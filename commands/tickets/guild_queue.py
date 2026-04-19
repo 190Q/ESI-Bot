@@ -12,7 +12,53 @@ from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
 GUILD_SLOTS_FILE = DATA_DIR / "guild_member_slots.json"
 TRACKED_GUILD_FILE = DATA_DIR / "tracked_guild.json"
 QUEUE_FILE = DATA_DIR / "guild_member_queue.json"
+CAPACITY_OVERRIDE_FILE = DATA_DIR / "guild_capacity_override.json"
 VETERAN_ROLE_ID = 914422269802070057
+
+
+# ---------------------------------------------------------------------------
+# Debug override for guild capacity
+#
+# When present, ``get_guild_capacity()`` will synthesize a capacity result that
+# reports ``open_slots`` open slots (``player_count = max_slots - open_slots``).
+# This lets the bot owner simulate slots opening or the guild being full for
+# end‑to‑end queue testing without having to mutate ``tracked_guild.json``.
+# ---------------------------------------------------------------------------
+
+def get_capacity_override() -> dict | None:
+    """Return the capacity override dict, or ``None`` if no override is set."""
+    if not CAPACITY_OVERRIDE_FILE.exists():
+        return None
+    try:
+        with open(CAPACITY_OVERRIDE_FILE, "r") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def set_capacity_override(open_slots: int) -> dict:
+    """Persist a capacity override that reports ``open_slots`` open slots.
+
+    Negative values are clamped to ``0`` (== guild full). Returns the stored
+    override dict.
+    """
+    payload = {"open_slots": max(0, int(open_slots))}
+    CAPACITY_OVERRIDE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(CAPACITY_OVERRIDE_FILE, "w") as f:
+        json.dump(payload, f)
+    return payload
+
+
+def clear_capacity_override() -> bool:
+    """Delete the capacity override file. Returns ``True`` if something was removed."""
+    if CAPACITY_OVERRIDE_FILE.exists():
+        try:
+            CAPACITY_OVERRIDE_FILE.unlink()
+            return True
+        except OSError:
+            return False
+    return False
 
 
 def _load_guild_slots():
@@ -35,20 +81,56 @@ def get_max_slots_for_level(guild_level: int) -> int:
     return best_slots
 
 
+def _apply_capacity_override(result: dict) -> dict:
+    """If a capacity override is active, rewrite ``result`` to report the
+    overridden number of open slots.
+
+    The override sets ``player_count = max_slots - open_slots`` (clamped to
+    ``[0, max_slots]``) and recomputes ``is_full``. A ``capacity_overridden``
+    marker plus the raw ``override`` dict is added so callers/UIs can flag
+    that they're seeing simulated data.
+    """
+    override = get_capacity_override()
+    if override is None or "open_slots" not in override:
+        return result
+
+    max_slots = result.get("max_slots")
+    if max_slots is None:
+        # No real max_slots known; use open_slots directly as the inferred capacity.
+        max_slots = max(1, int(override["open_slots"]))
+
+    open_slots = max(0, min(int(override["open_slots"]), max_slots))
+    player_count = max(0, max_slots - open_slots)
+
+    return {
+        **result,
+        "max_slots": max_slots,
+        "player_count": player_count,
+        "is_full": player_count >= max_slots,
+        "capacity_overridden": True,
+        "override": {"open_slots": open_slots},
+    }
+
+
 def get_guild_capacity() -> dict:
     """Read tracked_guild.json and return capacity info.
 
     Returns a dict with keys:
         guild_level, player_count, max_slots, is_full
+    and, when a debug override is active, ``capacity_overridden`` and ``override``.
     """
     if not TRACKED_GUILD_FILE.exists():
-        return {"guild_level": None, "player_count": None, "max_slots": None, "is_full": False}
+        return _apply_capacity_override(
+            {"guild_level": None, "player_count": None, "max_slots": None, "is_full": False}
+        )
 
     try:
         with open(TRACKED_GUILD_FILE, "r") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError):
-        return {"guild_level": None, "player_count": None, "max_slots": None, "is_full": False}
+        return _apply_capacity_override(
+            {"guild_level": None, "player_count": None, "max_slots": None, "is_full": False}
+        )
 
     previous = data.get("previous_data", {})
     guild_level = previous.get("level")
@@ -56,15 +138,17 @@ def get_guild_capacity() -> dict:
     player_count = sum(len(rank_list) for rank_list in members.values())
 
     if guild_level is None:
-        return {"guild_level": None, "player_count": player_count, "max_slots": None, "is_full": False}
+        return _apply_capacity_override(
+            {"guild_level": None, "player_count": player_count, "max_slots": None, "is_full": False}
+        )
 
     max_slots = get_max_slots_for_level(guild_level)
-    return {
+    return _apply_capacity_override({
         "guild_level": guild_level,
         "player_count": player_count,
         "max_slots": max_slots,
         "is_full": player_count >= max_slots,
-    }
+    })
 
 
 def is_guild_full() -> bool:

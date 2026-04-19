@@ -232,5 +232,6 @@ ticket_panels.json
 tracked_guild.json
 username_matches.json
 user_bans.json
+guild_capacity_override.json
 
 playtime_tracking.db.filepart

@@ -153,6 +153,11 @@ def create_daily_backup():
                 return None
         
         shutil.copy2(PLAYTIME_DB_PATH, backup_path)
+        # Delete the backup if it was created with 0 bytes
+        if backup_path.exists() and backup_path.stat().st_size == 0:
+            backup_path.unlink()
+            print(f"[PLAYTIME] Deleted empty backup: {backup_path}")
+            return None
         print(f"[PLAYTIME] Created backup: {backup_path}")
     
     return backup_path
@@ -165,6 +170,11 @@ def cleanup_daily_folder(day_folder):
     
     # Get all .db files in the folder
     db_files = sorted(day_folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
+    
+    if len(db_files) <= 1:
+        return
+    
+    db_files = [f for f in db_files if not (f.stat().st_size == 0 and f.unlink() is None)]
     
     if len(db_files) <= 1:
         return
@@ -225,6 +235,12 @@ def cleanup_old_day_folders():
             # Only process folders that are 4-6 days old
             if 7 <= days_old <= 10:
                 db_files = sorted(folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
+                
+                if len(db_files) <= 1:
+                    continue
+                
+                # Remove any 0-byte database files first
+                db_files = [f for f in db_files if not (f.stat().st_size == 0 and f.unlink() is None)]
                 
                 if len(db_files) <= 1:
                     continue

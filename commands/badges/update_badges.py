@@ -112,7 +112,7 @@ BADGE_ROLES = {
     }
 }
 
-TIER_NAMES = ["Bronze", "Silver", "Gold", "Platinum", "Diamond", "Onyx", "[nssssame]}"]
+TIER_NAMES = ["Bronze", "Silver", "Gold", "Platinum", "Diamond", "Onyx", "[username]}"]
 
 BADGE_TYPE_SHORT = {
     "War Badges": "War",

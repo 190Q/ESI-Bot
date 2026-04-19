@@ -1,4 +1,4 @@
-import discord
+﻿import discord
 from discord import app_commands
 from discord.ui import Select, Button, View, Modal, TextInput
 from datetime import datetime
@@ -17,8 +17,7 @@ from rank_logger import log_rank_change
 from guild_queue import get_guild_capacity, get_queue_position, add_to_queue, remove_from_queue, extract_username_from_embeds
 from utils.permissions import has_roles
 
-FORWARDED_APPS_FILE = Path(__file__).resolve().parent.parent.parent / 'data' / 'forwarded_applications.json'
-# Path to the username ↔ user_id match database
+# Path to the username â†” user_id match database
 USERNAME_MATCH_DB_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data/username_matches.json",
@@ -43,7 +42,7 @@ async def validate_wynncraft_username(username: str) -> Tuple[bool, str, str]:
                     players_dict = data.get('objects', {})
                     
                     if not players_dict:
-                        return False, f"❌ No valid players found for username `{username}`!", None
+                        return False, f"âŒ No valid players found for username `{username}`!", None
                     
                     print(f"[INFO] Multiple usernames found for {username}: {data}")
                     
@@ -71,27 +70,13 @@ async def validate_wynncraft_username(username: str) -> Tuple[bool, str, str]:
                         print(f"[INFO] Selected player with UUID {most_recent_uuid} (most recent lastJoin: {most_recent_last_join})")
                         return True, None, most_recent_uuid
                     else:
-                        return False, f"⚠️ Could not determine the correct player for username `{username}`.", None
+                        return False, f"âš ï¸ Could not determine the correct player for username `{username}`.", None
                 elif response.status == 404:
-                    return False, f"❌ Username `{username}` not found on Wynncraft!", None
+                    return False, f"âŒ Username `{username}` not found on Wynncraft!", None
                 else:
-                    return False, f"⚠️ Could not verify username (API status: {response.status}). Please try again.", None
+                    return False, f"âš ï¸ Could not verify username (API status: {response.status}). Please try again.", None
     except Exception as e:
-        return False, f"⚠️ Error validating username: {str(e)}", None
-
-def calculate_threshold(guild):
-    """Calculate the voting threshold based on number of jurors"""
-    if guild.id == 1442126799369670770:
-        return 1
-    try:
-        juror_role = guild.get_role(954566591520063510)
-        if juror_role:
-            juror_count = len(juror_role.members)
-            threshold = max(1, min(8, juror_count // 4))
-            return threshold
-    except:
-        pass
-    return 5  # Default threshold
+        return False, f"âš ï¸ Error validating username: {str(e)}", None
 
 def _load_username_match_db():
     """Load the username match DB from disk.
@@ -106,14 +91,14 @@ def _load_username_match_db():
     except FileNotFoundError:
         return {}
     except json.JSONDecodeError:
-        # Corrupt or empty file – start fresh rather than breaking the command
+        # Corrupt or empty file â€“ start fresh rather than breaking the command
         return {}
     except Exception as e:
         print(f"[WARN] Failed to load username match DB: {e}")
         return {}
 
 def save_username_match(user_id: int, username: str, uuid: str = None) -> None:
-    """Persist a mapping of Discord user ID → in‑game username and UUID to the JSON DB."""
+    """Persist a mapping of Discord user ID â†’ inâ€‘game username and UUID to the JSON DB."""
     db = _load_username_match_db()
     # Save as dict with username and uuid if uuid is provided, otherwise just username for backwards compatibility
     if uuid:
@@ -218,47 +203,6 @@ REQUIRED_ROLES = [
     954566591520063510, # Juror
     600185623474601995, # Parliament
 ]
-
-def save_forwarded_apps(apps):
-    """Save forwarded applications to JSON file"""
-    with open(FORWARDED_APPS_FILE, 'w') as f:
-        json.dump(apps, f, indent=4)
-
-def load_forwarded_apps():
-    """Load forwarded applications from JSON file"""
-    if FORWARDED_APPS_FILE.exists():
-        with open(FORWARDED_APPS_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-def save_forwarded_app(channel_id: int, message_id: int, user_id: int, app_type: str, parent_message_id: int = None):
-    """Save a forwarded application to the database"""
-    apps = load_forwarded_apps()
-    apps[str(message_id)] = {
-        'channel_id': channel_id,
-        'message_id': message_id,
-        'user_id': user_id,
-        'app_type': app_type,
-        'parent_message_id': parent_message_id,
-        'notified': False,
-        'approve_notified': False,
-        'deny_notified': False,
-        'approve_count': 0,
-        'deny_count': 0,
-        'approve_voters': [],
-        'deny_voters': [],
-        'threshold': threshold,
-        'timestamp': datetime.now(timezone.utc).timestamp()
-    }
-    
-    # If there are more than 50 applications, remove the oldest ones
-    if len(apps) > 50:
-        # Sort by timestamp (oldest first)
-        sorted_apps = sorted(apps.items(), key=lambda x: x[1].get('timestamp', 0))
-        # Keep only the 50 most recent
-        apps = dict(sorted_apps[-50:])
-    
-    save_forwarded_apps(apps)
 
 class AltAccountSelectView(discord.ui.View):
     """View for selecting if the user is an alt account"""
@@ -538,7 +482,7 @@ class AutoAcceptView(discord.ui.View):
     async def cancel_accept(self, interaction: discord.Interaction):
         """Cancel the accept operation"""
         await interaction.response.edit_message(
-            content="❌ Accept operation cancelled.",
+            content="âŒ Accept operation cancelled.",
             view=None
         )
 
@@ -661,438 +605,6 @@ class PronounSelectView(discord.ui.View):
         
         # Go directly to confirmation (no alt account selection)
         await show_confirmation_embed(interaction, self.user, self.username, self.rank_key, pronoun_value, self.source_message_id, uuid=self.uuid)
-        
-class ApplicationMixedView(View):
-    """View that shows a mix of vote buttons and action buttons"""
-    def __init__(self, app_data, approve_count=0, deny_count=0, show_approve_action=False, show_deny_action=False, threshold=None):
-        super().__init__(timeout=None)
-        self.app_data = app_data
-
-        # is guild full
-        is_guild_full = True
-        if app_data.get('app_type', '').lower() != 'envoy':
-            try:
-                capacity = get_guild_capacity()
-                if capacity['is_full']:
-                    is_guild_full = True
-            except Exception:
-                pass
-
-
-        # Add approve button (either vote or action)
-        if show_approve_action:
-            # Show action button
-            accept_button = Button(
-                label="✅ Accept Application",
-                style=discord.ButtonStyle.success,
-                custom_id=f"app_accept_{app_data['message_id']}"
-            )
-            # Disable accept if guild is at max capacity
-            if is_guild_full:
-                accept_button.disabled = True
-                accept_button.label = "⏳ Guild Full"
-            accept_button.callback = self.accept_callback
-            self.add_item(accept_button)
-        else:
-            # Show vote button
-            if threshold is not None:
-                approve_label = f"✅ Approve ({approve_count}/{threshold})"
-            else:
-                approve_label = f"✅ Approve ({approve_count})"
-            
-            approve_button = Button(
-                label=approve_label,
-                style=discord.ButtonStyle.success,
-                custom_id=f"app_vote_approve_{app_data['message_id']}"
-            )
-            approve_button.callback = self.approve_callback
-            self.add_item(approve_button)
-        
-        # Add deny button (either vote or action)
-        if show_deny_action:
-            # Show action button
-            deny_button = Button(
-                label="❌ Deny Application",
-                style=discord.ButtonStyle.danger,
-                custom_id=f"app_deny_{app_data['message_id']}"
-            )
-            deny_button.callback = self.deny_callback_action
-            self.add_item(deny_button)
-        else:
-            # Show vote button
-            if threshold is not None:
-                deny_label = f"❌ Deny ({deny_count}/{threshold})"
-            else:
-                deny_label = f"❌ Deny ({deny_count})"
-            
-            deny_button = Button(
-                label=deny_label,
-                style=discord.ButtonStyle.danger,
-                custom_id=f"app_vote_deny_{app_data['message_id']}"
-            )
-            # Disable deny if guild is at max capacity
-            if is_guild_full:
-                deny_button.disabled = True
-            deny_button.callback = self.deny_callback
-            self.add_item(deny_button)
-        
-        # Add View Details button
-        view_details_button = Button(
-            label="📋 View Details",
-            style=discord.ButtonStyle.secondary,
-            custom_id=f"app_view_details_{app_data['message_id']}"
-        )
-        view_details_button.callback = self.view_details_callback
-        self.add_item(view_details_button)
-    
-    async def view_details_callback(self, interaction: discord.Interaction):
-        """Show ticket details view"""
-        from manage_tickets import TicketDetailViewStandalone, EmbedBuilder, calculate_threshold as calc_threshold
-        
-        apps = load_forwarded_apps()
-        app_data = apps.get(str(self.app_data['message_id']))
-        
-        if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
-            return
-        
-        threshold = app_data.get('threshold', calc_threshold(interaction.guild))
-        
-        # Build embed using utility class from manage_tickets
-        embed = EmbedBuilder.build_ticket_embed(app_data, interaction.guild, "Ticket Details")
-        
-        # Add vote fields
-        approve_field = EmbedBuilder.build_vote_display(app_data.get('approve_voters', []), threshold, "Approve")
-        deny_field = EmbedBuilder.build_vote_display(app_data.get('deny_voters', []), threshold, "Deny")
-        
-        embed.add_field(**approve_field)
-        embed.add_field(**deny_field)
-        embed.set_footer(text=f"Application submitted")
-        
-        # Create standalone detail view (no back button)
-        detail_view = TicketDetailViewStandalone(str(self.app_data['message_id']), {}, interaction.guild, interaction.user)
-        
-        await interaction.response.send_message(embed=embed, view=detail_view, ephemeral=True)
-    
-    # Copy the approve and deny voting callbacks from ApplicationVoteView
-    async def approve_callback(self, interaction: discord.Interaction):
-        """Handle approve vote"""
-        apps = load_forwarded_apps()
-        app_data = apps.get(str(self.app_data['message_id']))
-        
-        if not app_data:
-            await interaction.response.send_message("❌ Application data not found!", ephemeral=True)
-            return
-        
-        user_id = interaction.user.id
-        approve_voters = app_data.get('approve_voters', [])
-        deny_voters = app_data.get('deny_voters', [])
-        
-        if user_id in approve_voters:
-            await interaction.response.defer()
-            return
-        
-        # Don't allow switching votes if deny threshold was already reached
-        if app_data.get('deny_notified', False) and user_id in deny_voters:
-            await interaction.response.send_message("❌ You cannot switch your vote after the deny threshold has been reached!", ephemeral=True)
-            return
-        
-        if user_id in deny_voters:
-            deny_voters.remove(user_id)
-            app_data['deny_count'] = max(0, app_data.get('deny_count', 0) - 1)
-        
-        approve_voters.append(user_id)
-        app_data['approve_voters'] = approve_voters
-        app_data['deny_voters'] = deny_voters
-        app_data['approve_count'] = len(approve_voters)
-        
-        apps[str(self.app_data['message_id'])] = app_data
-        save_forwarded_apps(apps)
-        
-        await interaction.response.defer()
-        
-        # Check threshold - recreate view with updated counts
-        await self.check_and_update_mixed_view(interaction, app_data)
-    
-    async def deny_callback(self, interaction: discord.Interaction):
-        """Handle deny vote"""
-        apps = load_forwarded_apps()
-        app_data = apps.get(str(self.app_data['message_id']))
-        
-        if not app_data:
-            await interaction.response.send_message("❌ Application data not found!", ephemeral=True)
-            return
-        
-        user_id = interaction.user.id
-        approve_voters = app_data.get('approve_voters', [])
-        deny_voters = app_data.get('deny_voters', [])
-        
-        if user_id in deny_voters:
-            await interaction.response.defer()
-            return
-        
-        # Don't allow switching votes if approve threshold was already reached
-        if app_data.get('approve_notified', False) and user_id in approve_voters:
-            await interaction.response.send_message("❌ You cannot switch your vote after the approve threshold has been reached!", ephemeral=True)
-            return
-        
-        if user_id in approve_voters:
-            approve_voters.remove(user_id)
-            app_data['approve_count'] = max(0, app_data.get('approve_count', 0) - 1)
-        
-        deny_voters.append(user_id)
-        app_data['approve_voters'] = approve_voters
-        app_data['deny_voters'] = deny_voters
-        app_data['deny_count'] = len(deny_voters)
-        
-        apps[str(self.app_data['message_id'])] = app_data
-        save_forwarded_apps(apps)
-        
-        await interaction.response.defer()
-        
-        # Check threshold - recreate view with updated counts
-        await self.check_and_update_mixed_view(interaction, app_data)
-    
-    async def check_and_update_mixed_view(self, interaction: discord.Interaction, app_data):
-        """Check if threshold is met and update the mixed view"""
-        threshold = calculate_threshold(interaction.guild)
-        approve_count = app_data.get('approve_count', 0)
-        deny_count = app_data.get('deny_count', 0)
-        
-        approve_threshold_reached = approve_count >= threshold and not app_data.get('approve_notified', False)
-        deny_threshold_reached = deny_count >= threshold and not app_data.get('deny_notified', False)
-        
-        # Determine which buttons to show as actions
-        show_approve_action = approve_threshold_reached or app_data.get('approve_notified', False)
-        show_deny_action = deny_threshold_reached or app_data.get('deny_notified', False)
-        
-        # Create updated mixed view
-        updated_view = ApplicationMixedView(
-            app_data,
-            approve_count,
-            deny_count,
-            show_approve_action,
-            show_deny_action,
-            threshold=threshold
-        )
-        
-        try:
-            await interaction.message.edit(view=updated_view)
-            
-            # Mark as notified and send DMs if threshold just reached
-            if approve_threshold_reached or deny_threshold_reached:
-                apps = load_forwarded_apps()
-                if approve_threshold_reached:
-                    apps[str(app_data['message_id'])]['approve_notified'] = True
-                if deny_threshold_reached:
-                    apps[str(app_data['message_id'])]['deny_notified'] = True
-                save_forwarded_apps(apps)
-                
-                # Add to guild queue if guild member app and guild is full
-                if approve_threshold_reached and app_data.get('app_type', '').lower() != 'envoy':
-                    try:
-                        capacity = get_guild_capacity()
-                        if capacity['is_full']:
-                            username = extract_username_from_embeds(interaction.message.embeds)
-                            discord_id = app_data['user_id']
-                            member = interaction.guild.get_member(discord_id)
-                            is_veteran = False
-                            if member:
-                                is_veteran = any(role.id == VETERAN_ID for role in member.roles)
-                            pos, qt = add_to_queue(username or "Unknown", None, discord_id, is_veteran)
-                            apps = load_forwarded_apps()
-                            apps[str(app_data['message_id'])]['queued'] = True
-                            apps[str(app_data['message_id'])]['queue_position'] = pos
-                            apps[str(app_data['message_id'])]['queue_type'] = qt
-                            save_forwarded_apps(apps)
-                            print(f"[QUEUE] Added {username} to {qt} queue at position {pos} (approve threshold reached, guild full)")
-                            # Notify in the application channel
-                            try:
-                                queue_msg = f"⏳ <@{discord_id}> has been placed in the guild waiting queue (position #{pos}) as the guild is currently at full capacity."
-                                await interaction.channel.send(queue_msg)
-                            except Exception as notify_err:
-                                print(f"[WARN] Failed to send queue notification: {notify_err}")
-                    except Exception as e:
-                        print(f"[WARN] Failed to add player to queue at threshold: {e}")
-                
-                # Import send_threshold_notifications from ApplicationVoteView
-                vote_view = ApplicationVoteView(app_data)
-                await vote_view.send_threshold_notifications(interaction, app_data, approve_threshold_reached, deny_threshold_reached, approve_count, deny_count, threshold)
-        except Exception as e:
-            print(f"Error updating mixed view: {e}")
-    
-    # Copy the accept and deny action callbacks from ApplicationActionView
-    async def accept_callback(self, interaction: discord.Interaction):
-        """Handle accept action"""
-        user = interaction.guild.get_member(self.app_data['user_id'])
-        
-        if not user:
-            await interaction.response.send_message("❌ User not found in this server!", ephemeral=True)
-            return
-        
-        username = None
-        detected_pronoun = None
-        uuid = None
-        
-        try:
-            message = interaction.message
-            if message.embeds:
-                for embed in message.embeds:
-                    for field in embed.fields:
-                        field_name_lower = field.name.lower()
-                        
-                        if any(keyword in field_name_lower for keyword in ['username', 'ign', 'in game name', 'nickname', 'in-game name']):
-                            username = field.value.replace('`', '').strip()
-                            if username and username != "*No answer provided*":
-                                continue
-                        
-                        if 'pronoun' in field_name_lower:
-                            pronoun_value = field.value.replace('`', '').strip().lower()
-                            # Normalize the pronoun value by removing common separators and extra words
-                            normalized = pronoun_value.replace('/', ' ').replace('and', ' ').replace(',', ' ')
-                            # Remove extra whitespace
-                            normalized = ' '.join(normalized.split())
-                            
-                            # Define pronoun patterns to match
-                            pronoun_patterns = {
-                                'she/her': ['she her', 'she', 'her'],
-                                'he/him': ['he him', 'he', 'him'],
-                                'they/them': ['they them', 'they', 'them'],
-                                'it/its': ['it its', 'it', 'its']
-                            }
-                            
-                            # Try to match the normalized pronoun value
-                            for standard_form, patterns in pronoun_patterns.items():
-                                for pattern in patterns:
-                                    if pattern == normalized or pattern in normalized:
-                                        detected_pronoun = standard_form
-                                        break
-                                if detected_pronoun:
-                                    break
-        except Exception as e:
-            print(f"Error getting username/pronouns from embed: {e}")
-        
-        # Fetch UUID for the detected username if available (only for full apps)
-        if username and username != "*No answer provided*":
-            app_type = self.app_data['app_type']
-            # Only validate username for full apps (ex-cit and guild member), not for envoy apps
-            if app_type.lower() in ['ex-citizen', 'guild member']:
-                try:
-                    is_valid, error_msg, uuid = await validate_wynncraft_username(username)
-                    if not is_valid:
-                        print(f"[WARN] Could not validate username '{username}' from embed: {error_msg}")
-                        uuid = None
-                except Exception as e:
-                    print(f"[WARN] Error fetching UUID for username '{username}': {e}")
-                    uuid = None
-        
-        import sys
-        import os
-        from pathlib import Path
-        
-        current_dir = Path(__file__).parent
-        if str(current_dir) not in sys.path:
-            sys.path.insert(0, str(current_dir))
-        
-        # Import the role IDs from accept.py
-        from accept import VETERAN_ID, EX_CITIZEN_ID, UsernameModal, UsernameEditModal
-        
-        app_type = self.app_data['app_type']
-        
-        # Check if user is ex-member
-        user_role_ids = [role.id for role in user.roles]
-        is_ex_member = VETERAN_ID in user_role_ids or EX_CITIZEN_ID in user_role_ids
-        
-        app_type = self.app_data['app_type']
-        if app_type.lower() == 'ex-citizen' or is_ex_member:
-            # For ex-members, show rank selection modal instead of auto-assigning squire
-            from accept import UsernameModal
-            modal = UsernameModal(user, default_username=username, source_message_id=interaction.message.id, is_ex_citizen=True, from_application=True)
-            await interaction.response.send_modal(modal)
-            return
-        elif app_type.lower() == 'guild member':
-            rank_key = 'squire'
-            needs_pronoun = False
-        elif app_type.lower() == 'envoy':
-            rank_key = 'envoy'
-            needs_pronoun = True
-        else:
-            rank_key = 'squire'
-            needs_pronoun = False
-
-        modal = UsernameEditModal(user, username, rank_key, needs_pronoun, interaction.user.id, detected_pronoun, source_message_id=interaction.message.id, uuid=uuid)
-        await interaction.response.send_modal(modal)
-    
-    async def deny_callback_action(self, interaction: discord.Interaction):
-        """Handle deny action - same as ApplicationActionView.deny_callback"""
-        user = interaction.guild.get_member(self.app_data['user_id'])
-        app_type = self.app_data['app_type']
-        
-        if not user:
-            user_mention = f"<@{self.app_data['user_id']}>"
-        else:
-            user_mention = user.mention
-        
-        deny_message = f"Hello there {user_mention}! Unfortunately after reviewing your {app_type} application we have decided to refuse it due to <reason>. We thank you for your time and we hope you stay motivated and continue enjoying Wynncraft. We wish you the best, and perhaps in the future you may apply again when you meet the requirements."
-    
-        await interaction.response.send_message(
-            f"**Deny message for {user_mention}:**\n\n```{deny_message}```",
-            ephemeral=True
-        )
-        
-        apps = load_forwarded_apps()
-        
-        if str(self.app_data['message_id']) in apps:
-            # Only mark the flags as notified if thresholds were actually reached
-            threshold = calculate_threshold(interaction.guild)
-            app_data = apps[str(self.app_data['message_id'])]
-            
-            approve_count = app_data.get('approve_count', 0)
-            deny_count = app_data.get('deny_count', 0)
-            
-            if approve_count >= threshold:
-                apps[str(self.app_data['message_id'])]['approve_notified'] = True
-            if deny_count >= threshold:
-                apps[str(self.app_data['message_id'])]['deny_notified'] = True
-            
-            save_forwarded_apps(apps)
-            
-        # Mark as denied instead of removing
-        if str(self.app_data['message_id']) in apps:
-            apps[str(self.app_data['message_id'])]['status'] = 'denied'
-            apps[str(self.app_data['message_id'])]['buttons_enabled'] = False
-            save_forwarded_apps(apps)
-
-        # Remove from guild queue if queued
-        applicant_id = self.app_data.get('user_id')
-        if applicant_id:
-            removed = remove_from_queue(applicant_id)
-            if removed:
-                print(f"[QUEUE] Removed user {applicant_id} from guild queue (application denied)")
-
-        # Create a disabled version of the current view
-        app_data = apps.get(str(self.app_data['message_id']), self.app_data)
-        threshold = calculate_threshold(interaction.guild)
-        approve_count = app_data.get('approve_count', 0)
-        deny_count = app_data.get('deny_count', 0)
-
-        disabled_view = ApplicationMixedView(
-            app_data,
-            approve_count,
-            deny_count,
-            show_approve_action=(approve_count >= threshold or app_data.get('approve_notified', False)),
-            show_deny_action=(deny_count >= threshold or app_data.get('deny_notified', False)),
-            threshold=threshold
-        )
-
-        # Disable all buttons
-        for i, item in enumerate(disabled_view.children):
-            item.disabled = True
-
-        try:
-            await interaction.message.edit(view=disabled_view)
-        except Exception as e:
-            pass
 
 class AcceptConfirmView(discord.ui.View):
     """View for handling accept confirmation with blacklist double-confirm"""
@@ -1298,7 +810,7 @@ class AcceptConfirmView(discord.ui.View):
                             self.queue_type = queue_type
                             print(f"[QUEUE] Player {self.username} is in {queue_type} queue at position {queue_pos} (guild still full)")
                         else:
-                            print(f"[QUEUE] Player {self.username} was in queue but guild has open slots — showing normal accept message")
+                            print(f"[QUEUE] Player {self.username} was in queue but guild has open slots â€” showing normal accept message")
                         remove_from_queue(self.user.id)
                         print(f"[QUEUE] Removed {self.username} from queue (accepted)")
                 except Exception as e:
@@ -1350,6 +862,15 @@ class AcceptConfirmView(discord.ui.View):
             # This ensures it always runs when accept succeeds
             if self.source_message_id:
                 try:
+                    # Shared ticket helpers live in ticket_handler
+                    from ticket_handler import (
+                        load_forwarded_apps,
+                        save_forwarded_apps,
+                        calculate_threshold,
+                        ApplicationMixedView,
+                        ApplicationVoteView,
+                    )
+
                     apps = load_forwarded_apps()
                     
                     if str(self.source_message_id) in apps:
@@ -1381,12 +902,6 @@ class AcceptConfirmView(discord.ui.View):
                                     approve_count = app_data.get('approve_count', 0)
                                     deny_count = app_data.get('deny_count', 0)
                                     
-                                    # Check how many buttons are present to determine view type
-                                    button_count = sum(len(action_row.children) for action_row in message.components)
-                                    
-                                    # If 3 buttons, it could be either ApplicationVoteView or ApplicationMixedView
-                                    # ApplicationMixedView has Approve/Deny + View Details
-                                    # ApplicationVoteView also has Approve/Deny + View Details
                                     # Check if it's showing action buttons (Accept/Deny) or vote buttons
                                     is_mixed_view = False
                                     for action_row in message.components:
@@ -1407,7 +922,6 @@ class AcceptConfirmView(discord.ui.View):
                                         )
                                     else:
                                         # Recreate ApplicationVoteView (used for envoy and initial forwarding)
-                                        from ticket_handler import ApplicationVoteView
                                         disabled_view = ApplicationVoteView(
                                             app_data,
                                             approve_count,
@@ -1446,9 +960,9 @@ class AcceptConfirmView(discord.ui.View):
                 title="Permission Error",
                 description=f"Bot lacks permission to **{failed_action}**\n\n"
                         f"Please check:\n"
-                        f"• Bot has **Manage Roles** permission\n"
-                        f"• Bot has **Manage Nicknames** permission\n"
-                        f"• Bot's role is higher than the roles being assigned\n\n"
+                        f"â€¢ Bot has **Manage Roles** permission\n"
+                        f"â€¢ Bot has **Manage Nicknames** permission\n"
+                        f"â€¢ Bot's role is higher than the roles being assigned\n\n"
                         f"Error details: {str(e)}",
                 color=0xFF0000
             )
@@ -1621,7 +1135,7 @@ async def show_confirmation_embed(interaction: discord.Interaction, user: discor
     current_rank = get_user_highest_rank(user_role_ids)
     if is_demotion(current_rank, rank_config["main_role"]):
         demotion_embed = discord.Embed(
-            title="❌ Demotion Not Allowed",
+            title="âŒ Demotion Not Allowed",
             description=f"{user.mention} currently has the **{current_rank[1]}** rank.\n\n"
                     f"Cannot assign **{rank_config['display_name']}** as it would be a demotion.",
             color=0xFF0000,
@@ -1697,7 +1211,7 @@ async def show_confirmation_embed(interaction: discord.Interaction, user: discor
     
     # Add blacklist warning at the top if blacklisted
     if blacklisted:
-        blacklist_text = f"🚫 **BLACKLISTED USER DETECTED**\n"
+        blacklist_text = f"ðŸš« **BLACKLISTED USER DETECTED**\n"
         blacklist_text += f"**Reason:** {blacklist_reason if blacklist_reason else 'No reason provided'}\n"
         blacklist_text += f"**NameMC Profile:** [View Profile](https://namemc.com/search?q={username})\n"
         blacklist_text += f"\n**Please verify this is intentional before proceeding!**\n**You must click the confirm button TWICE.**"
@@ -1709,23 +1223,23 @@ async def show_confirmation_embed(interaction: discord.Interaction, user: discor
     
     if pronoun_value:
         if rank_key == "viscount":
-            pronoun_display = f"{pronoun_value} → {'Viscountess' if pronoun_value == 'she/her' else 'Viscount'}"
+            pronoun_display = f"{pronoun_value} â†’ {'Viscountess' if pronoun_value == 'she/her' else 'Viscount'}"
         elif rank_key == "envoy":
             if pronoun_value == "she/her":
-                pronoun_display = f"{pronoun_value} → Lady"
+                pronoun_display = f"{pronoun_value} â†’ Lady"
             elif pronoun_value == "he/him":
-                pronoun_display = f"{pronoun_value} → Sir"
+                pronoun_display = f"{pronoun_value} â†’ Sir"
             else:
-                pronoun_display = f"{pronoun_value} → Envoy"
+                pronoun_display = f"{pronoun_value} â†’ Envoy"
         else:
             pronoun_display = f"{pronoun_value}"
         embed.add_field(name="Pronoun", value=pronoun_display, inline=False)
     
     if roles_to_add_mentions:
-        embed.add_field(name="Roles to Add", value="\n".join([f"• {role}" for role in roles_to_add_mentions]), inline=False)
+        embed.add_field(name="Roles to Add", value="\n".join([f"â€¢ {role}" for role in roles_to_add_mentions]), inline=False)
     
     if roles_to_remove_mentions:
-        embed.add_field(name="Roles to Remove", value="\n".join([f"• {role}" for role in roles_to_remove_mentions]), inline=False)
+        embed.add_field(name="Roles to Remove", value="\n".join([f"â€¢ {role}" for role in roles_to_remove_mentions]), inline=False)
     
     embed.add_field(name="New Nickname", value=f"`{new_nickname}`", inline=False)
     embed.add_field(name="Important", value="This action cannot be undone. Please verify all information is correct before confirming.", inline=False)
@@ -1742,7 +1256,7 @@ async def show_confirmation_embed(interaction: discord.Interaction, user: discor
     )
     
     # Edit the ephemeral message and send the embed publicly with buttons
-    await interaction.response.edit_message(content="✅ Rank assignment details posted!", view=None)
+    await interaction.response.edit_message(content="âœ… Rank assignment details posted!", view=None)
 
     # If we're in a thread, send to the parent channel instead
     target_channel = interaction.channel

@@ -10,7 +10,11 @@ from utils.permissions import has_roles
 from utils.paths import DB_DIR
 from utils.esi_points import init_points_database, save_points
 
-REQUIRED_ROLES = []
+REQUIRED_ROLES = [
+    554514823191199747,   # Archduke
+    1396112289832243282,  # Grand Duke
+    591765870272053261    # Duke
+]
 
 SNIPES_DB = str(DB_DIR / "claim_snipes.db")
 

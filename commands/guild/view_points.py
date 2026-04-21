@@ -21,9 +21,7 @@ API_TRACKING_FOLDER = DB_FOLDER / "api_tracking"
 # HR guild ranks
 HR_RANKS = {"strategist", "chief", "owner"}
 
-
 #  Helpers
-
 def _get_guild_ranks() -> dict[str, str]:
     """Return {lowercased_username: lowercased_guild_rank} from the latest API DB."""
     db = _get_latest_api_db()

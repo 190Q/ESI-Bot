@@ -27,6 +27,10 @@ load_dotenv()
 GUILDS = ["ESI"]
 FETCH_INTERVAL_SECONDS = 300 # 5 minutes
 
+# Sanity caps: a player realistically cannot gain more than this many
+MAX_NEW_WARS_PER_CYCLE = 20
+MAX_NEW_GRAIDS_PER_CYCLE = 5
+
 # Badge role definitions (same as command file)
 BADGE_ROLES = {
     "War Badges": {
@@ -354,6 +358,21 @@ def award_points_from_diff(member_stats: list, guild_members: list):
         new_graids = max(0, current_graids - prev_graids)
 
         player = [{"uuid": uuid, "username": username}]
+
+        # Sanity check: skip point awards if the diff is impossibly large
+        if new_wars > MAX_NEW_WARS_PER_CYCLE:
+            print(
+                f"[POINTS] Skipping {username}: +{new_wars} new wars exceeds "
+                f"cap of {MAX_NEW_WARS_PER_CYCLE} (likely data anomaly)."
+            )
+            new_wars = 0
+
+        if new_graids > MAX_NEW_GRAIDS_PER_CYCLE:
+            print(
+                f"[POINTS] Skipping {username}: +{new_graids} new raids exceeds "
+                f"cap of {MAX_NEW_GRAIDS_PER_CYCLE} (likely data anomaly)."
+            )
+            new_graids = 0
 
         if new_wars > 0:
             save_points(player, new_wars * 1, reason="War")

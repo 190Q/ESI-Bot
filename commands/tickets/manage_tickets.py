@@ -2750,6 +2750,29 @@ def build_debug_embed(message_id, guild):
     return embed, app_data
 
 
+async def _notify_slot_opened_safe(bot_instance, open_slots: int) -> int:
+    """Lazy‑import and call ``guild_tracker.notify_slot_opened``.
+
+    Returns 0 on any failure (missing bot, import error, ...). Keeps the
+    debug buttons working even if guild_tracker fails to load for some reason.
+    """
+    if bot_instance is None or open_slots <= 0:
+        return 0
+    try:
+        _guild_dir = str(Path(__file__).resolve().parent.parent / "guild")
+        if _guild_dir not in sys.path:
+            sys.path.insert(0, _guild_dir)
+        from guild_tracker import notify_slot_opened
+    except Exception as e:
+        print(f"[DEBUG] Could not import notify_slot_opened: {e}")
+        return 0
+    try:
+        return await notify_slot_opened(bot_instance, open_slots)
+    except Exception as e:
+        print(f"[DEBUG] notify_slot_opened failed: {e}")
+        return 0
+
+
 async def _edit_forwarded_message_view(interaction, app_data, forced_view=None):
     """Re‑render the forwarded application message with an up‑to‑date view."""
     try:
@@ -2786,6 +2809,48 @@ async def _edit_forwarded_message_view(interaction, app_data, forced_view=None):
     except Exception as e:
         print(f"[DEBUG] Failed to re‑render forwarded message view: {e}")
         return False
+
+
+async def _rerender_top_queue_tickets(interaction, top_count: int) -> list:
+    """Re‑render the forwarded messages for the top ``top_count`` queued applicants.
+
+    This is what the debug capacity buttons actually need: when the simulated
+    open‑slot count changes, the ticket(s) that should flip between
+    "Accept Application" and "⏳ Guild Full" are the *invitable* ones — the
+    first ``top_count`` entries of the queue (veterans first) — **not** the
+    ticket currently being debugged.
+
+    Returns the list of message_ids whose forwarded views were re‑rendered.
+    """
+    if top_count <= 0 or interaction is None:
+        return []
+
+    queue = load_queue()
+    ordered = [(e, 'veteran') for e in queue.get('veteran', [])] + \
+              [(e, 'normal') for e in queue.get('normal', [])]
+    invitable = ordered[:top_count]
+    if not invitable:
+        return []
+
+    apps = load_forwarded_apps()
+    # discord_id -> (message_id, app_data). First match wins in the unlikely
+    by_discord_id = {}
+    for msg_id, entry in apps.items():
+        did = entry.get('user_id')
+        if did is not None and did not in by_discord_id:
+            by_discord_id[did] = (msg_id, entry)
+
+    rendered = []
+    for entry, _qt in invitable:
+        did = entry.get('discord_id')
+        match = by_discord_id.get(did)
+        if not match:
+            continue
+        msg_id, app_data = match
+        ok = await _edit_forwarded_message_view(interaction, app_data)
+        if ok:
+            rendered.append(msg_id)
+    return rendered
 
 
 class DebugTicketView(View):
@@ -2995,7 +3060,7 @@ class DebugTicketView(View):
         app_data['approve_notified'] = False
         app_data['deny_notified'] = False
         app_data['buttons_enabled'] = True
-        for key in ('status', 'queued', 'queue_position', 'queue_type', 'queue_locked'):
+        for key in ('status', 'queued', 'queue_position', 'queue_type', 'queue_locked', 'queue_notified'):
             app_data.pop(key, None)
         apps[self.message_id] = app_data
         save_forwarded_apps(apps)
@@ -3178,9 +3243,20 @@ class DebugTicketView(View):
         save_forwarded_apps(apps)
 
         await _edit_forwarded_message_view(interaction, app_data)
+
+        # Message the applicant in their own ticket channel
+        try:
+            from ticket_handler import notify_applicant_queued
+            notified = await notify_applicant_queued(interaction.guild, self.message_id)
+        except Exception as e:
+            notified = False
+            print(f"[DEBUG] notify_applicant_queued failed: {e}")
+
+        suffix = " Applicant notified in ticket channel." if notified else \
+            " (Applicant NOT notified — either already notified or no ticket channel.)"
         await self._refresh_panel(
             interaction,
-            note=f"Forced add to `{qt}` queue at position `#{pos}` (veteran: `{is_veteran}`).",
+            note=f"Forced add to `{qt}` queue at position `#{pos}` (veteran: `{is_veteran}`).{suffix}",
         )
 
     async def force_queue_remove_callback(self, interaction: discord.Interaction):
@@ -3203,7 +3279,7 @@ class DebugTicketView(View):
             await self._refresh_panel(interaction, note=f"Queue remove failed: `{e}`")
             return
 
-        for key in ('queued', 'queue_position', 'queue_type', 'queue_locked'):
+        for key in ('queued', 'queue_position', 'queue_type', 'queue_locked', 'queue_notified'):
             app_data.pop(key, None)
         apps[self.message_id] = app_data
         save_forwarded_apps(apps)
@@ -3234,7 +3310,10 @@ class DebugTicketView(View):
         )
 
     async def open_one_slot_callback(self, interaction: discord.Interaction):
-        """Bump the simulated open‑slot count by +1 (creates an override if none yet)."""
+        """Bump the simulated open‑slot count by +1 and fire the real
+        "🔓 Guild Slot(s) Opened" notification, so the debug path is indistinguishable
+        from a genuine member‑leave opening a slot.
+        """
         if not self._guard(interaction):
             await self._reject_non_owner(interaction)
             return
@@ -3242,18 +3321,30 @@ class DebugTicketView(View):
         await interaction.response.defer()
 
         current = get_capacity_override() or {}
-        new_open = int(current.get('open_slots', 0)) + 1
+        previous_open = int(current.get('open_slots', 0))
+        new_open = previous_open + 1
         set_capacity_override(new_open)
 
-        # Re‑render the forwarded message since the buttons' disabled state depends on capacity.
-        apps = load_forwarded_apps()
-        app_data = apps.get(self.message_id)
-        if app_data:
-            await _edit_forwarded_message_view(interaction, app_data)
+        # Re-render the forwarded messages for the top-N queue entries
+        rendered = await _rerender_top_queue_tickets(interaction, max(previous_open, new_open))
+
+        # Fire the "slot opened" embed
+        sent = await _notify_slot_opened_safe(interaction.client, 1)
+        note_suffix = (
+            f" Slot‑opened notification sent to **{sent}** forwarding channel(s)."
+            if sent else
+            " (No slot‑opened notification was sent - queue empty or no forwarding channel configured.)"
+        )
+        if rendered:
+            note_suffix += f" Refreshed the top **{len(rendered)}** queued ticket view(s)."
 
         await self._refresh_panel(
             interaction,
-            note=f"Capacity override set to `{new_open}` open slot(s). `get_guild_capacity()` now reports `is_full = False`.",
+            note=(
+                f"Capacity override set to `{new_open}` open slot(s). "
+                f"`get_guild_capacity()` now reports `is_full = False`."
+                + note_suffix
+            ),
         )
 
     async def force_full_callback(self, interaction: discord.Interaction):
@@ -3264,16 +3355,21 @@ class DebugTicketView(View):
 
         await interaction.response.defer()
 
+        previous_override = get_capacity_override() or {}
+        previous_open = int(previous_override.get('open_slots', 0))
+
         set_capacity_override(0)
 
-        apps = load_forwarded_apps()
-        app_data = apps.get(self.message_id)
-        if app_data:
-            await _edit_forwarded_message_view(interaction, app_data)
+        # Re-render the tickets that were previously invitable
+        rendered = await _rerender_top_queue_tickets(interaction, previous_open)
 
+        suffix = (
+            f" Refreshed the top **{len(rendered)}** queued ticket view(s)."
+            if rendered else ""
+        )
         await self._refresh_panel(
             interaction,
-            note="Capacity override set to `0` open slots — simulating a full guild.",
+            note=f"Capacity override set to `0` open slots - simulating a full guild.{suffix}",
         )
 
     async def clear_capacity_override_callback(self, interaction: discord.Interaction):
@@ -3284,18 +3380,21 @@ class DebugTicketView(View):
 
         await interaction.response.defer()
 
+        previous_override = get_capacity_override() or {}
+        previous_open = int(previous_override.get('open_slots', 0))
+
         cleared = clear_capacity_override()
 
-        apps = load_forwarded_apps()
-        app_data = apps.get(self.message_id)
-        if app_data:
-            await _edit_forwarded_message_view(interaction, app_data)
+        # Capacity may have changed either direction
+        rendered = await _rerender_top_queue_tickets(interaction, max(previous_open, 1))
 
-        await self._refresh_panel(
-            interaction,
-            note="Capacity override cleared — real guild capacity is back in effect." if cleared
-            else "No capacity override was active.",
+        suffix = (
+            f" Refreshed the top **{len(rendered)}** queued ticket view(s)."
+            if rendered else ""
         )
+        base = "Capacity override cleared - real guild capacity is back in effect." if cleared \
+            else "No capacity override was active."
+        await self._refresh_panel(interaction, note=base + suffix)
 
 
 class CapacityOverrideModal(discord.ui.Modal, title="Simulate Guild Capacity"):
@@ -3332,21 +3431,42 @@ class CapacityOverrideModal(discord.ui.Modal, title="Simulate Guild Capacity"):
             )
             return
 
+        # Determine how many slots just "opened" versus the previous override
+        previous_override = get_capacity_override() or {}
+        previous_open = int(previous_override.get('open_slots', 0))
+
         stored = set_capacity_override(open_slots)
 
-        apps = load_forwarded_apps()
-        app_data = apps.get(self.message_id)
-        if app_data:
-            await _edit_forwarded_message_view(interaction, app_data)
+        # Re-render the top queued tickets whose invitable status could have changed
+        rendered = await _rerender_top_queue_tickets(
+            interaction, max(previous_open, stored['open_slots'])
+        )
+
+        delta = stored['open_slots'] - previous_open
+        sent = 0
+        if delta > 0:
+            sent = await _notify_slot_opened_safe(interaction.client, delta)
 
         embed, _ = build_debug_embed(self.message_id, self.guild)
         if embed is None:
             await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
             return
 
-        embed.description = (embed.description or "") + (
-            f"\n\nℹ️ Capacity override set to `{stored['open_slots']}` open slot(s)."
-        )
+        note = f"Capacity override set to `{stored['open_slots']}` open slot(s)."
+        if delta > 0:
+            if sent:
+                note += f" Simulated `{delta}` slot(s) opening - notified **{sent}** forwarding channel(s)."
+            else:
+                note += (
+                    f" Simulated `{delta}` slot(s) opening, but no notification was sent "
+                    "(queue empty or no forwarding channel configured)."
+                )
+        elif delta < 0:
+            note += f" ({abs(delta)} slot(s) closed; no slot‑opened embed sent.)"
+        if rendered:
+            note += f" Refreshed the top **{len(rendered)}** queued ticket view(s)."
+
+        embed.description = (embed.description or "") + f"\n\nℹ️ {note}"
         view = DebugTicketView(self.message_id, self.tickets_data, self.guild, self.user)
         await interaction.response.edit_message(embed=embed, view=view)
 

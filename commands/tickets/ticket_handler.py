@@ -508,6 +508,74 @@ async def _reply_via_thread_fallback(interaction, app_data, text):
         return False
 
 
+async def notify_applicant_queued(guild, message_id) -> bool:
+    """Message the applicant in their own ticket channel that they've been queued.
+
+    Idempotent: sets ``queue_notified`` on the ticket entry and refuses to post
+    a second message while that flag is still set. Callers that "un‑queue" the
+    applicant (e.g. queue remove / reset) must clear ``queue_notified`` if they
+    want a subsequent re‑queue to notify again.
+
+    Returns ``True`` if a new message was posted, ``False`` otherwise.
+    """
+    if guild is None or message_id is None:
+        return False
+
+    apps = load_forwarded_apps()
+    app_data = apps.get(str(message_id))
+    if not app_data:
+        return False
+    if app_data.get('queue_notified'):
+        return False
+
+    ticket_channel_id = app_data.get('ticket_channel_id')
+    if not ticket_channel_id:
+        return False
+
+    ticket_ch = guild.get_channel(ticket_channel_id) or guild.get_thread(ticket_channel_id)
+    if ticket_ch is None:
+        print(f"[QUEUE] notify_applicant_queued: ticket channel {ticket_channel_id} not found")
+        return False
+
+    discord_id = app_data['user_id']
+    queue_pos = app_data.get('queue_position', '?')
+    queue_type = app_data.get('queue_type', 'normal')
+
+    # Best‑effort capacity info for a friendlier message.
+    try:
+        capacity = get_guild_capacity()
+        member_count = capacity.get('player_count')
+        max_slots = capacity.get('max_slots')
+    except Exception:
+        member_count = None
+        max_slots = None
+
+    if member_count is not None and max_slots is not None:
+        capacity_phrase = f"currently at capacity ({member_count}/{max_slots})"
+    else:
+        capacity_phrase = "currently at full capacity"
+
+    msg = (
+        f"<@{discord_id}> your application was approved, but the guild is "
+        f"{capacity_phrase}. You've been added to the queue "
+        f"at position **#{queue_pos}** and will be notified when a slot opens up."
+    )
+
+    try:
+        await ticket_ch.send(msg)
+    except Exception as e:
+        print(f"[QUEUE] Failed to send queue notification in ticket channel {ticket_channel_id}: {e}")
+        return False
+
+    # Mark as notified AFTER a successful send so a failure leaves the flag
+    apps = load_forwarded_apps()
+    entry = apps.get(str(message_id))
+    if entry is not None:
+        entry['queue_notified'] = True
+        save_forwarded_apps(apps)
+    return True
+
+
 async def _maybe_queue_approved_guild_app(interaction, app_data, approve_threshold_reached):
     """If the guild is at capacity when the approve threshold is reached, add the
     applicant to the waiting queue and notify the channel. No‑op otherwise.
@@ -549,6 +617,12 @@ async def _maybe_queue_approved_guild_app(interaction, app_data, approve_thresho
             await _reply_via_thread_fallback(interaction, app_data, queue_msg)
         except Exception as notify_err:
             print(f"[WARN] Failed to send queue notification: {notify_err}")
+
+        # Message the applicant directly in their ticket channel
+        try:
+            await notify_applicant_queued(interaction.guild, app_data['message_id'])
+        except Exception as notify_err:
+            print(f"[WARN] Failed to send ticket‑channel queue notice: {notify_err}")
         return True
     except Exception as e:
         print(f"[WARN] Failed to add player to queue at threshold: {e}")
@@ -963,6 +1037,11 @@ class DenyReasonModal(Modal, title="Deny Reason"):
                 removed = remove_from_queue(applicant_id)
                 if removed:
                     print(f"[QUEUE] Removed user {applicant_id} from guild queue (application denied)")
+                # Clear queue_notified so a future re-queue will notify again
+                apps = load_forwarded_apps()
+                entry = apps.get(str(self.app_data['message_id']))
+                if entry is not None and entry.pop('queue_notified', None) is not None:
+                    save_forwarded_apps(apps)
             
             app_data = apps.get(str(self.app_data['message_id']), self.app_data)
             threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -1278,6 +1357,7 @@ class ApplicationActionView(View):
             apps[str(self.app_data['message_id'])]['approve_notified'] = True
             apps[str(self.app_data['message_id'])]['deny_notified'] = True
             apps[str(self.app_data['message_id'])]['status'] = 'denied'
+            apps[str(self.app_data['message_id'])].pop('queue_notified', None)
             save_forwarded_apps(apps)
         
         # Remove user from guild queue if they were queued

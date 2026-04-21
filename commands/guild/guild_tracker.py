@@ -475,11 +475,93 @@ async def send_batched_notifications(channel, events):
         print(f"[GUILD NOTIFY] Failed to send notification: {e}")
 
 
+def _load_forwarding_channel_ids():
+    """Return the set of forwarding channel IDs declared in ticket panels."""
+    forwarding_ids = set()
+    try:
+        if TICKET_PANELS_FILE.exists():
+            with open(TICKET_PANELS_FILE, "r", encoding="utf-8") as f:
+                panels = json.load(f)
+            for panel_data in panels.values():
+                fwd_id = panel_data.get("forwarding_channel_id")
+                if fwd_id:
+                    forwarding_ids.add(fwd_id)
+    except Exception as e:
+        print(f"[QUEUE] Failed to load ticket panels: {e}")
+    return forwarding_ids
+
+
+async def notify_slot_opened(bot_instance, open_slots: int) -> int:
+    """Build and send the "🔓 Guild Slot(s) Opened" embed to every ticket
+    forwarding channel.
+
+    Returns the number of channels that were notified. Returns ``0`` when the
+    queue is empty or there are no forwarding channels configured.
+
+    This is the same embed produced by the real member‑leave flow; the debug
+    capacity‑override path calls it directly so simulating a slot opening is
+    indistinguishable from a genuine leave.
+    """
+    if open_slots <= 0 or bot_instance is None:
+        return 0
+
+    try:
+        from guild_queue import load_queue
+    except Exception as e:
+        print(f"[QUEUE] notify_slot_opened: failed to import load_queue: {e}")
+        return 0
+
+    queue = load_queue()
+    veteran_queue = queue.get("veteran", [])
+    normal_queue = queue.get("normal", [])
+    if not (veteran_queue or normal_queue):
+        print("[QUEUE] notify_slot_opened: queue is empty, nothing to announce")
+        return 0
+
+    ordered = [(e, "veteran") for e in veteran_queue] + [(e, "normal") for e in normal_queue]
+    invitable = ordered[:open_slots]
+    if not invitable:
+        return 0
+
+    lines = []
+    for entry, _qt in invitable:
+        escaped = discord.utils.escape_markdown(entry.get("username", "Unknown"))
+        lines.append(f"**{escaped}** (<@{entry['discord_id']}>)")
+
+    embed = discord.Embed(
+        title="🔓 Guild Slot(s) Opened",
+        description=(
+            f"**{open_slots}** slot(s) are now available.\n\n"
+            + "\n".join(lines)
+        ),
+        color=0x00FF00,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Use /gu invite <username> to invite them")
+
+    forwarding_ids = _load_forwarding_channel_ids()
+    if not forwarding_ids:
+        print("[QUEUE] notify_slot_opened: no forwarding channels configured")
+        return 0
+
+    sent = 0
+    for ch_id in forwarding_ids:
+        ch = bot_instance.get_channel(ch_id)
+        if ch:
+            await ch.send(embed=embed)
+            sent += 1
+        else:
+            print(f"[QUEUE] notify_slot_opened: channel {ch_id} not found")
+
+    print(f"[QUEUE] notify_slot_opened: notified {len(invitable)} player(s) in {sent} channel(s) (open_slots={open_slots})")
+    return sent
+
+
 async def _check_queue_after_leaves(notification_channel, num_leaves=1):
     """After member leaves, check if queue members can now be invited.
     Only notifies if the guild was previously at capacity."""
     try:
-        from guild_queue import load_queue, get_max_slots_for_level
+        from guild_queue import get_max_slots_for_level
 
         # Read current member count and level from tracked guild data
         if not DATA_FILE.exists():
@@ -502,64 +584,7 @@ async def _check_queue_after_leaves(notification_channel, num_leaves=1):
         if previous_count < max_slots:
             return
 
-        queue = load_queue()
-        veteran_queue = queue.get("veteran", [])
-        normal_queue = queue.get("normal", [])
-        total_queued = len(veteran_queue) + len(normal_queue)
-        if total_queued == 0:
-            return
-
-        # Build ordered list: veterans first, then normal
-        ordered = [(e, "veteran") for e in veteran_queue] + [(e, "normal") for e in normal_queue]
-        # People who can be invited = first open_slots entries
-        invitable = ordered[:open_slots]
-        if not invitable:
-            return
-
-        # Build the embed once
-        lines = []
-        for entry, qt in invitable:
-            escaped = discord.utils.escape_markdown(entry.get("username", "Unknown"))
-            lines.append(f"**{escaped}** (<@{entry['discord_id']}>)")
-
-        embed = discord.Embed(
-            title="🔓 Guild Slot(s) Opened",
-            description=(
-                f"**{open_slots}** slot(s) are now available.\n\n"
-                + "\n".join(lines)
-            ),
-            color=0x00FF00,
-            timestamp=datetime.now(timezone.utc)
-        )
-        embed.set_footer(text="Use /gu invite <username> to invite them")
-
-        # Send to all forwarding channels from ticket panels
-        forwarding_ids = set()
-        try:
-            if TICKET_PANELS_FILE.exists():
-                with open(TICKET_PANELS_FILE, "r") as f:
-                    panels = json.load(f)
-                for panel_data in panels.values():
-                    fwd_id = panel_data.get("forwarding_channel_id")
-                    if fwd_id:
-                        forwarding_ids.add(fwd_id)
-        except Exception as e:
-            print(f"[QUEUE] Failed to load ticket panels: {e}")
-
-        if not forwarding_ids:
-            print("[QUEUE] No forwarding channels found in ticket panels")
-            return
-
-        sent = 0
-        for ch_id in forwarding_ids:
-            channel = bot.get_channel(ch_id)
-            if channel:
-                await channel.send(embed=embed)
-                sent += 1
-            else:
-                print(f"[QUEUE] Forwarding channel {ch_id} not found")
-
-        print(f"[QUEUE] Notified {len(invitable)} invitable player(s) in {sent} channel(s) — {open_slots} open slot(s)")
+        await notify_slot_opened(bot, open_slots)
     except Exception as e:
         print(f"[QUEUE] Error checking queue after leaves: {e}")
         import traceback
@@ -642,6 +667,8 @@ async def _check_queue_after_joins(notification_channel):
             app_data['queue_locked'] = True
             app_data['queue_position'] = queue_pos
             app_data['queue_type'] = queue_type
+            # Persist the updated queue fields before notifying
+            save_forwarded_apps(apps)
             queued_entries.append((msg_id, app_data, queue_pos, queue_type, username, discord_id))
 
             # Update the forwarded message view to show locked state
@@ -667,16 +694,8 @@ async def _check_queue_after_joins(notification_channel):
             # Notify the user in their ticket channel
             try:
                 if guild:
-                    ticket_ch = guild.get_channel(app_data.get('ticket_channel_id'))
-                    if not ticket_ch:
-                        ticket_ch = guild.get_thread(app_data.get('ticket_channel_id'))
-                    if ticket_ch:
-                        await ticket_ch.send(
-                            f"<@{discord_id}> your application was approved, but the guild is "
-                            f"currently at capacity ({member_count}/{max_slots}). You've been "
-                            f"added to the **{queue_type}** queue at position **#{queue_pos}** "
-                            f"and will be notified when a slot opens up."
-                        )
+                    from ticket_handler import notify_applicant_queued
+                    await notify_applicant_queued(guild, msg_id)
             except Exception as e:
                 print(f"[QUEUE] Failed to notify ticket channel for {discord_id}: {e}")
 
@@ -704,17 +723,7 @@ async def _check_queue_after_joins(notification_channel):
             timestamp=datetime.now(timezone.utc),
         )
 
-        forwarding_ids = set()
-        try:
-            if TICKET_PANELS_FILE.exists():
-                with open(TICKET_PANELS_FILE, "r") as f:
-                    panels = json.load(f)
-                for panel_data in panels.values():
-                    fwd_id = panel_data.get("forwarding_channel_id")
-                    if fwd_id:
-                        forwarding_ids.add(fwd_id)
-        except Exception:
-            pass
+        forwarding_ids = _load_forwarding_channel_ids()
 
         for ch_id in forwarding_ids:
             ch = bot.get_channel(ch_id)

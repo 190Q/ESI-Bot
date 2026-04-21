@@ -48,7 +48,7 @@ def _calc_le(username: str, total_points: int, history: list[dict], guild_ranks:
     """
     rank = guild_ranks.get(username.lower(), "")
     if rank in HR_RANKS:
-        real_points = sum(r["points_gained"] for r in history if r["reason"].lower() not in {"guild raid", "war"})
+        real_points = sum(r["points_gained"] for r in history if r["reason"].lower() not in {"guild raid", "war"} and not r["reason"].lower().startswith("quest"))
         return real_points / 10
     return total_points / 10
 

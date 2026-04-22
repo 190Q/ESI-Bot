@@ -101,6 +101,7 @@ API_TRACKING_FOLDER = DB_FOLDER / "api_tracking"
 RECRUITED_DB_PATH = DB_FOLDER / "recruited_data.db"
 ASPECTS_FILE = BASE_DIR / "data/aspects.json"
 POINTS_BASELINE_DB = DB_FOLDER / "points_baseline.db"
+QUEUE_FILE = BASE_DIR / "data/guild_member_queue.json"
 
 # Storage constants
 SIZE_LIMIT_BYTES = 20 * 1024 * 1024 * 1024  # 20GB
@@ -233,6 +234,38 @@ def check_and_cleanup_storage():
             print(f"[API] Deleted old folder: {folder.name} ({folder_size / (1024**3):.2f} GB)")
         except Exception as e:
             print(f"[API] Failed to delete {folder}: {e}")
+
+
+def get_queue_counts() -> dict:
+    """Return current queue counts from guild_member_queue.json."""
+    counts = {"veteran_count": 0, "normal_count": 0, "total_count": 0}
+
+    if not QUEUE_FILE.exists():
+        return counts
+
+    try:
+        with open(QUEUE_FILE, "r") as f:
+            queue_data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return counts
+
+    # Legacy format: flat list = normal queue
+    if isinstance(queue_data, list):
+        counts["normal_count"] = len(queue_data)
+        counts["total_count"] = len(queue_data)
+        return counts
+
+    if isinstance(queue_data, dict):
+        veteran = queue_data.get("veteran", [])
+        normal = queue_data.get("normal", [])
+        veteran_count = len(veteran) if isinstance(veteran, list) else 0
+        normal_count = len(normal) if isinstance(normal, list) else 0
+
+        counts["veteran_count"] = veteran_count
+        counts["normal_count"] = normal_count
+        counts["total_count"] = veteran_count + normal_count
+
+    return counts
 
 
 def update_aspects_from_guild_data(guild_members):
@@ -684,6 +717,26 @@ class FetchAPI:
             )
             if guild_level is not None:
                 print(f"[API] Saved guild level: {guild_level}")
+
+            # Save current queue counts
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS queue_stats (
+                    veteran_count INTEGER NOT NULL DEFAULT 0,
+                    normal_count INTEGER NOT NULL DEFAULT 0,
+                    total_count INTEGER NOT NULL DEFAULT 0,
+                    timestamp TEXT NOT NULL
+                )
+            ''')
+            queue_counts = get_queue_counts()
+            cursor.execute(
+                "INSERT INTO queue_stats (veteran_count, normal_count, total_count, timestamp) VALUES (?, ?, ?, ?)",
+                (
+                    queue_counts["veteran_count"],
+                    queue_counts["normal_count"],
+                    queue_counts["total_count"],
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
             
             # Create tables
             cursor.execute('''

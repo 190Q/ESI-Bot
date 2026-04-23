@@ -233,5 +233,6 @@ tracked_guild.json
 username_matches.json
 user_bans.json
 guild_capacity_override.json
+pending_invites.json
 
 playtime_tracking.db.filepart

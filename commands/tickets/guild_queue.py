@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
 
 # Paths relative to ESI-Bot root
@@ -13,7 +13,11 @@ GUILD_SLOTS_FILE = DATA_DIR / "guild_member_slots.json"
 TRACKED_GUILD_FILE = DATA_DIR / "tracked_guild.json"
 QUEUE_FILE = DATA_DIR / "guild_member_queue.json"
 CAPACITY_OVERRIDE_FILE = DATA_DIR / "guild_capacity_override.json"
+PENDING_INVITES_FILE = DATA_DIR / "pending_invites.json"
 VETERAN_ROLE_ID = 914422269802070057
+
+# A player stays on the pending-invite list for this many days after being accepted
+PENDING_INVITE_TTL_DAYS = 3
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +110,8 @@ def _apply_capacity_override(result: dict) -> dict:
         **result,
         "max_slots": max_slots,
         "player_count": player_count,
+        "effective_player_count": player_count,
+        "pending_count": 0,
         "is_full": player_count >= max_slots,
         "capacity_overridden": True,
         "override": {"open_slots": open_slots},
@@ -116,44 +122,230 @@ def get_guild_capacity() -> dict:
     """Read tracked_guild.json and return capacity info.
 
     Returns a dict with keys:
-        guild_level, player_count, max_slots, is_full
+        guild_level, player_count, pending_count, effective_player_count,
+        max_slots, is_full
     and, when a debug override is active, ``capacity_overridden`` and ``override``.
+
+    ``effective_player_count`` = ``player_count`` + ``pending_count``. Players
+    that were accepted and handed a ``/gu invite`` command but have not yet
+    joined the guild in-game are tracked as pending invites and reserve a slot
+    for up to ``PENDING_INVITE_TTL_DAYS`` days. ``is_full`` is based on the
+    effective count so we don't over-invite.
     """
+    pending_count = get_pending_invites_count()
+
     if not TRACKED_GUILD_FILE.exists():
-        return _apply_capacity_override(
-            {"guild_level": None, "player_count": None, "max_slots": None, "is_full": False}
-        )
+        return _apply_capacity_override({
+            "guild_level": None,
+            "player_count": None,
+            "pending_count": pending_count,
+            "effective_player_count": None,
+            "max_slots": None,
+            "is_full": False,
+        })
 
     try:
         with open(TRACKED_GUILD_FILE, "r") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError):
-        return _apply_capacity_override(
-            {"guild_level": None, "player_count": None, "max_slots": None, "is_full": False}
-        )
+        return _apply_capacity_override({
+            "guild_level": None,
+            "player_count": None,
+            "pending_count": pending_count,
+            "effective_player_count": None,
+            "max_slots": None,
+            "is_full": False,
+        })
 
     previous = data.get("previous_data", {})
     guild_level = previous.get("level")
     members = previous.get("members", {})
     player_count = sum(len(rank_list) for rank_list in members.values())
+    effective_player_count = player_count + pending_count
 
     if guild_level is None:
-        return _apply_capacity_override(
-            {"guild_level": None, "player_count": player_count, "max_slots": None, "is_full": False}
-        )
+        return _apply_capacity_override({
+            "guild_level": None,
+            "player_count": player_count,
+            "pending_count": pending_count,
+            "effective_player_count": effective_player_count,
+            "max_slots": None,
+            "is_full": False,
+        })
 
     max_slots = get_max_slots_for_level(guild_level)
     return _apply_capacity_override({
         "guild_level": guild_level,
         "player_count": player_count,
+        "pending_count": pending_count,
+        "effective_player_count": effective_player_count,
         "max_slots": max_slots,
-        "is_full": player_count >= max_slots,
+        "is_full": effective_player_count >= max_slots,
     })
 
 
 def is_guild_full() -> bool:
     """Return True if the guild is at or over max capacity."""
     return get_guild_capacity()["is_full"]
+
+
+# ---------------------------------------------------------------------------
+# Pending invites
+#
+# When a ticket is accepted and the recruiter is handed a ``/gu invite`` command,
+# the accepted player is added here. They reserve a slot toward the effective
+# player count until either:
+#   * the guild tracker sees them join the guild in-game (cleared by
+#     ``remove_pending_invite_by_uuid`` / ``remove_pending_invite_by_username``),
+#   * a staff member removes them manually (``remove_pending_invite``), or
+#   * ``PENDING_INVITE_TTL_DAYS`` days elapse (auto-pruned).
+# ---------------------------------------------------------------------------
+
+def load_pending_invites() -> dict:
+    """Load the pending-invite map from disk.
+
+    Returns ``{}`` if the file is missing or corrupt. Keys are stringified
+    Discord IDs.
+    """
+    if not PENDING_INVITES_FILE.exists():
+        return {}
+    try:
+        with open(PENDING_INVITES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def save_pending_invites(data: dict) -> None:
+    """Persist the pending-invite map to disk."""
+    PENDING_INVITES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(PENDING_INVITES_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+
+def prune_expired_pending_invites() -> dict:
+    """Remove pending invites older than ``PENDING_INVITE_TTL_DAYS`` days.
+
+    Returns the (pruned) dict. Persists the change when something was removed.
+    Entries with missing or unparseable ``invited_at`` are treated as expired
+    and pruned, to avoid permanently stuck reservations.
+    """
+    data = load_pending_invites()
+    if not data:
+        return data
+
+    now = datetime.now(timezone.utc)
+    ttl = timedelta(days=PENDING_INVITE_TTL_DAYS)
+    pruned = {}
+    changed = False
+
+    for key, entry in data.items():
+        if not isinstance(entry, dict):
+            changed = True
+            continue
+        invited_at_raw = entry.get("invited_at")
+        if not invited_at_raw:
+            changed = True
+            continue
+        try:
+            invited_at = datetime.fromisoformat(invited_at_raw)
+            if invited_at.tzinfo is None:
+                invited_at = invited_at.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            changed = True
+            continue
+        if now - invited_at >= ttl:
+            changed = True
+            continue
+        pruned[key] = entry
+
+    if changed:
+        save_pending_invites(pruned)
+    return pruned
+
+
+def get_pending_invites() -> dict:
+    """Return the current (pruned) pending-invite map."""
+    return prune_expired_pending_invites()
+
+
+def get_pending_invites_count() -> int:
+    """Return how many pending invites are currently reserving a slot."""
+    return len(prune_expired_pending_invites())
+
+
+def add_pending_invite(username: str, uuid: str | None, discord_id: int) -> dict:
+    """Record ``discord_id`` as having been handed an in-game invite.
+
+    Idempotent: re-accepting the same user just refreshes ``invited_at``.
+    Returns the stored entry.
+    """
+    data = prune_expired_pending_invites()
+    entry = {
+        "username": username,
+        "uuid": uuid,
+        "invited_at": datetime.now(timezone.utc).isoformat(),
+    }
+    data[str(discord_id)] = entry
+    save_pending_invites(data)
+    return entry
+
+
+def remove_pending_invite(discord_id: int) -> bool:
+    """Remove the pending invite entry for ``discord_id``. Returns True if removed."""
+    data = load_pending_invites()
+    if str(discord_id) not in data:
+        return False
+    del data[str(discord_id)]
+    save_pending_invites(data)
+    return True
+
+
+def remove_pending_invite_by_uuid(uuid: str) -> bool:
+    """Remove the pending invite whose stored UUID matches ``uuid``.
+
+    Returns True if an entry was removed.
+    """
+    if not uuid:
+        return False
+    data = load_pending_invites()
+    target = None
+    for key, entry in data.items():
+        if not isinstance(entry, dict):
+            continue
+        if (entry.get("uuid") or "").lower() == uuid.lower():
+            target = key
+            break
+    if target is None:
+        return False
+    del data[target]
+    save_pending_invites(data)
+    return True
+
+
+def remove_pending_invite_by_username(username: str) -> bool:
+    """Remove the pending invite whose stored username matches ``username``
+    (case-insensitive). Returns True if an entry was removed.
+    """
+    if not username:
+        return False
+    data = load_pending_invites()
+    target = None
+    lowered = username.lower()
+    for key, entry in data.items():
+        if not isinstance(entry, dict):
+            continue
+        if (entry.get("username") or "").lower() == lowered:
+            target = key
+            break
+    if target is None:
+        return False
+    del data[target]
+    save_pending_invites(data)
+    return True
 
 
 # ---------------------------------------------------------------------------

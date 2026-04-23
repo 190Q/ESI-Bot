@@ -2717,10 +2717,13 @@ def build_debug_embed(message_id, guild):
     try:
         capacity = get_guild_capacity()
         player_count = capacity.get('player_count')
+        pending_count = capacity.get('pending_count', 0) or 0
+        effective_count = capacity.get('effective_player_count', player_count)
         max_slots = capacity.get('max_slots')
         is_full = capacity.get('is_full')
         queue_lines.append(
-            f"**Guild capacity:** `{player_count}/{max_slots}` (full: `{is_full}`)"
+            f"**Guild capacity:** `{effective_count}/{max_slots}` "
+            f"(in guild: `{player_count}`, pending: `{pending_count}`, full: `{is_full}`)"
         )
         if capacity.get('capacity_overridden'):
             override_open = capacity.get('override', {}).get('open_slots')
@@ -2816,8 +2819,8 @@ async def _rerender_top_queue_tickets(interaction, top_count: int) -> list:
 
     This is what the debug capacity buttons actually need: when the simulated
     open‑slot count changes, the ticket(s) that should flip between
-    "Accept Application" and "⏳ Guild Full" are the *invitable* ones — the
-    first ``top_count`` entries of the queue (veterans first) — **not** the
+    "Accept Application" and "⏳ Guild Full" are the *invitable* ones - the
+    first ``top_count`` entries of the queue (veterans first) - **not** the
     ticket currently being debugged.
 
     Returns the list of message_ids whose forwarded views were re‑rendered.
@@ -3253,7 +3256,7 @@ class DebugTicketView(View):
             print(f"[DEBUG] notify_applicant_queued failed: {e}")
 
         suffix = " Applicant notified in ticket channel." if notified else \
-            " (Applicant NOT notified — either already notified or no ticket channel.)"
+            " (Applicant NOT notified - either already notified or no ticket channel.)"
         await self._refresh_panel(
             interaction,
             note=f"Forced add to `{qt}` queue at position `#{pos}` (veteran: `{is_veteran}`).{suffix}",

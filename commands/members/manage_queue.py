@@ -61,7 +61,7 @@ def _build_queue_embed():
             if entry.get("queued_at"):
                 try:
                     dt = datetime.fromisoformat(entry["queued_at"])
-                    ts = f" — <t:{int(dt.timestamp())}:R>"
+                    ts = f" - <t:{int(dt.timestamp())}:R>"
                 except Exception:
                     pass
             lines.append(f"`#{eff}` **{entry['username']}** (<@{entry['discord_id']}>){ts}")
@@ -76,7 +76,7 @@ def _build_queue_embed():
             if entry.get("queued_at"):
                 try:
                     dt = datetime.fromisoformat(entry["queued_at"])
-                    ts = f" — <t:{int(dt.timestamp())}:R>"
+                    ts = f" - <t:{int(dt.timestamp())}:R>"
                 except Exception:
                     pass
             lines.append(f"`#{eff}` **{entry['username']}** (<@{entry['discord_id']}>){ts}")
@@ -88,30 +88,50 @@ def _build_queue_embed():
         timestamp=datetime.now(timezone.utc),
     )
     _add_capacity_field(embed)
-    embed.set_footer(text=f"{len(vet)} veteran, {len(norm)} normal — {len(vet) + len(norm)} total")
+    embed.set_footer(text=f"{len(vet)} veteran, {len(norm)} normal - {len(vet) + len(norm)} total")
     return embed
 
 
 def _add_capacity_field(embed):
-    """Add guild capacity info to an embed if available."""
+    """Add guild capacity info to an embed if available.
+
+    ``effective_player_count`` (= ``player_count`` + ``pending_count``) is what
+    the queue math actually uses, so display that here. When there are pending
+    invites, add a breakdown line so staff understand why slots look reserved.
+    """
     capacity = get_guild_capacity()
-    count = capacity.get('player_count')
+    player_count = capacity.get('player_count')
+    pending_count = capacity.get('pending_count', 0) or 0
+    effective_count = capacity.get('effective_player_count')
+    if effective_count is None:
+        effective_count = player_count
     max_slots = capacity.get('max_slots')
-    if count is not None and max_slots is not None:
-        slots = max_slots - count
-        if slots > 0:
-            emoji = "🟢" if slots >= 5 else "🟡" if slots >= 1 else "🔴"
-            embed.add_field(
-                name="Guild Capacity",
-                value=f"{emoji} **{count}/{max_slots}** — {slots} slot{'s' if slots != 1 else ''} available",
-                inline=False,
-            )
-        else:
-            embed.add_field(
-                name="Guild Capacity",
-                value=f"🔴 **{count}/{max_slots}** — Guild is full!",
-                inline=False,
-            )
+    if effective_count is None or max_slots is None:
+        return
+
+    slots = max_slots - effective_count
+    breakdown = ""
+    if pending_count > 0 and player_count is not None:
+        breakdown = (
+            f"\n({player_count} in guild + {pending_count} pending "
+            f"invite{'s' if pending_count != 1 else ''})"
+        )
+    if slots > 0:
+        emoji = "🟢" if slots >= 5 else "🟡" if slots >= 1 else "🔴"
+        embed.add_field(
+            name="Guild Capacity",
+            value=(
+                f"{emoji} **{effective_count}/{max_slots}** - "
+                f"{slots} slot{'s' if slots != 1 else ''} available{breakdown}"
+            ),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Guild Capacity",
+            value=f"🔴 **{effective_count}/{max_slots}** - Guild is full!{breakdown}",
+            inline=False,
+        )
 
 
 def _build_player_options():
@@ -126,7 +146,7 @@ def _build_player_options():
             options.append(discord.SelectOption(
                 label=label[:100],
                 value=str(entry["discord_id"]),
-                description=f"{queue_label} — Position #{eff}",
+                description=f"{queue_label} - Position #{eff}",
             ))
     return options[:25]
 

@@ -422,6 +422,24 @@ async def send_batched_notifications(channel, events):
         
         # Send batched joins
         if joins:
+            # Clear any pending invites for players who just joined the guild
+            try:
+                from guild_queue import (
+                    remove_pending_invite_by_uuid, remove_pending_invite_by_username,
+                )
+                for event in joins:
+                    uuid = event.get("uuid")
+                    uname = event.get("username")
+                    cleared = False
+                    if uuid:
+                        cleared = remove_pending_invite_by_uuid(uuid)
+                    if not cleared and uname:
+                        cleared = remove_pending_invite_by_username(uname)
+                    if cleared:
+                        print(f"[PENDING] Cleared pending invite for {uname} (joined guild)")
+            except Exception as e:
+                print(f"[PENDING] Error clearing pending invites on join: {e}")
+
             lines = []
             for event in joins:
                 escaped_username = discord.utils.escape_markdown(event.get("username", "Unknown"))
@@ -559,9 +577,14 @@ async def notify_slot_opened(bot_instance, open_slots: int) -> int:
 
 async def _check_queue_after_leaves(notification_channel, num_leaves=1):
     """After member leaves, check if queue members can now be invited.
-    Only notifies if the guild was previously at capacity."""
+    Only notifies if the guild was previously at effective capacity.
+
+    Pending invites (accepted players who have not joined yet) still count
+    against the guild, so a slot doesn't "open" until the effective count
+    drops below ``max_slots``.
+    """
     try:
-        from guild_queue import get_max_slots_for_level
+        from guild_queue import get_max_slots_for_level, get_pending_invites_count
 
         # Read current member count and level from tracked guild data
         if not DATA_FILE.exists():
@@ -574,13 +597,14 @@ async def _check_queue_after_leaves(notification_channel, num_leaves=1):
         if member_count is None or guild_level is None:
             return
 
+        pending = get_pending_invites_count()
         max_slots = get_max_slots_for_level(guild_level)
-        open_slots = max_slots - member_count
+        open_slots = max_slots - member_count - pending
         if open_slots <= 0:
             return
 
-        # Only notify if guild was previously at capacity
-        previous_count = member_count + num_leaves
+        # Only notify if guild was previously at effective capacity
+        previous_count = member_count + num_leaves + pending
         if previous_count < max_slots:
             return
 
@@ -597,6 +621,7 @@ async def _check_queue_after_joins(notification_channel):
         from guild_queue import (
             get_max_slots_for_level, add_to_queue, get_queue_position,
             extract_username_from_embeds, VETERAN_ROLE_ID as VET_ROLE_ID,
+            get_pending_invites_count,
         )
         from ticket_handler import load_forwarded_apps, save_forwarded_apps, ApplicationMixedView
 
@@ -611,10 +636,11 @@ async def _check_queue_after_joins(notification_channel):
         if member_count is None or guild_level is None:
             return
 
+        pending = get_pending_invites_count()
         max_slots = get_max_slots_for_level(guild_level)
-        open_slots = max_slots - member_count
+        open_slots = max_slots - member_count - pending
         if open_slots > 0:
-            return  # Guild still has room, no need to queue
+            return  # Guild still has room (after pending invites), no need to queue
 
         # Load forwarded apps and find approved-but-not-queued guild applications
         apps = load_forwarded_apps()
@@ -859,6 +885,15 @@ def setup(bot_instance, has_required_role, config):
             return
         
         try:
+            # Drop any pending-invite entries that are older than the TTL so
+            # their reserved slots return to the pool even if nothing else
+            # triggers a capacity check.
+            try:
+                from guild_queue import prune_expired_pending_invites
+                prune_expired_pending_invites()
+            except Exception as e:
+                print(f"[PENDING] Failed to prune expired pending invites: {e}")
+
             new_events = check_for_new_guild_events()
             
             if new_events:

@@ -683,7 +683,7 @@ def create_bot():
                 if 'commands' in module_name or module_name.startswith('commands.'):
                     modules_to_remove.append(module_name)
                 # Also remove related modules (ticket_handler, etc.)
-                elif any(x in module_name for x in ['ticket_handler', 'fetch_api', 'player_stats']):
+                elif any(x in module_name for x in ['ticket_handler', 'fetch_api', 'player_stats', 'guild_queue']):
                     modules_to_remove.append(module_name)
             
             # Call teardown() on modules that have it before removing

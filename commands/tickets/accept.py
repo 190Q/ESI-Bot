@@ -14,7 +14,10 @@ from typing import Tuple
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from blacklist import is_blacklisted
 from rank_logger import log_rank_change
-from guild_queue import get_guild_capacity, get_queue_position, add_to_queue, remove_from_queue, extract_username_from_embeds
+from guild_queue import (
+    get_guild_capacity, get_queue_position, add_to_queue, remove_from_queue,
+    extract_username_from_embeds, add_pending_invite,
+)
 from utils.permissions import has_roles
 
 # Path to the username â†” user_id match database
@@ -815,6 +818,14 @@ class AcceptConfirmView(discord.ui.View):
                         print(f"[QUEUE] Removed {self.username} from queue (accepted)")
                 except Exception as e:
                     print(f"[WARN] Failed to check queue position: {e}")
+
+                # Reserve a guild slot for this applicant until they actually join
+                if not self.queued:
+                    try:
+                        add_pending_invite(self.username, self.uuid, self.user.id)
+                        print(f"[PENDING] Added {self.username} ({self.user.id}) to pending invites")
+                    except Exception as e:
+                        print(f"[PENDING] Failed to add pending invite for {self.username}: {e}")
 
             # Create success embeds (public + private)
             full_embed = self.create_success_embed(nickname_status, role_name, interaction.user.name, in_guild)

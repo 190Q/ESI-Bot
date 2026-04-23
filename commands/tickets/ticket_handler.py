@@ -886,7 +886,7 @@ class ApplicationVoteView(View):
 
             # Notify the channel/thread that thresholds were reached. If the
             # applicant was just queued, the queue message already implies the
-            # approval — don't post a redundant "approval threshold reached".
+            # approval - don't post a redundant "approval threshold reached".
             await _notify_threshold_reached_in_channel(
                 interaction,
                 app_data,

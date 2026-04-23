@@ -156,7 +156,7 @@ def build_claim_snipe_embed(players, base_damage, base_speed, requester):
         uuid_display = f"{player['uuid']}" if player["uuid"] else "*No UUID*"
         role_emoji = ROLE_EMOJIS.get(player["role"], "")
         player_lines.append(
-            f"**{i}.** {role_emoji} **[{player['role']}]** {player['mention']} — {player['username']} ({uuid_display})"
+            f"**{i}.** {role_emoji} **[{player['role']}]** {player['mention']} - {player['username']} ({uuid_display})"
         )
 
     embed.add_field(
@@ -208,7 +208,7 @@ class AddPlayerView(discord.ui.View):
             if isinstance(child, discord.ui.Button):
                 child.disabled = False
         await interaction.response.edit_message(
-            content=f"Selected {member.mention} — now pick a role:", view=self
+            content=f"Selected {member.mention} - now pick a role:", view=self
         )
 
     @discord.ui.button(label="DPS", style=discord.ButtonStyle.danger, emoji="⚔️", row=1, disabled=True)
@@ -297,8 +297,8 @@ class EditPlayerView(discord.ui.View):
     """Ephemeral view that combines all edit steps in one message.
 
     Step 1: Pick the player to replace (StringSelect, row 0).
-    Step 2: Pick the replacement user (UserSelect, row 1) — starts hidden/disabled.
-    Step 3: Pick the role (buttons, row 2) — starts disabled.
+    Step 2: Pick the replacement user (UserSelect, row 1) - starts hidden/disabled.
+    Step 3: Pick the role (buttons, row 2) - starts disabled.
     """
 
     def __init__(self, parent_view: "ClaimSnipeView"):
@@ -307,7 +307,7 @@ class EditPlayerView(discord.ui.View):
         self.old_player_id: Optional[int] = None
         self.new_member: Optional[discord.Member] = None
 
-        # Row 0 — pick which player to replace
+        # Row 0 - pick which player to replace
         pick_select = discord.ui.Select(
             placeholder="Select the player to replace…",
             options=[
@@ -368,7 +368,7 @@ class EditPlayerView(discord.ui.View):
             if isinstance(child, discord.ui.Button):
                 child.disabled = False
         await interaction.response.edit_message(
-            content=f"Selected {self.new_member.mention} — now pick a role:", view=self
+            content=f"Selected {self.new_member.mention} - now pick a role:", view=self
         )
 
     @discord.ui.button(label="DPS", style=discord.ButtonStyle.danger, emoji="⚔️", row=2, disabled=True)
@@ -476,7 +476,7 @@ class ClaimSnipeView(discord.ui.View):
         embed = build_claim_snipe_embed(
             self.players, self.base_damage, self.base_speed, self.requester
         )
-        embed.title = "✅ Claim Snipe — Confirmed"
+        embed.title = "✅ Claim Snipe - Confirmed"
         embed.color = 0x57F287
 
         # Save to databases
@@ -504,7 +504,7 @@ class ClaimSnipeView(discord.ui.View):
         self.stop()
 
         print(
-            f"[claim_snipe] {interaction.user} confirmed — "
+            f"[claim_snipe] {interaction.user} confirmed - "
             f"players={[p['member'].display_name for p in self.players]}"
         )
 
@@ -521,7 +521,7 @@ def setup(bot, has_required_role, config):
 
     @bot.tree.command(
         name="claim_snipe",
-        description="Plan a claim snipe — manage players interactively via buttons",
+        description="Plan a claim snipe - manage players interactively via buttons",
     )
     @app_commands.describe(
         base_damage="Base damage value for the team (highest damage from the given range)",
@@ -552,7 +552,7 @@ def setup(bot, has_required_role, config):
         view.message = await interaction.original_response()
 
         print(
-            f"[claim_snipe] {interaction.user} — damage={base_damage}, speed={base_speed} "
+            f"[claim_snipe] {interaction.user} - damage={base_damage}, speed={base_speed} "
             f"(interactive session started)"
         )
 

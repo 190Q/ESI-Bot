@@ -216,7 +216,7 @@ def main():
             raid_players.append((name, joined_date, data))
 
     lines = []
-    lines.append(f"ESI Recruiter Delta Report  —  since join date  —  generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    lines.append(f"ESI Recruiter Delta Report  -  since join date  -  generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     lines.append(f"Latest DB snapshot: {os.path.basename(latest_db)}  ({latest_folder[0]})")
 
     lines.append("")

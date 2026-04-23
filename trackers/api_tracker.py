@@ -379,7 +379,7 @@ def award_points_from_diff(member_stats: list, guild_members: list):
         row = c.fetchone()
 
         if row is None:
-            # First time seeing this player — set baseline, no points awarded
+            # First time seeing this player - set baseline, no points awarded
             c.execute(
                 "INSERT INTO baseline (uuid, username, wars, total_graids) VALUES (?, ?, ?, ?)",
                 (uuid, username, current_wars, current_graids)

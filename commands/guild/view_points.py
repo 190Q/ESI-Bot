@@ -13,7 +13,7 @@ from utils.esi_points import (
     _player_points_table,
 )
 
-# Paths — mirror what api_tracker.py uses
+# Paths - mirror what api_tracker.py uses
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DB_FOLDER = BASE_DIR / "databases"
 API_TRACKING_FOLDER = DB_FOLDER / "api_tracking"
@@ -369,7 +369,7 @@ def setup(bot, has_required_role, config):
         for i, p in enumerate(top10, 1):
             h = top10_history[p["uuid"]]
             le = _calc_le(p["username"], p["points"], h, guild_ranks)
-            board_lines.append(f"#{i} **{p['username']}** — {le:g} LE")
+            board_lines.append(f"#{i} **{p['username']}** - {le:g} LE")
 
         embed.add_field(name="Top 10", value="\n".join(board_lines), inline=False)
         embed.set_footer(text=f"Full leaderboard ({len(players)} players) attached below")

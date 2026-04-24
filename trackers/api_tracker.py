@@ -469,96 +469,37 @@ class FetchAPI:
                 return None
 
     def extract_guild_members(self, guild_data: Dict) -> List[Dict]:
-        """Extract member data with ranks, UUIDs, and guildRaids from guild data."""
+        """Extract member data with ranks, UUIDs, and full globalData from guild data."""
         members = []
-        
+
         if 'members' in guild_data:
             members_data = guild_data['members']
-            
+
             for rank, rank_members in members_data.items():
                 if rank == 'total':
                     continue
-                    
+
                 if isinstance(rank_members, dict):
                     for username, member_info in rank_members.items():
                         member_dict = {"username": username, "rank": rank}
-                        
+
                         if isinstance(member_info, dict):
-                            # Extract UUID if available
-                            if 'uuid' in member_info:
-                                member_dict["uuid"] = member_info['uuid']
-                            # Extract guildRaids if available
-                            if 'guildRaids' in member_info:
-                                member_dict["guildRaids"] = member_info['guildRaids']
-                        
+                            # Copy the full member payload
+                            member_dict.update(member_info)
+
+                            global_data = member_info.get('globalData') or {}
+                            if isinstance(global_data, dict) and 'guildRaids' in global_data:
+                                member_dict['guildRaids'] = global_data['guildRaids']
+
                         members.append(member_dict)
-        
+
         return members
     
-    async def get_player_info(self, player_identifier: str, max_retries: int = 3, api_key: str = None) -> Optional[Dict]:
-        """Fetch player information from Wynncraft API with retry logic."""
-        url = f"{self.base_url}/player/{player_identifier}"
-        
-        # Use provided API key or default
-        headers = {'Authorization': f'Bearer {api_key}'} if api_key else self.headers
-        
-        async with aiohttp.ClientSession() as session:
-            for attempt in range(max_retries + 1):
-                try:
-                    async with session.get(url, headers=headers) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            return data
-                        elif response.status == 404:
-                            print(f"[API] Player '{player_identifier}' not found (404)")
-                            return None
-                        elif response.status == 429:
-                            if attempt < max_retries:
-                                wait_time = (2 ** attempt) * 2
-                                print(f"[API] Rate limited for {player_identifier}, waiting {wait_time}s")
-                                await asyncio.sleep(wait_time)
-                                continue
-                            else:
-                                print(f"[API] Rate limit exceeded for {player_identifier}")
-                                return None
-                        elif response.status == 500:
-                            if attempt < max_retries:
-                                wait_time = 2
-                                print(f"[API] Server error for {player_identifier}, retrying...")
-                                await asyncio.sleep(wait_time)
-                                continue
-                            else:
-                                print(f"[API] Server error for {player_identifier}")
-                                return None
-                        else:
-                            print(f"[API] HTTP error {response.status} for {player_identifier}")
-                            return None
-                            
-                except aiohttp.ClientError as e:
-                    if attempt < max_retries:
-                        wait_time = 1
-                        print(f"[API] Request error for {player_identifier}, retrying: {e}")
-                        await asyncio.sleep(wait_time)
-                        continue
-                    else:
-                        print(f"[API] Request error for {player_identifier}: {e}")
-                        return None
-                except Exception as e:
-                    print(f"[API] Request failed for {player_identifier}: {e}")
-                    if attempt < max_retries:
-                        await asyncio.sleep(1)
-                        continue
-                    else:
-                        return None
-        
-        return None
-    
-    def get_player_stats(self, player_data: Dict) -> Dict:
-        """Extract all relevant statistics from player data."""
+    def get_player_stats(self, member: Dict, guild_data: Optional[Dict] = None) -> Dict:
+        """Extract all relevant statistics from a guild member dict."""
         stats = {
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'uuid': None,
-            'shortenedRank': None,
             'guild': {
                 'uuid': None,
                 'name': None,
@@ -589,99 +530,86 @@ class FetchAPI:
         }
         
         try:
-            # Shortened rank (supportRank) - prioritize supportRank over others
-            rank_value = None
-            if 'supportRank' in player_data and player_data['supportRank']:
-                rank_value = player_data['supportRank']
-            elif 'shortenedRank' in player_data and player_data['shortenedRank']:
-                rank_value = player_data['shortenedRank']
-            elif 'rank' in player_data and player_data['rank']:
-                rank_value = player_data['rank']
-            
-            # Replace 'plus' with '+' (e.g., vipplus -> vip+)
-            if rank_value:
-                stats['shortenedRank'] = rank_value.replace('plus', '+')
-            
-            # Player UUID
-            if 'uuid' in player_data:
-                stats['uuid'] = player_data['uuid']
-            
-            # Guild information
-            if 'guild' in player_data and isinstance(player_data['guild'], dict):
-                guild_data = player_data['guild']
+            # UUID and username live at the top of the member payload
+            if 'uuid' in member:
+                stats['uuid'] = member.get('uuid')
+            if 'username' in member:
+                stats['username'] = member.get('username')
+
+            # Guild info is pulled from the guild response itself
+            if isinstance(guild_data, dict):
                 stats['guild']['uuid'] = guild_data.get('uuid')
                 stats['guild']['name'] = guild_data.get('name')
                 stats['guild']['prefix'] = guild_data.get('prefix')
-                stats['guild']['rank'] = guild_data.get('rank')
-            
-            # Global data statistics
-            if 'globalData' in player_data and isinstance(player_data['globalData'], dict):
-                global_data = player_data['globalData']
-                
-                if 'playtime' in global_data:
+            stats['guild']['rank'] = member.get('rank')
+
+            # Playtime is exposed at the member level in the guild payload
+            if 'playtime' in member and isinstance(member.get('playtime'), (int, float)):
+                stats['playtime'] = member['playtime']
+
+            global_data = member.get('globalData') or {}
+            if isinstance(global_data, dict):
+                # Playtime fallback
+                if stats['playtime'] == 0 and isinstance(global_data.get('playtime'), (int, float)):
                     stats['playtime'] = global_data['playtime']
-                
-                if 'wars' in global_data and isinstance(global_data['wars'], (int, float)):
+
+                if isinstance(global_data.get('wars'), (int, float)):
                     stats['wars'] = int(global_data['wars'])
-                
+
                 if 'totalLevel' in global_data:
-                    stats['totalLevel'] = global_data['totalLevel']
-                
+                    stats['totalLevel'] = global_data['totalLevel'] or 0
+
                 if 'mobsKilled' in global_data:
-                    stats['mobsKilled'] = global_data['mobsKilled']
+                    stats['mobsKilled'] = global_data['mobsKilled'] or 0
                 elif 'killedMobs' in global_data:
-                    stats['mobsKilled'] = global_data['killedMobs']
-                
+                    stats['mobsKilled'] = global_data['killedMobs'] or 0
+
                 if 'chestsFound' in global_data:
-                    stats['chestsFound'] = global_data['chestsFound']
+                    stats['chestsFound'] = global_data['chestsFound'] or 0
                 elif 'foundChests' in global_data:
-                    stats['chestsFound'] = global_data['foundChests']
-                
-                if 'dungeons' in global_data and isinstance(global_data['dungeons'], dict):
-                    dungeons = global_data['dungeons']
-                    if 'total' in dungeons:
-                        stats['dungeons']['total'] = dungeons['total']
-                    if 'list' in dungeons and isinstance(dungeons['list'], dict):
+                    stats['chestsFound'] = global_data['foundChests'] or 0
+
+                dungeons = global_data.get('dungeons')
+                if isinstance(dungeons, dict):
+                    stats['dungeons']['total'] = dungeons.get('total', 0) or 0
+                    if isinstance(dungeons.get('list'), dict):
                         stats['dungeons']['list'] = dungeons['list']
-                
-                if 'raids' in global_data and isinstance(global_data['raids'], dict):
-                    raids = global_data['raids']
-                    if 'total' in raids:
-                        stats['raids']['total'] = raids['total']
-                    if 'list' in raids and isinstance(raids['list'], dict):
+
+                raids = global_data.get('raids')
+                if isinstance(raids, dict):
+                    stats['raids']['total'] = raids.get('total', 0) or 0
+                    if isinstance(raids.get('list'), dict):
                         stats['raids']['list'] = raids['list']
-                
+
                 if 'worldEvents' in global_data:
-                    stats['worldEvents'] = global_data['worldEvents']
+                    stats['worldEvents'] = global_data['worldEvents'] or 0
                 elif 'completedWorldEvents' in global_data:
-                    stats['worldEvents'] = global_data['completedWorldEvents']
-                
+                    stats['worldEvents'] = global_data['completedWorldEvents'] or 0
+
+                # The new API key is lowercase `lootruns`; fall back to old
+                # casings so historical snapshots keep working.
                 if 'lootRuns' in global_data:
-                    stats['lootRuns'] = global_data['lootRuns']
+                    stats['lootRuns'] = global_data['lootRuns'] or 0
+                elif 'lootruns' in global_data:
+                    stats['lootRuns'] = global_data['lootruns'] or 0
                 elif 'completedLootRuns' in global_data:
-                    stats['lootRuns'] = global_data['completedLootRuns']
-                
+                    stats['lootRuns'] = global_data['completedLootRuns'] or 0
+
                 if 'caves' in global_data:
-                    stats['caves'] = global_data['caves']
+                    stats['caves'] = global_data['caves'] or 0
                 elif 'completedCaves' in global_data:
-                    stats['caves'] = global_data['completedCaves']
-                
-                if 'completedQuests' in global_data and isinstance(global_data['completedQuests'], (int, float)):
+                    stats['caves'] = global_data['completedCaves'] or 0
+
+                if isinstance(global_data.get('completedQuests'), (int, float)):
                     stats['completedQuests'] = int(global_data['completedQuests'])
-                
-                if 'pvp' in global_data and isinstance(global_data['pvp'], dict):
-                    pvp = global_data['pvp']
-                    if 'kills' in pvp:
-                        stats['pvp']['kills'] = pvp['kills']
-                    if 'deaths' in pvp:
-                        stats['pvp']['deaths'] = pvp['deaths']
-            
-            # Fallback for playtime at top level
-            if stats['playtime'] == 0 and 'playtime' in player_data:
-                stats['playtime'] = player_data['playtime']
-            
+
+                pvp = global_data.get('pvp')
+                if isinstance(pvp, dict):
+                    stats['pvp']['kills'] = pvp.get('kills', 0) or 0
+                    stats['pvp']['deaths'] = pvp.get('deaths', 0) or 0
+
             return stats
-            
+
         except (KeyError, TypeError, ValueError) as e:
             print(f"[API] Error extracting player stats: {e}")
             return stats
@@ -745,7 +673,6 @@ class FetchAPI:
                     username TEXT NOT NULL,
                     uuid TEXT,
                     timestamp TEXT,
-                    shortened_rank TEXT,
                     guild_uuid TEXT,
                     guild_name TEXT,
                     guild_prefix TEXT,
@@ -790,18 +717,17 @@ class FetchAPI:
                 
                 cursor.execute('''
                     INSERT INTO player_stats (
-                        username, uuid, timestamp, shortened_rank,
+                        username, uuid, timestamp,
                         guild_uuid, guild_name, guild_prefix, guild_rank,
                         playtime, wars, total_level, mobs_killed, chests_found,
                         dungeons_total, dungeons_list, raids_total, raids_list,
                         world_events, loot_runs, caves, completed_quests,
                         pvp_kills, pvp_deaths
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     stats.get('username'),
                     stats.get('uuid'),
                     stats.get('timestamp'),
-                    stats.get('shortenedRank'),
                     guild_data.get('uuid') if isinstance(guild_data, dict) else None,
                     guild_data.get('name') if isinstance(guild_data, dict) else None,
                     guild_data.get('prefix') if isinstance(guild_data, dict) else None,
@@ -1088,79 +1014,54 @@ class FetchAPI:
             traceback.print_exc()
     
     async def analyze_guild_stats(self, guild_name: str) -> Dict:
-        """Analyze war and quest statistics for all members of a guild."""
+        """Analyze stats for all members of a guild using a single guild API call."""
         import time
         start_time = time.time()
-        
+
         guild_data = await self.get_guild_info(guild_name)
         if not guild_data:
             return {"error": "Failed to fetch guild information"}
-        
-        # Extract guild level
+
         guild_level = guild_data.get('level')
-        
+
         members = self.extract_guild_members(guild_data)
         if not members:
             return {"error": "No members found in guild data"}
-        
-        # Distribute members across available API keys
-        num_keys = len(WYNNCRAFT_KEYS)
-        
-        # Create tasks for parallel fetching with different API keys
-        async def fetch_member(member, key_index):
-            username = member['username']
-            uuid = member.get('uuid')
-            
-            # Select API key based on index (round-robin distribution)
-            api_key = WYNNCRAFT_KEYS[key_index % num_keys] if num_keys > 0 else (WYNNCRAFT_KEYS[0] if WYNNCRAFT_KEYS else None)
-            
-            # Use UUID if available, otherwise use username
-            identifier = uuid if uuid else username
-            player_data = await self.get_player_info(identifier, api_key=api_key)
-            
-            if player_data:
-                player_stats = self.get_player_stats(player_data)
-                return {
-                    "username": username,
-                    "uuid": player_stats['uuid'],
-                    "timestamp": player_stats['timestamp'],
-                    "shortenedRank": player_stats['shortenedRank'],
-                    "guild": player_stats['guild'],
-                    "playtime": player_stats['playtime'],
-                    "wars": player_stats['wars'],
-                    "totalLevel": player_stats['totalLevel'],
-                    "mobsKilled": player_stats['mobsKilled'],
-                    "chestsFound": player_stats['chestsFound'],
-                    "dungeons": player_stats['dungeons'],
-                    "raids": player_stats['raids'],
-                    "worldEvents": player_stats['worldEvents'],
-                    "lootRuns": player_stats['lootRuns'],
-                    "caves": player_stats['caves'],
-                    "completedQuests": player_stats['completedQuests'],
-                    "pvp": player_stats['pvp']
-                }
-            else:
-                return {
-                    "username": username,
-                    "wars": 0,
-                    "completedQuests": 0
-                }
-        
-        # Fetch all members in parallel
-        tasks = [fetch_member(member, i) for i, member in enumerate(members)]
-        member_stats = await asyncio.gather(*tasks)
-        
+
+        # Build stats straight from the guild payload
+        member_stats = []
+        for member in members:
+            player_stats = self.get_player_stats(member, guild_data=guild_data)
+            member_stats.append({
+                "username": member.get('username'),
+                "uuid": player_stats.get('uuid'),
+                "timestamp": player_stats['timestamp'],
+                "guild": player_stats['guild'],
+                "playtime": player_stats['playtime'],
+                "wars": player_stats['wars'],
+                "totalLevel": player_stats['totalLevel'],
+                "mobsKilled": player_stats['mobsKilled'],
+                "chestsFound": player_stats['chestsFound'],
+                "dungeons": player_stats['dungeons'],
+                "raids": player_stats['raids'],
+                "worldEvents": player_stats['worldEvents'],
+                "lootRuns": player_stats['lootRuns'],
+                "caves": player_stats['caves'],
+                "completedQuests": player_stats['completedQuests'],
+                "pvp": player_stats['pvp'],
+            })
+
         # Save data
         await self.save_data(guild_name, member_stats, guild_level, guild_members=members)
-        
+
         # Calculate statistics
         valid_stats = [stat for stat in member_stats if isinstance(stat.get("wars"), int) and isinstance(stat.get("completedQuests"), int)]
         total_wars = sum(stat.get("wars", 0) for stat in valid_stats)
         total_quests = sum(stat.get("completedQuests", 0) for stat in valid_stats)
-        
+
         end_time = time.time()
         fetch_duration = end_time - start_time
-        
+
         return {
             "guild_name": guild_name,
             "total_members": len(members),
@@ -1168,7 +1069,7 @@ class FetchAPI:
             "total_guild_wars": total_wars,
             "total_guild_quests": total_quests,
             "all_member_stats": member_stats,
-            "fetch_duration": fetch_duration
+            "fetch_duration": fetch_duration,
         }
 
 

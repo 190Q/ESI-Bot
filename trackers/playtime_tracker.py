@@ -232,8 +232,8 @@ def cleanup_old_day_folders():
             folder_date = datetime.strptime(date_str, "%d-%m-%Y").date()
             days_old = (today - folder_date).days
             
-            # Only process folders that are 4-6 days old
-            if 7 <= days_old <= 10:
+            # Collapse any folder older than 7 days down to the latest snapshot
+            if days_old >= 7:
                 db_files = sorted(folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
                 
                 if len(db_files) <= 1:

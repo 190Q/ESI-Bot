@@ -9,6 +9,14 @@ from typing import Optional
 from utils.permissions import has_roles
 from utils.paths import DB_DIR
 from utils.esi_points import init_points_database, save_points
+from utils.parsers import (
+    parse_health,
+    parse_defense,
+    parse_duration,
+    format_health,
+    format_defense,
+    format_duration,
+)
 
 REQUIRED_ROLES = [
     554514823191199747,   # Archduke
@@ -28,11 +36,24 @@ def init_snipes_database():
             snipe_id TEXT PRIMARY KEY,
             base_damage REAL NOT NULL,
             base_speed REAL NOT NULL,
+            health INTEGER,
+            defense REAL,
+            duration INTEGER,
             points INTEGER NOT NULL,
             player_uuids TEXT NOT NULL,
             timestamp TEXT NOT NULL
         )
     """)
+    # Backfill columns on databases that pre-date these fields
+    c.execute("PRAGMA table_info(snipes)")
+    existing_cols = {row[1] for row in c.fetchall()}
+    for col, decl in (
+        ("health", "INTEGER"),
+        ("defense", "REAL"),
+        ("duration", "INTEGER"),
+    ):
+        if col not in existing_cols:
+            c.execute(f'ALTER TABLE snipes ADD COLUMN {col} {decl}')
     conn.commit()
     conn.close()
 
@@ -42,7 +63,8 @@ def _player_table(player_uuid):
     return "player_" + player_uuid.replace("-", "_")
 
 
-def save_snipe(resolved_players, base_damage, base_speed, points):
+def save_snipe(resolved_players, base_damage, base_speed, points,
+               health=None, defense=None, duration=None):
     """Record a snipe and update each player's individual table."""
     player_uuids = [p["uuid"] for p in resolved_players if p.get("uuid")]
     if not player_uuids:
@@ -53,9 +75,15 @@ def save_snipe(resolved_players, base_damage, base_speed, points):
     c = conn.cursor()
 
     c.execute("""
-        INSERT INTO snipes (snipe_id, base_damage, base_speed, points, player_uuids, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (snipe_id, base_damage, base_speed, points, json.dumps(player_uuids), datetime.utcnow().isoformat()))
+        INSERT INTO snipes (
+            snipe_id, base_damage, base_speed, health, defense, duration,
+            points, player_uuids, timestamp
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        snipe_id, base_damage, base_speed, health, defense, duration,
+        points, json.dumps(player_uuids), datetime.utcnow().isoformat(),
+    ))
 
     for player in resolved_players:
         uuid = player.get("uuid")
@@ -120,10 +148,14 @@ ROLE_EMOJIS = {
 }
 
 
-def build_claim_snipe_embed(players, base_damage, base_speed, requester):
+def build_claim_snipe_embed(players, base_damage, base_speed, requester,
+                            health=None, defense=None, duration=None):
     """Build the claim snipe embed from the current player list.
 
     `players` is a list of dicts: {"member": discord.Member, "role": str}
+
+    `health`, `defense`, and `duration` are informational only and do not
+    affect the points calculation.
     """
     embed = discord.Embed(
         title="Claim Snipe",
@@ -136,6 +168,13 @@ def build_claim_snipe_embed(players, base_damage, base_speed, requester):
     embed.add_field(name="Base Damage", value=str(int(base_damage)), inline=True)
     embed.add_field(name="Base Speed", value=str(base_speed), inline=True)
     embed.add_field(name="Points", value=f"{points}", inline=True)
+
+    if health is not None:
+        embed.add_field(name="Health", value=format_health(health), inline=True)
+    if defense is not None:
+        embed.add_field(name="Defense", value=format_defense(defense), inline=True)
+    if duration is not None:
+        embed.add_field(name="Duration", value=format_duration(duration), inline=True)
 
     matches = load_username_matches()
     resolved = []
@@ -248,6 +287,9 @@ class AddPlayerView(discord.ui.View):
             self.parent_view.base_damage,
             self.parent_view.base_speed,
             self.parent_view.requester,
+            health=self.parent_view.health,
+            defense=self.parent_view.defense,
+            duration=self.parent_view.duration,
         )
         await self.parent_view.message.edit(embed=embed, view=self.parent_view)
         await interaction.response.edit_message(
@@ -280,6 +322,9 @@ class RemovePlayerSelect(discord.ui.Select):
             self.parent_view.base_damage,
             self.parent_view.base_speed,
             self.parent_view.requester,
+            health=self.parent_view.health,
+            defense=self.parent_view.defense,
+            duration=self.parent_view.duration,
         )
         await self.parent_view.message.edit(embed=embed, view=self.parent_view)
         await interaction.response.send_message("Player removed.", ephemeral=True)
@@ -401,6 +446,9 @@ class EditPlayerView(discord.ui.View):
             self.parent_view.base_damage,
             self.parent_view.base_speed,
             self.parent_view.requester,
+            health=self.parent_view.health,
+            defense=self.parent_view.defense,
+            duration=self.parent_view.duration,
         )
         await self.parent_view.message.edit(embed=embed, view=self.parent_view)
         await interaction.response.edit_message(
@@ -412,11 +460,22 @@ class EditPlayerView(discord.ui.View):
 class ClaimSnipeView(discord.ui.View):
     """Main persistent view with Add / Remove / Edit buttons."""
 
-    def __init__(self, base_damage: float, base_speed: float, requester: discord.Member):
+    def __init__(
+        self,
+        base_damage: float,
+        base_speed: float,
+        requester: discord.Member,
+        health: Optional[int] = None,
+        defense: Optional[float] = None,
+        duration: Optional[int] = None,
+    ):
         super().__init__(timeout=None)
         self.players: list[dict] = []  # [{"member": discord.Member, "role": str}]
         self.base_damage = base_damage
         self.base_speed = base_speed
+        self.health = health
+        self.defense = defense
+        self.duration = duration
         self.requester = requester
         self.message: Optional[discord.Message] = None
 
@@ -474,7 +533,13 @@ class ClaimSnipeView(discord.ui.View):
 
         # Build the final embed
         embed = build_claim_snipe_embed(
-            self.players, self.base_damage, self.base_speed, self.requester
+            self.players,
+            self.base_damage,
+            self.base_speed,
+            self.requester,
+            health=self.health,
+            defense=self.defense,
+            duration=self.duration,
         )
         embed.title = "✅ Claim Snipe - Confirmed"
         embed.color = 0x57F287
@@ -490,7 +555,15 @@ class ClaimSnipeView(discord.ui.View):
                 resolved.append(data)
         try:
             save_points(resolved, points, reason="Claim Snipe")
-            save_snipe(resolved, self.base_damage, self.base_speed, points)
+            save_snipe(
+                resolved,
+                self.base_damage,
+                self.base_speed,
+                points,
+                health=self.health,
+                defense=self.defense,
+                duration=self.duration,
+            )
         except Exception as e:
             print(f"[claim_snipe] Failed to save data: {e}")
 
@@ -526,11 +599,17 @@ def setup(bot, has_required_role, config):
     @app_commands.describe(
         base_damage="Base damage value for the team (highest damage from the given range)",
         base_speed="Base speed value for the team (attack speed)",
+        health="Target health (e.g. 20M, 100K, 1.5M, 5000) - informational only",
+        defense="Target defense as a percentage (e.g. 50%, 37.5) - informational only",
+        duration="Fight duration (e.g. 4m20s, 410s, 5 minutes, 1h30m) - informational only",
     )
     async def claim_snipe(
         interaction: discord.Interaction,
         base_damage: float,
         base_speed: float,
+        health: Optional[str] = None,
+        defense: Optional[str] = None,
+        duration: Optional[str] = None,
     ):
         # Check permissions if required
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
@@ -545,14 +624,47 @@ def setup(bot, has_required_role, config):
             )
             return
 
-        view = ClaimSnipeView(base_damage, base_speed, interaction.user)
-        embed = build_claim_snipe_embed([], base_damage, base_speed, interaction.user)
+        # Parse the optional informational fields
+        try:
+            health_val = parse_health(health) if health is not None else None
+            defense_val = parse_defense(defense) if defense is not None else None
+            duration_val = parse_duration(duration) if duration is not None else None
+        except ValueError as e:
+            error_embed = discord.Embed(
+                title="Invalid input",
+                description=str(e),
+                color=0xFF0000,
+                timestamp=datetime.utcnow(),
+            )
+            await interaction.response.send_message(
+                embed=error_embed, ephemeral=True
+            )
+            return
+
+        view = ClaimSnipeView(
+            base_damage,
+            base_speed,
+            interaction.user,
+            health=health_val,
+            defense=defense_val,
+            duration=duration_val,
+        )
+        embed = build_claim_snipe_embed(
+            [],
+            base_damage,
+            base_speed,
+            interaction.user,
+            health=health_val,
+            defense=defense_val,
+            duration=duration_val,
+        )
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         view.message = await interaction.original_response()
 
         print(
-            f"[claim_snipe] {interaction.user} - damage={base_damage}, speed={base_speed} "
+            f"[claim_snipe] {interaction.user} - damage={base_damage}, speed={base_speed}, "
+            f"health={health_val}, defense={defense_val}, duration={duration_val} "
             f"(interactive session started)"
         )
 

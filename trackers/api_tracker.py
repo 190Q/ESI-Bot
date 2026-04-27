@@ -102,6 +102,7 @@ RECRUITED_DB_PATH = DB_FOLDER / "recruited_data.db"
 ASPECTS_FILE = BASE_DIR / "data/aspects.json"
 POINTS_BASELINE_DB = DB_FOLDER / "points_baseline.db"
 QUEUE_FILE = BASE_DIR / "data/guild_member_queue.json"
+PENDING_INVITES_FILE = BASE_DIR / "data/pending_invites.json"
 
 # Storage constants
 SIZE_LIMIT_BYTES = 20 * 1024 * 1024 * 1024  # 20GB
@@ -234,6 +235,29 @@ def check_and_cleanup_storage():
             print(f"[API] Deleted old folder: {folder.name} ({folder_size / (1024**3):.2f} GB)")
         except Exception as e:
             print(f"[API] Failed to delete {folder}: {e}")
+
+
+def get_pending_invites_data() -> list:
+    """Return all pending invite entries from pending_invites.json as a list of dicts."""
+    if not PENDING_INVITES_FILE.exists():
+        return []
+    try:
+        with open(PENDING_INVITES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    return [
+        {
+            "discord_id": discord_id,
+            "username": entry.get("username"),
+            "uuid": entry.get("uuid"),
+            "invited_at": entry.get("invited_at"),
+        }
+        for discord_id, entry in data.items()
+        if isinstance(entry, dict)
+    ]
 
 
 def get_queue_counts() -> dict:
@@ -665,7 +689,27 @@ class FetchAPI:
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
-            
+
+            # Save current pending invites
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS pending_invites (
+                    discord_id TEXT NOT NULL,
+                    username TEXT,
+                    uuid TEXT,
+                    invited_at TEXT,
+                    snapshot_timestamp TEXT NOT NULL
+                )
+            ''')
+            pending_invites = get_pending_invites_data()
+            snapshot_ts = datetime.now(timezone.utc).isoformat()
+            cursor.executemany(
+                "INSERT INTO pending_invites (discord_id, username, uuid, invited_at, snapshot_timestamp) VALUES (?, ?, ?, ?, ?)",
+                [
+                    (entry["discord_id"], entry["username"], entry["uuid"], entry["invited_at"], snapshot_ts)
+                    for entry in pending_invites
+                ],
+            )
+
             # Create tables
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS player_stats (

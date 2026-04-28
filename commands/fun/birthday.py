@@ -6,6 +6,7 @@ import json
 from discord.ext import tasks
 import random
 from utils.permissions import has_roles
+from utils.paths import DATA_DIR
 
 # Store task reference for teardown
 _birthday_task = None
@@ -27,7 +28,7 @@ REQUIRED_ROLES = [
 ]
 
 # File to store birthdays
-BIRTHDAY_FILE = 'birthdays.json'
+BIRTHDAY_FILE = str(DATA_DIR / "birthdays.json")
 
 def load_birthdays():
     """Load birthdays from JSON file"""

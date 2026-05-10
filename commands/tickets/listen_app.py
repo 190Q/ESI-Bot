@@ -6,8 +6,9 @@ from datetime import datetime
 import json
 from pathlib import Path
 import os
+from utils.paths import DATA_DIR
 
-NOTIFICATION_FILE = Path('app_notifications.json')
+NOTIFICATION_FILE = DATA_DIR / 'app_notifications.json'
 
 REQUIRED_ROLES = (
     600185623474601995, # Parliament

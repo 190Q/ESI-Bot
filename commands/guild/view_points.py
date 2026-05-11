@@ -235,13 +235,11 @@ def _build_player_history_txt(username: str, uuid: str, points_by_cycle: dict,
 
     lines.append("Points per cycle:")
     for cycle_id, pts in sorted(points_by_cycle.items()):
-        cycle_history = [r for r in history if r["cycle_id"] == cycle_id]
-        le = _calc_le(username, pts, cycle_history, guild_ranks)
         if clean_dirty and cycle_id in clean_dirty:
             c_ep, d_ep = clean_dirty[cycle_id]
-            lines.append(f"  {_cycle_label(cycle_id)}: {c_ep} clean / {d_ep} dirty → {le:g} LE")
+            lines.append(f"  {_cycle_label(cycle_id)}: {c_ep} CEP / {d_ep} DEP")
         else:
-            lines.append(f"  {_cycle_label(cycle_id)}: {pts} pts  /  {le:g} LE")
+            lines.append(f"  {_cycle_label(cycle_id)}: {pts} pts")
     lines.append("")
 
     lines.append("Full history (newest first):")
@@ -266,12 +264,11 @@ def _build_leaderboard_txt(players: list[dict], cycle_ids: list[int], guild_rank
     lines.append(f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     lines.append(f"Total players: {len(players)}")
     lines.append("")
-    lines.append(f"{'Rank':<6} {'Username':<24} {'Points':>8}  {'Clean':>8}  {'Dirty':>8}  {'LE':>6}")
-    lines.append("-" * 70)
+    lines.append(f"{'Rank':<6} {'Username':<24} {'Points':>8}  {'CEP':>8}  {'DEP':>8}")
+    lines.append("-" * 62)
 
     for i, p in enumerate(players, 1):
         h = _get_player_history(p["uuid"])
-        le = _calc_le(p["username"], p["points"], h, guild_ranks)
         clean = p.get("clean_ep", 0)
         dirty = p.get("dirty_ep", 0)
         # Fallback if persisted values are 0 but points > 0
@@ -282,7 +279,7 @@ def _build_leaderboard_txt(players: list[dict], cycle_ids: list[int], guild_rank
                 clean = p["points"] - dirty
             else:
                 clean = p["points"]
-        lines.append(f"{i:<6} {p['username']:<24} {p['points']:>8}  {clean:>8}  {dirty:>8}  {le:>6g}")
+        lines.append(f"{i:<6} {p['username']:<24} {p['points']:>8}  {clean:>8}  {dirty:>8}")
 
     return "\n".join(lines)
 
@@ -387,24 +384,21 @@ def setup(bot, has_required_role, config):
 
             for cid in cycle_ids:
                 pts = cycle_rows.get(cid, 0)
-                cycle_history = [r for r in history if r["cycle_id"] == cid]
-                le = _calc_le(resolved_name, pts, cycle_history, guild_ranks)
                 c_ep, d_ep = clean_dirty.get(cid, (pts, 0))
                 start, end = get_cycle_bounds(cid)
                 field_name = f"Cycle {cid} ({start.strftime('%d %b')} – {end.strftime('%d %b')})"
                 embed.add_field(
                     name=field_name,
-                    value=f"{c_ep} clean / {d_ep} dirty → **{le:g} LE**",
+                    value=f"**{c_ep}** CEP / **{d_ep}** DEP",
                     inline=True,
                 )
 
             if len(cycle_ids) > 1:
-                combined_le = _calc_le(resolved_name, total_pts, history, guild_ranks)
                 total_clean = sum(v[0] for v in clean_dirty.values())
                 total_dirty = sum(v[1] for v in clean_dirty.values())
                 embed.add_field(
                     name="Combined Total",
-                    value=f"{total_clean} clean / {total_dirty} dirty → **{combined_le:g} LE**",
+                    value=f"**{total_clean}** CEP / **{total_dirty}** DEP",
                     inline=True,
                 )
 
@@ -476,7 +470,6 @@ def setup(bot, has_required_role, config):
         board_lines = []
         for i, p in enumerate(top10, 1):
             h = top10_history[p["uuid"]]
-            le = _calc_le(p["username"], p["points"], h, guild_ranks)
             c_ep = p.get("clean_ep", 0)
             d_ep = p.get("dirty_ep", 0)
             if c_ep == 0 and d_ep == 0 and p["points"] > 0:
@@ -486,7 +479,7 @@ def setup(bot, has_required_role, config):
                     c_ep = p["points"] - d_ep
                 else:
                     c_ep = p["points"]
-            board_lines.append(f"#{i} **{p['username']}** — {c_ep}c/{d_ep}d → {le:g} LE")
+            board_lines.append(f"#{i} **{p['username']}** — {c_ep} CEP / {d_ep} DEP")
 
         embed.add_field(name="Top 10", value="\n".join(board_lines), inline=False)
         embed.set_footer(text=f"Full leaderboard ({len(players)} players) attached below")

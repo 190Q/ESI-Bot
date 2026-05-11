@@ -379,6 +379,8 @@ def award_points_from_diff(member_stats: list, guild_members: list):
 
     # Build graids lookup from guild_members (uuid -> total_graids)
     graids_by_uuid = {}
+    # Build rank lookup from guild_members (uuid -> lowered rank)
+    rank_by_uuid = {}
     for member in (guild_members or []):
         uuid = member.get("uuid")
         if not uuid:
@@ -386,6 +388,8 @@ def award_points_from_diff(member_stats: list, guild_members: list):
         graids_data = member.get("guildRaids", {})
         total_graids = graids_data.get("total", 0) if isinstance(graids_data, dict) else 0
         graids_by_uuid[uuid] = total_graids
+        rank = member.get("rank") or ""
+        rank_by_uuid[uuid] = rank.lower()
 
     conn = sqlite3.connect(POINTS_BASELINE_DB)
     c = conn.cursor()
@@ -431,12 +435,14 @@ def award_points_from_diff(member_stats: list, guild_members: list):
             )
             new_graids = 0
 
+        player_rank = rank_by_uuid.get(uuid, "")
+
         if new_wars > 0:
-            save_points(player, new_wars * 1, reason="War")
+            save_points(player, new_wars * 1, reason="War", rank_at_cycle_start=player_rank)
             print(f"[POINTS] {username}: +{new_wars} war point(s)")
 
         if new_graids > 0:
-            save_points(player, new_graids * 10, reason="Guild Raid")
+            save_points(player, new_graids * 10, reason="Guild Raid", rank_at_cycle_start=player_rank)
             print(f"[POINTS] {username}: +{new_graids * 10} guild raid point(s) ({new_graids} new raid(s))")
 
         # Update baseline

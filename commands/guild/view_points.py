@@ -11,6 +11,7 @@ from utils.esi_points import (
     get_cycle_bounds,
     POINTS_DB,
     _player_points_table,
+    is_dirty_reason,
 )
 
 # Paths - mirror what api_tracker.py uses
@@ -40,15 +41,69 @@ def _get_guild_ranks() -> dict[str, str]:
 
 def _calc_le(username: str, total_points: int, history: list[dict], guild_ranks: dict) -> float:
     """
-    Calculate LE for a player.
-    - HR players (strategist/chief/owner): Guild Raids and Wars do not count toward LE.
+    Calculate LE for a player (legacy runtime fallback).
+    - HR players (strategist/chief/owner): dirty reasons don't count toward LE.
     - Everyone else: all points count (10 pts = 1 LE).
     """
     rank = guild_ranks.get(username.lower(), "")
     if rank in HR_RANKS:
-        real_points = sum(r["points_gained"] for r in history if r["reason"].lower() not in {"guild raid", "war"} and not r["reason"].lower().startswith("quest"))
+        real_points = sum(r["points_gained"] for r in history if not is_dirty_reason(r["reason"]))
         return real_points / 10
     return total_points / 10
+
+
+def _get_clean_dirty_for_cycles(uuid: str, cycle_ids: list[int],
+                                 history: list[dict] | None = None,
+                                 guild_ranks: dict | None = None,
+                                 username: str | None = None) -> dict[int, tuple[int, int]]:
+    """
+    Return {cycle_id: (clean_ep, dirty_ep)} from persisted data.
+    Falls back to runtime calculation if persisted columns are both 0
+    and the record likely predates the migration.
+    """
+    conn = sqlite3.connect(POINTS_DB)
+    c = conn.cursor()
+    placeholders = ",".join("?" * len(cycle_ids))
+    c.execute(
+        f"SELECT cycle_id, clean_ep, dirty_ep, points FROM esi_points "
+        f"WHERE uuid = ? AND cycle_id IN ({placeholders})",
+        [uuid] + cycle_ids,
+    )
+    rows = {r[0]: (r[1], r[2], r[3]) for r in c.fetchall()}
+    conn.close()
+
+    result: dict[int, tuple[int, int]] = {}
+    for cid in cycle_ids:
+        clean, dirty, points = rows.get(cid, (0, 0, 0))
+        # Fallback: if both persisted values are 0 but points > 0, use runtime calc
+        if clean == 0 and dirty == 0 and points > 0 and history is not None and guild_ranks is not None and username:
+            rank = guild_ranks.get(username.lower(), "")
+            cycle_hist = [r for r in history if r["cycle_id"] == cid]
+            if rank in HR_RANKS:
+                dirty = sum(r["points_gained"] for r in cycle_hist if is_dirty_reason(r["reason"]))
+                clean = points - dirty
+            else:
+                clean = points
+                dirty = 0
+        result[cid] = (clean, dirty)
+    return result
+
+
+def _get_active_reservations(uuid: str) -> int:
+    """Return total EP currently reserved (unreleased) for a player."""
+    conn = sqlite3.connect(POINTS_DB)
+    c = conn.cursor()
+    try:
+        c.execute(
+            "SELECT COALESCE(SUM(reserved_amount), 0) FROM ep_reservations "
+            "WHERE uuid = ? AND released_at IS NULL",
+            (uuid,),
+        )
+        total = c.fetchone()[0]
+    except sqlite3.OperationalError:
+        total = 0
+    conn.close()
+    return total
 
 
 def _get_latest_api_db() -> Path | None:
@@ -82,8 +137,8 @@ def _get_guild_usernames() -> set[str]:
 
 def _get_points_for_cycles(cycle_ids: list[int]) -> list[dict]:
     """
-    Return a list of dicts {uuid, username, points} summed across the given cycle_ids,
-    restricted to players currently in the guild.
+    Return a list of dicts {uuid, username, points, clean_ep, dirty_ep}
+    summed across the given cycle_ids, restricted to players currently in the guild.
     """
     guild_names = _get_guild_usernames()
 
@@ -92,17 +147,24 @@ def _get_points_for_cycles(cycle_ids: list[int]) -> list[dict]:
 
     placeholders = ",".join("?" * len(cycle_ids))
     c.execute(
-        f"SELECT uuid, username, SUM(points) FROM esi_points WHERE cycle_id IN ({placeholders}) GROUP BY uuid",
+        f"SELECT uuid, username, SUM(points), SUM(clean_ep), SUM(dirty_ep) "
+        f"FROM esi_points WHERE cycle_id IN ({placeholders}) GROUP BY uuid",
         cycle_ids,
     )
     rows = c.fetchall()
     conn.close()
 
     results = []
-    for uuid, username, pts in rows:
+    for uuid, username, pts, clean, dirty in rows:
         if guild_names and username.lower() not in guild_names:
-            continue  # skip players no longer in guild (if we have guild data)
-        results.append({"uuid": uuid, "username": username, "points": pts or 0})
+            continue
+        results.append({
+            "uuid": uuid,
+            "username": username,
+            "points": pts or 0,
+            "clean_ep": clean or 0,
+            "dirty_ep": dirty or 0,
+        })
 
     results.sort(key=lambda x: x["points"], reverse=True)
     return results
@@ -115,7 +177,8 @@ def _get_player_history(uuid: str) -> list[dict]:
     c = conn.cursor()
     try:
         c.execute(
-            f'SELECT record_id, username, points_gained, cycle_id, reason, timestamp '
+            f'SELECT record_id, username, points_gained, cycle_id, reason, timestamp, '
+            f'COALESCE(is_dirty, 0) '
             f'FROM "{table}" ORDER BY timestamp DESC'
         )
         rows = c.fetchall()
@@ -131,6 +194,7 @@ def _get_player_history(uuid: str) -> list[dict]:
             "cycle_id": r[3],
             "reason": r[4],
             "timestamp": r[5],
+            "is_dirty": r[6],
         }
         for r in rows
     ]
@@ -159,7 +223,9 @@ def _(players: list[dict], cycle_ids: list[int]) -> str:
     return "\n".join(lines)
 
 
-def _build_player_history_txt(username: str, uuid: str, points_by_cycle: dict, history: list[dict], guild_ranks: dict) -> str:
+def _build_player_history_txt(username: str, uuid: str, points_by_cycle: dict,
+                               history: list[dict], guild_ranks: dict,
+                               clean_dirty: dict[int, tuple[int, int]] | None = None) -> str:
     lines = []
     lines.append(f"ESI Points – History for {username}")
     lines.append("=" * 50)
@@ -171,16 +237,20 @@ def _build_player_history_txt(username: str, uuid: str, points_by_cycle: dict, h
     for cycle_id, pts in sorted(points_by_cycle.items()):
         cycle_history = [r for r in history if r["cycle_id"] == cycle_id]
         le = _calc_le(username, pts, cycle_history, guild_ranks)
-        lines.append(f"  {_cycle_label(cycle_id)}: {pts} pts  /  {le:g} LE")
+        if clean_dirty and cycle_id in clean_dirty:
+            c_ep, d_ep = clean_dirty[cycle_id]
+            lines.append(f"  {_cycle_label(cycle_id)}: {c_ep} clean / {d_ep} dirty → {le:g} LE")
+        else:
+            lines.append(f"  {_cycle_label(cycle_id)}: {pts} pts  /  {le:g} LE")
     lines.append("")
 
     lines.append("Full history (newest first):")
-    lines.append(f"{'Timestamp':<28} {'Cycle':<8} {'Reason':<20} {'Points':>7}  {'LE':>5}")
+    lines.append(f"{'Timestamp':<28} {'Cycle':<8} {'Reason':<20} {'Points':>7}  {'Dirty':>5}")
     lines.append("-" * 76)
     for r in history:
         ts = r["timestamp"][:19].replace("T", " ")
-        entry_le = r["points_gained"] / 10
-        lines.append(f"{ts:<28} {r['cycle_id']:<8} {r['reason']:<20} {r['points_gained']:>+7}  {entry_le:>5g}")
+        dirty_flag = "yes" if r.get("is_dirty") else ""
+        lines.append(f"{ts:<28} {r['cycle_id']:<8} {r['reason']:<20} {r['points_gained']:>+7}  {dirty_flag:>5}")
 
     if not history:
         lines.append("  (no records found)")
@@ -191,18 +261,28 @@ def _build_player_history_txt(username: str, uuid: str, points_by_cycle: dict, h
 def _build_leaderboard_txt(players: list[dict], cycle_ids: list[int], guild_ranks: dict) -> str:
     lines = []
     lines.append("ESI Points – Full Leaderboard")
-    lines.append("=" * 58)
+    lines.append("=" * 78)
     lines.append("Cycles: " + ", ".join(_cycle_label(c) for c in cycle_ids))
     lines.append(f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     lines.append(f"Total players: {len(players)}")
     lines.append("")
-    lines.append(f"{'Rank':<6} {'Username':<24} {'Points':>8}  {'LE':>6}")
-    lines.append("-" * 50)
+    lines.append(f"{'Rank':<6} {'Username':<24} {'Points':>8}  {'Clean':>8}  {'Dirty':>8}  {'LE':>6}")
+    lines.append("-" * 70)
 
     for i, p in enumerate(players, 1):
         h = _get_player_history(p["uuid"])
         le = _calc_le(p["username"], p["points"], h, guild_ranks)
-        lines.append(f"{i:<6} {p['username']:<24} {p['points']:>8}  {le:>6g}")
+        clean = p.get("clean_ep", 0)
+        dirty = p.get("dirty_ep", 0)
+        # Fallback if persisted values are 0 but points > 0
+        if clean == 0 and dirty == 0 and p["points"] > 0:
+            rank = guild_ranks.get(p["username"].lower(), "")
+            if rank in HR_RANKS:
+                dirty = sum(r["points_gained"] for r in h if is_dirty_reason(r["reason"]))
+                clean = p["points"] - dirty
+            else:
+                clean = p["points"]
+        lines.append(f"{i:<6} {p['username']:<24} {p['points']:>8}  {clean:>8}  {dirty:>8}  {le:>6g}")
 
     return "\n".join(lines)
 
@@ -299,21 +379,46 @@ def setup(bot, has_required_role, config):
                 color=0x5865F2,
             )
 
+            # Fetch persisted clean/dirty split
+            clean_dirty = _get_clean_dirty_for_cycles(
+                uuid, cycle_ids, history=history,
+                guild_ranks=guild_ranks, username=resolved_name,
+            )
+
             for cid in cycle_ids:
                 pts = cycle_rows.get(cid, 0)
-                # For per-cycle LE we need history filtered to that cycle
                 cycle_history = [r for r in history if r["cycle_id"] == cid]
                 le = _calc_le(resolved_name, pts, cycle_history, guild_ranks)
+                c_ep, d_ep = clean_dirty.get(cid, (pts, 0))
                 start, end = get_cycle_bounds(cid)
                 field_name = f"Cycle {cid} ({start.strftime('%d %b')} – {end.strftime('%d %b')})"
-                embed.add_field(name=field_name, value=f"**{le:g} LE**", inline=True)
+                embed.add_field(
+                    name=field_name,
+                    value=f"{c_ep} clean / {d_ep} dirty → **{le:g} LE**",
+                    inline=True,
+                )
 
             if len(cycle_ids) > 1:
                 combined_le = _calc_le(resolved_name, total_pts, history, guild_ranks)
-                embed.add_field(name="Combined Total", value=f"**{combined_le:g} LE**", inline=True)
+                total_clean = sum(v[0] for v in clean_dirty.values())
+                total_dirty = sum(v[1] for v in clean_dirty.values())
+                embed.add_field(
+                    name="Combined Total",
+                    value=f"{total_clean} clean / {total_dirty} dirty → **{combined_le:g} LE**",
+                    inline=True,
+                )
 
             if rank:
                 embed.add_field(name="Guild Rank", value=f"**#{rank}** of {len(all_players)}", inline=True)
+
+            # Show active EP reservations if any
+            reserved = _get_active_reservations(uuid)
+            if reserved > 0:
+                embed.add_field(
+                    name="Reserved EP",
+                    value=f"({reserved} EP reserved — auction pending)",
+                    inline=False,
+                )
 
             # Last 5 history entries as a quick preview
             if history:
@@ -330,7 +435,10 @@ def setup(bot, has_required_role, config):
             embed.set_footer(text="Full history attached below")
 
             # TXT attachment
-            txt_content = _build_player_history_txt(resolved_name, uuid, cycle_rows, history, guild_ranks)
+            txt_content = _build_player_history_txt(
+                resolved_name, uuid, cycle_rows, history, guild_ranks,
+                clean_dirty=clean_dirty,
+            )
             txt_file = discord.File(
                 fp=io.BytesIO(txt_content.encode("utf-8")),
                 filename=f"points_{resolved_name}_{cycle.value}.txt",
@@ -369,7 +477,16 @@ def setup(bot, has_required_role, config):
         for i, p in enumerate(top10, 1):
             h = top10_history[p["uuid"]]
             le = _calc_le(p["username"], p["points"], h, guild_ranks)
-            board_lines.append(f"#{i} **{p['username']}** - {le:g} LE")
+            c_ep = p.get("clean_ep", 0)
+            d_ep = p.get("dirty_ep", 0)
+            if c_ep == 0 and d_ep == 0 and p["points"] > 0:
+                rank_str = guild_ranks.get(p["username"].lower(), "")
+                if rank_str in HR_RANKS:
+                    d_ep = sum(r["points_gained"] for r in h if is_dirty_reason(r["reason"]))
+                    c_ep = p["points"] - d_ep
+                else:
+                    c_ep = p["points"]
+            board_lines.append(f"#{i} **{p['username']}** — {c_ep}c/{d_ep}d → {le:g} LE")
 
         embed.add_field(name="Top 10", value="\n".join(board_lines), inline=False)
         embed.set_footer(text=f"Full leaderboard ({len(players)} players) attached below")

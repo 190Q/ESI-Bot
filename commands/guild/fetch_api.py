@@ -107,6 +107,9 @@ def update_aspects_from_guild_data(guild_members):
         else:
             aspects_data = {"total_aspects": 22, "members": {}}
         
+        # Load fault offsets to correct inflated guild-raid counts
+        fault_offsets = get_latest_fault_offsets()
+        
         changed = False
         
         for member in guild_members:
@@ -117,6 +120,9 @@ def update_aspects_from_guild_data(guild_members):
             username = member.get('username', '')
             graids_data = member.get('guildRaids', {})
             total_graids = graids_data.get('total', 0) if isinstance(graids_data, dict) else 0
+            # Subtract fault offset
+            offset = fault_offsets.get(username.lower(), 0)
+            total_graids = max(0, total_graids - offset)
             
             if uuid not in aspects_data['members']:
                 # New member - set baseline to current graids
@@ -172,12 +178,55 @@ def init_points_baseline():
     conn.close()
 
 
+def get_latest_fault_offsets():
+    """Load guild-raid fault offsets from the most recent API tracking DB.
+
+    Returns a dict mapping lowercase username -> offset value.
+    """
+    offsets = {}
+    try:
+        tracking_folder = DB_DIR / "api_tracking"
+        if not tracking_folder.exists():
+            return offsets
+        db_files = []
+        for day_folder in tracking_folder.iterdir():
+            if day_folder.is_dir() and day_folder.name.startswith("api_"):
+                for db_file in day_folder.glob("ESI_*.db"):
+                    db_files.append(db_file)
+        if not db_files:
+            return offsets
+        db_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        for db_file in db_files:
+            try:
+                conn = sqlite3.connect(str(db_file))
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='graid_fault_offsets'"
+                )
+                if cursor.fetchone():
+                    cursor.execute("SELECT username, offset FROM graid_fault_offsets")
+                    for row in cursor.fetchall():
+                        if row[0] and row[1]:
+                            offsets[row[0].lower()] = row[1]
+                    conn.close()
+                    break
+                conn.close()
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"[POINTS] Error loading fault offsets: {e}")
+    return offsets
+
+
 def award_points_from_diff(member_stats: list, guild_members: list):
     """
     Compare current wars/graids against the stored baseline.
     Award 1 point per new war, 10 points per new guild raid.
     """
     init_points_baseline()
+
+    # Load fault offsets to correct inflated guild-raid counts
+    fault_offsets = get_latest_fault_offsets()
 
     graids_by_uuid = {}
     for member in (guild_members or []):
@@ -186,6 +235,10 @@ def award_points_from_diff(member_stats: list, guild_members: list):
             continue
         graids_data = member.get("guildRaids", {})
         total_graids = graids_data.get("total", 0) if isinstance(graids_data, dict) else 0
+        # Subtract fault offset to avoid awarding EP for inflated counts
+        username = member.get("username", "")
+        offset = fault_offsets.get(username.lower(), 0)
+        total_graids = max(0, total_graids - offset)
         graids_by_uuid[uuid] = total_graids
 
     conn = sqlite3.connect(POINTS_BASELINE_DB)

@@ -116,6 +116,45 @@ GRAID_FAULT_MIN_MEDIAN_DELTA = 50
 GRAID_FAULT_GUILD_WIDE_AVG = 15
 
 
+def get_latest_fault_offsets():
+    """Load guild-raid fault offsets from the most recent API tracking DB.
+
+    Returns a dict mapping lowercase username -> offset value.
+    """
+    offsets = {}
+    try:
+        if not API_TRACKING_FOLDER.exists():
+            return offsets
+        db_files = []
+        for day_folder in API_TRACKING_FOLDER.iterdir():
+            if day_folder.is_dir() and day_folder.name.startswith("api_"):
+                for db_file in day_folder.glob("ESI_*.db"):
+                    db_files.append(db_file)
+        if not db_files:
+            return offsets
+        db_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        for db_file in db_files:
+            try:
+                conn = sqlite3.connect(str(db_file))
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='graid_fault_offsets'"
+                )
+                if cursor.fetchone():
+                    cursor.execute("SELECT username, offset FROM graid_fault_offsets")
+                    for row in cursor.fetchall():
+                        if row[0] and row[1]:
+                            offsets[row[0].lower()] = row[1]
+                    conn.close()
+                    break
+                conn.close()
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"[POINTS] Error loading fault offsets: {e}")
+    return offsets
+
+
 def get_current_day_string():
     """Get the current day as a string for folder naming"""
     return datetime.now(timezone.utc).strftime("%d-%m-%Y")
@@ -312,6 +351,9 @@ def update_aspects_from_guild_data(guild_members):
         else:
             aspects_data = {"total_aspects": 22, "members": {}}
         
+        # Load fault offsets to correct inflated guild-raid counts
+        fault_offsets = get_latest_fault_offsets()
+        
         changed = False
         
         for member in guild_members:
@@ -322,6 +364,9 @@ def update_aspects_from_guild_data(guild_members):
             username = member.get('username', '')
             graids_data = member.get('guildRaids', {})
             total_graids = graids_data.get('total', 0) if isinstance(graids_data, dict) else 0
+            # Subtract fault offset
+            offset = fault_offsets.get(username.lower(), 0)
+            total_graids = max(0, total_graids - offset)
             
             if uuid not in aspects_data['members']:
                 # New member - set baseline to current graids
@@ -384,7 +429,10 @@ def award_points_from_diff(member_stats: list, guild_members: list):
     """
     init_points_baseline()
 
-    # Build graids lookup from guild_members (uuid -> total_graids)
+    # Load fault offsets to correct inflated guild-raid counts
+    fault_offsets = get_latest_fault_offsets()
+
+    # Build graids lookup from guild_members (uuid -> corrected total_graids)
     graids_by_uuid = {}
     # Build rank lookup from guild_members (uuid -> lowered rank)
     rank_by_uuid = {}
@@ -394,6 +442,10 @@ def award_points_from_diff(member_stats: list, guild_members: list):
             continue
         graids_data = member.get("guildRaids", {})
         total_graids = graids_data.get("total", 0) if isinstance(graids_data, dict) else 0
+        # Subtract fault offset to avoid awarding EP for inflated counts
+        username = member.get("username", "")
+        offset = fault_offsets.get(username.lower(), 0)
+        total_graids = max(0, total_graids - offset)
         graids_by_uuid[uuid] = total_graids
         rank = member.get("rank") or ""
         rank_by_uuid[uuid] = rank.lower()

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import sqlite3
 import json
 from pathlib import Path
+import statistics
 from utils.permissions import has_roles
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
 from utils.esi_points import save_points, init_points_database
@@ -20,6 +21,12 @@ REQUIRED_ROLES = [int(OWNER_ID_RAW)] if OWNER_ID_RAW else []
 GUILDS = ["ESI"]
 
 ASPECTS_FILE = DATA_DIR / "aspects.json"
+
+# Guild-wide graid fault detection thresholds
+GRAID_FAULT_MIN_AFFECTED_PCT = 0.5
+GRAID_FAULT_MIN_MEMBERS = 10
+GRAID_FAULT_MIN_MEDIAN_DELTA = 50
+GRAID_FAULT_GUILD_WIDE_AVG = 15
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_FOLDER = BASE_DIR / "databases"
@@ -990,6 +997,166 @@ class FetchAPI:
             day_string = self._get_current_day_string()
         return os.path.join(self.api_tracking_folder, f"api_{day_string}")
 
+    def _get_previous_api_db(self, current_db_path):
+        """Find the most recent API DB before the current one."""
+        db_files = []
+        if os.path.isdir(self.api_tracking_folder):
+            for day_folder_name in os.listdir(self.api_tracking_folder):
+                if not day_folder_name.startswith("api_"):
+                    continue
+                day_path = os.path.join(self.api_tracking_folder, day_folder_name)
+                if not os.path.isdir(day_path):
+                    continue
+                for fname in os.listdir(day_path):
+                    if fname.endswith(".db"):
+                        db_files.append(os.path.join(day_path, fname))
+        db_files.sort(key=os.path.getmtime)
+        current_abs = os.path.abspath(current_db_path)
+        for db in reversed(db_files):
+            if os.path.abspath(db) != current_abs:
+                return db
+        return None
+
+    def _get_previous_day_latest_db(self, current_db_path):
+        """Find the latest DB from the calendar day before the current DB's day."""
+        current_folder = os.path.basename(os.path.dirname(os.path.abspath(current_db_path)))
+        if not current_folder.startswith("api_"):
+            return None
+        try:
+            current_date = datetime.strptime(current_folder[4:], "%d-%m-%Y").date()
+        except ValueError:
+            return None
+        best_date = None
+        best_path = None
+        for name in os.listdir(self.api_tracking_folder):
+            if not name.startswith("api_"):
+                continue
+            day_path = os.path.join(self.api_tracking_folder, name)
+            if not os.path.isdir(day_path):
+                continue
+            try:
+                folder_date = datetime.strptime(name[4:], "%d-%m-%Y").date()
+            except ValueError:
+                continue
+            if folder_date >= current_date:
+                continue
+            if best_date is not None and folder_date < best_date:
+                continue
+            db_files = sorted([f for f in os.listdir(day_path) if f.endswith(".db")])
+            if db_files:
+                best_date = folder_date
+                best_path = os.path.join(day_path, db_files[-1])
+        return best_path
+
+    def _read_graid_totals_from_db(self, db_path):
+        if not db_path:
+            return {}
+        try:
+            c = sqlite3.connect(db_path)
+            cur = c.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='guild_raid_stats'")
+            if not cur.fetchone():
+                c.close()
+                return {}
+            result = {}
+            for row in cur.execute("SELECT LOWER(username), total_graids FROM guild_raid_stats").fetchall():
+                result[row[0]] = row[1] or 0
+            c.close()
+            return result
+        except Exception:
+            return {}
+
+    def _read_prev_offsets_from_db(self, db_path):
+        if not db_path:
+            return {}
+        try:
+            c = sqlite3.connect(db_path)
+            cur = c.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='graid_fault_offsets'")
+            if not cur.fetchone():
+                c.close()
+                return {}
+            result = {}
+            for row in cur.execute(
+                "SELECT LOWER(username), username, uuid, offset FROM graid_fault_offsets"
+            ).fetchall():
+                result[row[0]] = {"username": row[1], "uuid": row[2], "offset": row[3] or 0}
+            c.close()
+            return result
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _detect_graid_fault_deltas(prev_totals, curr_totals):
+        common = set(prev_totals.keys()) & set(curr_totals.keys())
+        if len(common) < GRAID_FAULT_MIN_MEMBERS:
+            return {}
+        positive_deltas = []
+        for ulow in common:
+            prev_val = prev_totals[ulow]
+            delta = curr_totals[ulow] - prev_val
+            if delta > 0 and prev_val > 0:
+                positive_deltas.append((ulow, delta))
+        if len(positive_deltas) < GRAID_FAULT_MIN_MEMBERS:
+            return {}
+        affected_pct = len(positive_deltas) / len(common)
+        median_delta = statistics.median([d for _, d in positive_deltas])
+        total_delta = sum(d for _, d in positive_deltas)
+        avg_delta = total_delta / len(common)
+        individual_spike = (affected_pct >= GRAID_FAULT_MIN_AFFECTED_PCT and median_delta >= GRAID_FAULT_MIN_MEDIAN_DELTA)
+        guild_wide_spike = (affected_pct >= 0.6 and avg_delta >= GRAID_FAULT_GUILD_WIDE_AVG)
+        extreme_jumps = sum(1 for _, d in positive_deltas if d >= 200) >= 3
+        if individual_spike or guild_wide_spike or extreme_jumps:
+            print(f"[GRAID_FAULT] Detected: {len(positive_deltas)}/{len(common)} affected ({affected_pct:.0%}), median={median_delta:.0f}, avg={avg_delta:.0f}")
+            return {ulow: delta for ulow, delta in positive_deltas}
+        return {}
+
+    def _detect_and_store_graid_fault_offsets(self, conn, current_db_path):
+        cursor = conn.cursor()
+        prev_db_path = self._get_previous_api_db(current_db_path)
+        prev_day_db_path = self._get_previous_day_latest_db(current_db_path)
+        prev_offsets = self._read_prev_offsets_from_db(prev_db_path)
+        if not prev_offsets and prev_day_db_path:
+            prev_offsets = self._read_prev_offsets_from_db(prev_day_db_path)
+        curr_graids = {}
+        try:
+            for row in cursor.execute(
+                "SELECT LOWER(username), username, uuid, total_graids FROM guild_raid_stats"
+            ).fetchall():
+                curr_graids[row[0]] = {"username": row[1], "uuid": row[2], "total": row[3] or 0}
+        except Exception:
+            return
+        curr_totals = {ulow: info["total"] for ulow, info in curr_graids.items()}
+        new_fault_deltas = {}
+        if prev_db_path:
+            prev_totals = self._read_graid_totals_from_db(prev_db_path)
+            if prev_totals:
+                new_fault_deltas = self._detect_graid_fault_deltas(prev_totals, curr_totals)
+        if not new_fault_deltas and prev_day_db_path and prev_db_path:
+            prev_folder = os.path.basename(os.path.dirname(os.path.abspath(prev_db_path)))
+            curr_folder = os.path.basename(os.path.dirname(os.path.abspath(current_db_path)))
+            if prev_folder != curr_folder:
+                prev_day_totals = self._read_graid_totals_from_db(prev_day_db_path)
+                if prev_day_totals:
+                    new_fault_deltas = self._detect_graid_fault_deltas(prev_day_totals, curr_totals)
+        merged = {}
+        for ulow, data in prev_offsets.items():
+            merged[ulow] = dict(data)
+        for ulow, delta in new_fault_deltas.items():
+            if ulow in merged:
+                merged[ulow]["offset"] += delta
+            else:
+                info = curr_graids.get(ulow, {})
+                merged[ulow] = {"username": info.get("username", ulow), "uuid": info.get("uuid"), "offset": delta}
+        if merged:
+            cursor.execute('CREATE TABLE IF NOT EXISTS graid_fault_offsets (username TEXT NOT NULL, uuid TEXT, offset INTEGER DEFAULT 0)')
+            for data in merged.values():
+                cursor.execute("INSERT INTO graid_fault_offsets (username, uuid, offset) VALUES (?, ?, ?)", (data["username"], data["uuid"], data["offset"]))
+            if new_fault_deltas:
+                print(f"[GRAID_FAULT] Stored offsets for {len(merged)} players (new faults: {len(new_fault_deltas)})")
+            else:
+                print(f"[GRAID_FAULT] Carried forward offsets for {len(merged)} players")
+
     async def save_data(self, guild_name: str, member_stats: list, guild_level: int = None, guild_members: list = None):
         """Save member statistics to SQLite database with timestamp."""
         import sqlite3
@@ -1149,6 +1316,9 @@ class FetchAPI:
                         graid_list.get('The Nameless Anomaly', 0)
                     ))
                 print(f"[API] Saved {len(guild_members)} guild raid stats")
+                
+                # Detect and store guild-wide graid fault offsets
+                self._detect_and_store_graid_fault_offsets(conn, db_path)
                 
                 # Update aspects_data.json with new graid data
                 update_aspects_from_guild_data(guild_members)

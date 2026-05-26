@@ -129,7 +129,7 @@ def get_api_databases_in_timeframe(days: int):
 
 
 def get_player_graidcount(db_path: str, username: str) -> Optional[int]:
-    """Get player's total graid count from a database."""
+    """Get player's total graid count from a database, adjusted for API faults."""
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
@@ -146,11 +146,27 @@ def get_player_graidcount(db_path: str, username: str) -> Optional[int]:
         )
         
         result = cursor.fetchone()
-        conn.close()
+        if not result:
+            conn.close()
+            return None
         
-        if result:
-            return result[0]
-        return None
+        total = result[0]
+        
+        # Subtract fault offset if present (guild-wide API inflation)
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='graid_fault_offsets'"
+        )
+        if cursor.fetchone():
+            cursor.execute(
+                "SELECT offset FROM graid_fault_offsets WHERE LOWER(username) = LOWER(?)",
+                (username,)
+            )
+            offset_row = cursor.fetchone()
+            if offset_row and offset_row[0]:
+                total -= offset_row[0]
+        
+        conn.close()
+        return max(0, total)
     
     except Exception as e:
         print(f"Error querying database {db_path}: {e}")

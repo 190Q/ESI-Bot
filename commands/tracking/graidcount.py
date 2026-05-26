@@ -188,7 +188,10 @@ def get_daily_graidcount_deltas(databases: list, username: str) -> list:
         graidcount2 = get_player_graidcount(db2_path, username)
         
         if graidcount1 is not None and graidcount2 is not None:
-            delta = graidcount2 - graidcount1
+            # Skip when prev is 0
+            if graidcount1 == 0:
+                continue
+            delta = max(0, graidcount2 - graidcount1)
             
             # Group by date (day)
             date_key = db2_time.strftime('%Y-%m-%d')
@@ -312,8 +315,8 @@ def setup(bot, has_required_role, config):
                     oldest_count = get_player_graidcount(oldest_db, player)
                     latest_count = get_player_graidcount(latest_db, player)
                     
-                    if oldest_count is not None and latest_count is not None:
-                        d = latest_count - oldest_count
+                    if oldest_count is not None and latest_count is not None and oldest_count > 0:
+                        d = max(0, latest_count - oldest_count)
                         if d != 0:
                             player_deltas.append({
                                 'username': player,

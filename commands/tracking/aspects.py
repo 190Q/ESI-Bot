@@ -3,12 +3,15 @@ from discord import app_commands
 from discord.ui import View, Select
 import os
 import json
+import sqlite3
 import aiohttp
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from utils.permissions import has_roles
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
+
+API_TRACKING_FOLDER = DB_DIR / "api_tracking"
 
 OWNER_ID = int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else 0
 REQUIRED_ROLES = [
@@ -56,11 +59,63 @@ async def fetch_guild_data():
     return None
 
 
+def get_latest_fault_offsets():
+    """Load guild-raid fault offsets from the most recent API tracking database.
+    
+    Returns a dict mapping lowercase username -> offset value.
+    """
+    offsets = {}
+    try:
+        if not API_TRACKING_FOLDER.exists():
+            return offsets
+        
+        # Collect all .db files
+        db_files = []
+        for day_folder in API_TRACKING_FOLDER.iterdir():
+            if day_folder.is_dir() and day_folder.name.startswith("api_"):
+                for db_file in day_folder.glob("ESI_*.db"):
+                    db_files.append(db_file)
+        
+        if not db_files:
+            return offsets
+        
+        # Sort newest first by modification time
+        db_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        
+        # Find the first DB that has a graid_fault_offsets table
+        for db_file in db_files:
+            try:
+                conn = sqlite3.connect(str(db_file))
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='graid_fault_offsets'"
+                )
+                if cursor.fetchone():
+                    cursor.execute("SELECT username, offset FROM graid_fault_offsets")
+                    for row in cursor.fetchall():
+                        if row[0] and row[1]:
+                            offsets[row[0].lower()] = row[1]
+                    conn.close()
+                    break
+                conn.close()
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"[ASPECTS] Error loading fault offsets: {e}")
+    return offsets
+
+
 def extract_members_with_graids(guild_data):
-    """Extract all members with their UUIDs and guildRaids from guild data."""
+    """Extract all members with their UUIDs and guildRaids from guild data.
+    
+    Subtracts any guild-raid fault offsets to avoid counting inflated API values.
+    """
     members = {}
     if not guild_data or 'members' not in guild_data:
         return members
+    
+    # Load fault offsets
+    fault_offsets = get_latest_fault_offsets()
     
     members_data = guild_data['members']
     for rank, rank_members in members_data.items():
@@ -72,6 +127,8 @@ def extract_members_with_graids(guild_data):
                     uuid = member_info.get('uuid', '')
                     graids = member_info.get('guildRaids', {})
                     total_graids = graids.get('total', 0) if isinstance(graids, dict) else 0
+                    offset = fault_offsets.get(username.lower(), 0)
+                    total_graids = max(0, total_graids - offset)
                     if uuid:
                         members[uuid] = {
                             'name': username,

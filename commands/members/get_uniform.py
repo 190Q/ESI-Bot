@@ -262,7 +262,7 @@ def setup(bot, has_required_role, config):
                 # No linked Discord account found - show error instead of falling back
                 error_embed = discord.Embed(
                     title="Error",
-                    description=f"No Discord account is linked to the Minecraft username `{minecraft_username}`.\nContact a <@600185623474601995> member to link your Discord account to your Minecarft username first!",
+                    description=f"No Discord account is linked to the Minecraft username `{minecraft_username}`.\nContact a <@&{PARLIAMENT_ROLE_ID}> member to link your Discord account to your Minecarft username first!",
                     color=0xFF0000,
                     timestamp=datetime.utcnow()
                 )

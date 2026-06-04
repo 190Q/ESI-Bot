@@ -479,20 +479,18 @@ def award_points_from_diff(member_stats: list, guild_members: list):
 
         player = [{"uuid": uuid, "username": username}]
 
-        # Sanity check: skip point awards if the diff is impossibly large
+        # Sanity check: warn if the diff is unexpectedly large.
         if new_wars > MAX_NEW_WARS_PER_CYCLE:
             print(
-                f"[POINTS] Skipping {username}: +{new_wars} new wars exceeds "
-                f"cap of {MAX_NEW_WARS_PER_CYCLE} (likely data anomaly)."
+                f"[POINTS][WARN] {username}: +{new_wars} new wars exceeds "
+                f"cap of {MAX_NEW_WARS_PER_CYCLE}; awarding full delta."
             )
-            new_wars = 0
 
         if new_graids > MAX_NEW_GRAIDS_PER_CYCLE:
             print(
-                f"[POINTS] Skipping {username}: +{new_graids} new raids exceeds "
-                f"cap of {MAX_NEW_GRAIDS_PER_CYCLE} (likely data anomaly)."
+                f"[POINTS][WARN] {username}: +{new_graids} new raids exceeds "
+                f"cap of {MAX_NEW_GRAIDS_PER_CYCLE}; awarding full delta."
             )
-            new_graids = 0
 
         player_rank = rank_by_uuid.get(uuid, "")
 

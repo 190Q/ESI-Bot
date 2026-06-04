@@ -216,6 +216,8 @@ ship_scores.db
 points_baseline.db
 migrate_shop_db.py
 shop.db
+inactivity_exemptions.db
+playtime.db
 
 # Data folders
 alt_accounts.json

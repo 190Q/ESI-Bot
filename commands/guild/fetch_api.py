@@ -31,9 +31,7 @@ GRAID_FAULT_GUILD_WIDE_AVG = 15
 # Sanity caps
 MAX_NEW_GRAIDS_PER_FETCH = 5
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DB_FOLDER = BASE_DIR / "databases"
-POINTS_BASELINE_DB = DB_FOLDER / "points_baseline.db"
+POINTS_BASELINE_DB = DB_DIR / "points_baseline.db"
 
 BADGE_ROLES = {
     "War Badges": {
@@ -278,10 +276,9 @@ def award_points_from_diff(member_stats: list, guild_members: list):
 
         if new_graids > MAX_NEW_GRAIDS_PER_FETCH:
             print(
-                f"[POINTS] Skipping {username}: +{new_graids} new raids exceeds "
-                f"cap of {MAX_NEW_GRAIDS_PER_FETCH} (likely data anomaly)."
+                f"[POINTS][WARN] {username}: +{new_graids} new raids exceeds "
+                f"cap of {MAX_NEW_GRAIDS_PER_FETCH}; awarding full delta."
             )
-            new_graids = 0
 
         if new_graids > 0:
             save_points(player, new_graids * 10, reason="Guild Raid")

@@ -31,6 +31,7 @@ FETCH_INTERVAL_SECONDS = 300 # 5 minutes
 # Sanity caps: a player realistically cannot gain more than this many
 MAX_NEW_WARS_PER_CYCLE = 20
 MAX_NEW_GRAIDS_PER_CYCLE = 5
+STALE_OFFSET_REBASE_THRESHOLD = 50
 
 # Badge role definitions (same as command file)
 BADGE_ROLES = {
@@ -153,6 +154,30 @@ def get_latest_fault_offsets():
     except Exception as e:
         print(f"[POINTS] Error loading fault offsets: {e}")
     return offsets
+
+
+def apply_graid_fault_offset(total_graids: int, offset: int, username: str, log_warning: bool = False):
+    """
+    Apply fault offset to a guild-raid total.
+
+    If the offset is >= current raw total, treat it as stale and ignore it.
+    This prevents permanent suppression when historical offsets outlive
+    the underlying API anomaly.
+    """
+    raw_total = int(total_graids or 0)
+    fault_offset = int(offset or 0)
+    stale_offset = False
+
+    if raw_total > 0 and fault_offset > 0 and fault_offset >= raw_total:
+        stale_offset = True
+        fault_offset = 0
+        if log_warning:
+            print(
+                f"[POINTS][WARN] {username}: stale graid fault offset detected "
+                f"(offset >= total: {offset} >= {raw_total}); ignoring offset."
+            )
+
+    return max(0, raw_total - fault_offset), stale_offset
 
 
 def get_current_day_string():
@@ -364,9 +389,8 @@ def update_aspects_from_guild_data(guild_members):
             username = member.get('username', '')
             graids_data = member.get('guildRaids', {})
             total_graids = graids_data.get('total', 0) if isinstance(graids_data, dict) else 0
-            # Subtract fault offset
             offset = fault_offsets.get(username.lower(), 0)
-            total_graids = max(0, total_graids - offset)
+            total_graids, _ = apply_graid_fault_offset(total_graids, offset, username, log_warning=False)
             
             if uuid not in aspects_data['members']:
                 # New member - set baseline to current graids
@@ -434,6 +458,7 @@ def award_points_from_diff(member_stats: list, guild_members: list):
 
     # Build graids lookup from guild_members (uuid -> corrected total_graids)
     graids_by_uuid = {}
+    graid_stale_offset_by_uuid = {}
     # Build rank lookup from guild_members (uuid -> lowered rank)
     rank_by_uuid = {}
     for member in (guild_members or []):
@@ -442,11 +467,13 @@ def award_points_from_diff(member_stats: list, guild_members: list):
             continue
         graids_data = member.get("guildRaids", {})
         total_graids = graids_data.get("total", 0) if isinstance(graids_data, dict) else 0
-        # Subtract fault offset to avoid awarding EP for inflated counts
         username = member.get("username", "")
         offset = fault_offsets.get(username.lower(), 0)
-        total_graids = max(0, total_graids - offset)
-        graids_by_uuid[uuid] = total_graids
+        corrected_graids, stale_offset = apply_graid_fault_offset(
+            total_graids, offset, username, log_warning=True
+        )
+        graids_by_uuid[uuid] = corrected_graids
+        graid_stale_offset_by_uuid[uuid] = stale_offset
         rank = member.get("rank") or ""
         rank_by_uuid[uuid] = rank.lower()
 
@@ -476,6 +503,16 @@ def award_points_from_diff(member_stats: list, guild_members: list):
         prev_wars, prev_graids = row
         new_wars = max(0, current_wars - prev_wars)
         new_graids = max(0, current_graids - prev_graids)
+        stale_offset = graid_stale_offset_by_uuid.get(uuid, False)
+
+        # If a stale offset is being ignored and baseline was stuck at 0,
+        # avoid retroactively awarding a full historical total in one cycle
+        if stale_offset and prev_graids == 0 and current_graids >= STALE_OFFSET_REBASE_THRESHOLD:
+            print(
+                f"[POINTS][WARN] {username}: stale-offset recovery rebasing guild-raid baseline "
+                f"to {current_graids} without retroactive award."
+            )
+            new_graids = 0
 
         player = [{"uuid": uuid, "username": username}]
 

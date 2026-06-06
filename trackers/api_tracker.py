@@ -8,15 +8,42 @@ import asyncio
 import aiohttp
 import sqlite3
 import json
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, List
-import statistics
 from dotenv import load_dotenv
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.esi_points import save_points, init_points_database
+from utils.api_fetcher import (
+    make_api_request,
+    fetch_guild_info,
+    extract_guild_members as shared_extract_guild_members,
+    extract_member_stats as shared_extract_member_stats,
+    build_member_stats_from_guild_payload,
+)
+from utils.api_tracking_utils import (
+    BADGE_ROLES,
+    get_current_day_string as shared_get_current_day_string,
+    get_day_folder_path as shared_get_day_folder_path,
+    cleanup_daily_folder as shared_cleanup_daily_folder,
+    cleanup_old_day_folders as shared_cleanup_old_day_folders,
+    cleanup_old_databases as shared_cleanup_old_databases,
+    get_latest_fault_offsets as shared_get_latest_fault_offsets,
+    apply_graid_fault_offset as shared_apply_graid_fault_offset,
+    extract_guild_raid_payload as shared_extract_guild_raid_payload,
+    update_aspects_from_guild_data as shared_update_aspects_from_guild_data,
+    init_points_baseline as shared_init_points_baseline,
+    award_points_from_diff as shared_award_points_from_diff,
+    get_previous_api_db as shared_get_previous_api_db,
+    get_previous_day_latest_db as shared_get_previous_day_latest_db,
+    read_graid_totals_from_db as shared_read_graid_totals_from_db,
+    read_prev_offsets_from_db as shared_read_prev_offsets_from_db,
+    detect_graid_fault_deltas as shared_detect_graid_fault_deltas,
+    detect_and_store_graid_fault_offsets as shared_detect_and_store_graid_fault_offsets,
+    save_additional_data as shared_save_additional_data,
+    save_player_and_raid_stats as shared_save_player_and_raid_stats,
+)
 
 # Initialize the points DB on startup
 init_points_database()
@@ -27,60 +54,6 @@ load_dotenv()
 # Configuration
 GUILDS = ["ESI"]
 FETCH_INTERVAL_SECONDS = 300 # 5 minutes
-
-# Sanity caps: a player realistically cannot gain more than this many
-MAX_NEW_WARS_PER_CYCLE = 20
-MAX_NEW_GRAIDS_PER_CYCLE = 5
-STALE_OFFSET_REBASE_THRESHOLD = 50
-
-# Badge role definitions (same as command file)
-BADGE_ROLES = {
-    "War Badges": {
-        "10k": 1426633275635404981,
-        "6k": 1426633206857465888,
-        "3k": 1426633036736368861,
-        "1.5k": 1426632920528846880,
-        "750": 1426633144093638778,
-        "300": 1426632862207049778,
-        "100": 1426632780615385098,
-    },
-    "Quest Badges": {
-        "350": 1426636141242617906,
-        "225": 1426636108321525891,
-        "150": 1426636066856898593,
-        "90": 1426636018664341675,
-        "50": 1426635982614040676,
-        "25": 1426635948992761988,
-        "10": 1426635880462024937,
-    },
-    "Recruitment Badges": {
-        "250": 1426637291706912788,
-        "150": 1426637244109946920,
-        "80": 1426637209301160039,
-        "50": 1426637168071282808,
-        "25": 1426637134378303619,
-        "10": 1426637094339608586,
-        "5": 1426636993630175447,
-    },
-    "Raid Badges": {
-        "6k": 1426634664025526405,
-        "3.5k": 1426634622791323938,
-        "2k": 1426634579644514347,
-        "1k": 1426634531284324353,
-        "500": 1426634469401432194,
-        "100": 1426634408370114773,
-        "50": 1426634317970542613,
-    },
-    "Event Badges": {
-        "100": 1440682465717915779,
-        "75": 1440682471086751815,
-        "55": 1440682473641083011,
-        "35": 1440682477055115304,
-        "20": 1440682480846897232,
-        "10": 1440682485548711997,
-        "3": 1440682762133569730,
-    },
-}
 
 # Load all WYNNCRAFT_KEY_* environment variables
 WYNNCRAFT_KEYS = []
@@ -106,206 +79,42 @@ POINTS_BASELINE_DB = DB_FOLDER / "points_baseline.db"
 QUEUE_FILE = BASE_DIR / "data/guild_member_queue.json"
 PENDING_INVITES_FILE = BASE_DIR / "data/pending_invites.json"
 
-# Storage constants
-SIZE_LIMIT_BYTES = 20 * 1024 * 1024 * 1024  # 20GB
-CLEANUP_INTERVAL_MINUTES = 30  # Keep files every 30 minutes
-
-# Guild-wide graid fault detection thresholds
-GRAID_FAULT_MIN_AFFECTED_PCT = 0.5
-GRAID_FAULT_MIN_MEMBERS = 10
-GRAID_FAULT_MIN_MEDIAN_DELTA = 50
-GRAID_FAULT_GUILD_WIDE_AVG = 15
-
 
 def get_latest_fault_offsets():
-    """Load guild-raid fault offsets from the most recent API tracking DB.
-
-    Returns a dict mapping lowercase username -> offset value.
-    """
-    offsets = {}
-    try:
-        if not API_TRACKING_FOLDER.exists():
-            return offsets
-        db_files = []
-        for day_folder in API_TRACKING_FOLDER.iterdir():
-            if day_folder.is_dir() and day_folder.name.startswith("api_"):
-                for db_file in day_folder.glob("ESI_*.db"):
-                    db_files.append(db_file)
-        if not db_files:
-            return offsets
-        db_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-        for db_file in db_files:
-            try:
-                conn = sqlite3.connect(str(db_file))
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='graid_fault_offsets'"
-                )
-                if cursor.fetchone():
-                    cursor.execute("SELECT username, offset FROM graid_fault_offsets")
-                    for row in cursor.fetchall():
-                        if row[0] and row[1]:
-                            offsets[row[0].lower()] = row[1]
-                    conn.close()
-                    break
-                conn.close()
-            except Exception:
-                continue
-    except Exception as e:
-        print(f"[POINTS] Error loading fault offsets: {e}")
-    return offsets
+    return shared_get_latest_fault_offsets(API_TRACKING_FOLDER)
 
 
 def apply_graid_fault_offset(total_graids: int, offset: int, username: str, log_warning: bool = False):
-    """
-    Apply fault offset to a guild-raid total.
+    return shared_apply_graid_fault_offset(
+        total_graids,
+        offset,
+        username,
+        log_warning=log_warning,
+    )
 
-    If the offset is >= current raw total, treat it as stale and ignore it.
-    This prevents permanent suppression when historical offsets outlive
-    the underlying API anomaly.
-    """
-    raw_total = int(total_graids or 0)
-    fault_offset = int(offset or 0)
-    stale_offset = False
 
-    if raw_total > 0 and fault_offset > 0 and fault_offset >= raw_total:
-        stale_offset = True
-        fault_offset = 0
-        if log_warning:
-            print(
-                f"[POINTS][WARN] {username}: stale graid fault offset detected "
-                f"(offset >= total: {offset} >= {raw_total}); ignoring offset."
-            )
-
-    return max(0, raw_total - fault_offset), stale_offset
+def _extract_guild_raid_payload(member: dict) -> dict:
+    return shared_extract_guild_raid_payload(member)
 
 
 def get_current_day_string():
-    """Get the current day as a string for folder naming"""
-    return datetime.now(timezone.utc).strftime("%d-%m-%Y")
+    return shared_get_current_day_string()
 
 
 def get_day_folder_path(day_string=None):
-    """Get the folder path for a specific day's API snapshots"""
-    if day_string is None:
-        day_string = get_current_day_string()
-    return API_TRACKING_FOLDER / f"api_{day_string}"
+    return shared_get_day_folder_path(API_TRACKING_FOLDER, day_string)
 
 
 def cleanup_daily_folder(day_folder):
-    """Keep only files that are ~30 minutes apart (with margin)"""
-    if not day_folder.exists():
-        return
-    
-    db_files = sorted(day_folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
-    
-    if len(db_files) <= 1:
-        return
-    
-    files_to_keep = set()
-    last_kept_time = None
-    margin_seconds = 3 * 60  # 3 minute margin
-    
-    for db_file in db_files:
-        file_mtime = db_file.stat().st_mtime
-        
-        if last_kept_time is None:
-            files_to_keep.add(db_file)
-            last_kept_time = file_mtime
-        else:
-            time_diff = file_mtime - last_kept_time
-            if time_diff >= (CLEANUP_INTERVAL_MINUTES * 60 - margin_seconds):
-                files_to_keep.add(db_file)
-                last_kept_time = file_mtime
-    
-    # Always keep the most recent file
-    if db_files:
-        files_to_keep.add(db_files[-1])
-    
-    deleted_count = 0
-    for db_file in db_files:
-        if db_file not in files_to_keep:
-            try:
-                db_file.unlink()
-                deleted_count += 1
-            except Exception as e:
-                print(f"[API] Failed to delete {db_file}: {e}")
-    
-    if deleted_count > 0:
-        print(f"[API] Cleaned up {deleted_count} files from {day_folder.name}")
+    return shared_cleanup_daily_folder(day_folder)
 
 
 def cleanup_old_day_folders():
-    """Clean folders that are 4-6 days old by keeping only the latest file in each"""
-    if not API_TRACKING_FOLDER.exists():
-        return
-    
-    today = datetime.now(timezone.utc).date()
-    
-    for folder in API_TRACKING_FOLDER.iterdir():
-        if not folder.is_dir() or not folder.name.startswith("api_"):
-            continue
-        
-        try:
-            date_str = folder.name.replace("api_", "")
-            folder_date = datetime.strptime(date_str, "%d-%m-%Y").date()
-            days_old = (today - folder_date).days
-            
-            if days_old >= 7:
-                db_files = sorted(folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
-                
-                if len(db_files) <= 1:
-                    continue
-                
-                files_to_delete = db_files[:-1]
-                deleted_count = 0
-                
-                for db_file in files_to_delete:
-                    try:
-                        db_file.unlink()
-                        deleted_count += 1
-                    except Exception as e:
-                        print(f"[API] Failed to delete {db_file}: {e}")
-                
-                if deleted_count > 0:
-                    print(f"[API] Cleaned {deleted_count} files from {folder.name} ({days_old} days old, kept latest only)")
-        
-        except ValueError:
-            continue
+    return shared_cleanup_old_day_folders(API_TRACKING_FOLDER, min_days_old=7, max_days_old=None)
 
 
 def check_and_cleanup_storage():
-    """Check if api_tracking folder exceeds 20GB and delete oldest day folders"""
-    if not API_TRACKING_FOLDER.exists():
-        return
-    
-    total_size = 0
-    for path in API_TRACKING_FOLDER.rglob("*"):
-        if path.is_file():
-            total_size += path.stat().st_size
-    
-    if total_size <= SIZE_LIMIT_BYTES:
-        return
-    
-    print(f"[API] Storage exceeds 20GB ({total_size / (1024**3):.2f} GB), cleaning up...")
-    
-    day_folders = sorted(
-        [f for f in API_TRACKING_FOLDER.iterdir() if f.is_dir()],
-        key=lambda f: datetime.strptime(f.name.replace("api_", ""), "%d-%m-%Y")
-    )
-    
-    for folder in day_folders:
-        if total_size <= SIZE_LIMIT_BYTES:
-            break
-        
-        folder_size = sum(f.stat().st_size for f in folder.rglob("*") if f.is_file())
-        
-        try:
-            shutil.rmtree(folder)
-            total_size -= folder_size
-            print(f"[API] Deleted old folder: {folder.name} ({folder_size / (1024**3):.2f} GB)")
-        except Exception as e:
-            print(f"[API] Failed to delete {folder}: {e}")
+    return shared_cleanup_old_databases(API_TRACKING_FOLDER)
 
 
 def get_pending_invites_data() -> list:
@@ -364,189 +173,25 @@ def get_queue_counts() -> dict:
 
 
 def update_aspects_from_guild_data(guild_members):
-    """Update aspects_data.json based on current guild raid data.
-    Called on every API fetch to keep aspects up to date.
-    2 guild raids = 1 aspect.
-    """
-    try:
-        # Load current aspects data
-        if ASPECTS_FILE.exists():
-            with open(ASPECTS_FILE, 'r') as f:
-                aspects_data = json.load(f)
-        else:
-            aspects_data = {"total_aspects": 22, "members": {}}
-        
-        # Load fault offsets to correct inflated guild-raid counts
-        fault_offsets = get_latest_fault_offsets()
-        
-        changed = False
-        
-        for member in guild_members:
-            uuid = member.get('uuid')
-            if not uuid:
-                continue
-            
-            username = member.get('username', '')
-            graids_data = member.get('guildRaids', {})
-            total_graids = graids_data.get('total', 0) if isinstance(graids_data, dict) else 0
-            offset = fault_offsets.get(username.lower(), 0)
-            total_graids, _ = apply_graid_fault_offset(total_graids, offset, username, log_warning=False)
-            
-            if uuid not in aspects_data['members']:
-                # New member - set baseline to current graids
-                aspects_data['members'][uuid] = {
-                    'name': username,
-                    'baseline_graids': total_graids,
-                    'owed': 0
-                }
-                changed = True
-            else:
-                stored = aspects_data['members'][uuid]
-                
-                # Update name if changed
-                if stored['name'] != username:
-                    stored['name'] = username
-                    changed = True
-                
-                # Calculate new aspects earned since baseline
-                baseline = stored.get('baseline_graids', total_graids)
-                new_graids = total_graids - baseline
-                
-                if new_graids >= 2:
-                    new_aspects = new_graids // 2
-                    stored['owed'] = stored.get('owed', 0) + new_aspects
-                    aspects_data['total_aspects'] += new_aspects
-                    # Advance baseline by the graids that were converted
-                    stored['baseline_graids'] = baseline + (new_aspects * 2)
-                    changed = True
-                    print(f"[ASPECTS] {username}: +{new_aspects} aspects ({new_graids} new graids)")
-        
-        if changed:
-            with open(ASPECTS_FILE, 'w') as f:
-                json.dump(aspects_data, f, indent=2)
-            print(f"[ASPECTS] Updated aspects data (total: {aspects_data['total_aspects']})")
-    
-    except Exception as e:
-        print(f"[ASPECTS] Error updating aspects data: {e}")
+    return shared_update_aspects_from_guild_data(
+        guild_members,
+        ASPECTS_FILE,
+        API_TRACKING_FOLDER,
+    )
 
 
 def init_points_baseline():
-    """Create the baseline table for tracking previous wars/graids per player."""
-    conn = sqlite3.connect(POINTS_BASELINE_DB)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS baseline (
-            uuid TEXT PRIMARY KEY,
-            username TEXT NOT NULL,
-            wars INTEGER NOT NULL DEFAULT 0,
-            total_graids INTEGER NOT NULL DEFAULT 0
-        )
-    """)
-    conn.commit()
-    conn.close()
+    return shared_init_points_baseline(POINTS_BASELINE_DB)
 
 
 def award_points_from_diff(member_stats: list, guild_members: list):
-    """
-    Compare current wars/graids against the stored baseline.
-    Award 1 point per new war, 10 points per new guild raid.
-    """
-    init_points_baseline()
-
-    # Load fault offsets to correct inflated guild-raid counts
-    fault_offsets = get_latest_fault_offsets()
-
-    # Build graids lookup from guild_members (uuid -> corrected total_graids)
-    graids_by_uuid = {}
-    graid_stale_offset_by_uuid = {}
-    # Build rank lookup from guild_members (uuid -> lowered rank)
-    rank_by_uuid = {}
-    for member in (guild_members or []):
-        uuid = member.get("uuid")
-        if not uuid:
-            continue
-        graids_data = member.get("guildRaids", {})
-        total_graids = graids_data.get("total", 0) if isinstance(graids_data, dict) else 0
-        username = member.get("username", "")
-        offset = fault_offsets.get(username.lower(), 0)
-        corrected_graids, stale_offset = apply_graid_fault_offset(
-            total_graids, offset, username, log_warning=True
-        )
-        graids_by_uuid[uuid] = corrected_graids
-        graid_stale_offset_by_uuid[uuid] = stale_offset
-        rank = member.get("rank") or ""
-        rank_by_uuid[uuid] = rank.lower()
-
-    conn = sqlite3.connect(POINTS_BASELINE_DB)
-    c = conn.cursor()
-
-    for stats in member_stats:
-        uuid = stats.get("uuid")
-        username = stats.get("username")
-        if not uuid or not username:
-            continue
-
-        current_wars = stats.get("wars", 0) or 0
-        current_graids = graids_by_uuid.get(uuid, 0)
-
-        c.execute("SELECT wars, total_graids FROM baseline WHERE uuid = ?", (uuid,))
-        row = c.fetchone()
-
-        if row is None:
-            # First time seeing this player - set baseline, no points awarded
-            c.execute(
-                "INSERT INTO baseline (uuid, username, wars, total_graids) VALUES (?, ?, ?, ?)",
-                (uuid, username, current_wars, current_graids)
-            )
-            continue
-
-        prev_wars, prev_graids = row
-        new_wars = max(0, current_wars - prev_wars)
-        new_graids = max(0, current_graids - prev_graids)
-        stale_offset = graid_stale_offset_by_uuid.get(uuid, False)
-
-        # If a stale offset is being ignored and baseline was stuck at 0,
-        # avoid retroactively awarding a full historical total in one cycle
-        if stale_offset and prev_graids == 0 and current_graids >= STALE_OFFSET_REBASE_THRESHOLD:
-            print(
-                f"[POINTS][WARN] {username}: stale-offset recovery rebasing guild-raid baseline "
-                f"to {current_graids} without retroactive award."
-            )
-            new_graids = 0
-
-        player = [{"uuid": uuid, "username": username}]
-
-        # Sanity check: warn if the diff is unexpectedly large.
-        if new_wars > MAX_NEW_WARS_PER_CYCLE:
-            print(
-                f"[POINTS][WARN] {username}: +{new_wars} new wars exceeds "
-                f"cap of {MAX_NEW_WARS_PER_CYCLE}; awarding full delta."
-            )
-
-        if new_graids > MAX_NEW_GRAIDS_PER_CYCLE:
-            print(
-                f"[POINTS][WARN] {username}: +{new_graids} new raids exceeds "
-                f"cap of {MAX_NEW_GRAIDS_PER_CYCLE}; awarding full delta."
-            )
-
-        player_rank = rank_by_uuid.get(uuid, "")
-
-        if new_wars > 0:
-            save_points(player, new_wars * 1, reason="War", rank_at_cycle_start=player_rank)
-            print(f"[POINTS] {username}: +{new_wars} war point(s)")
-
-        if new_graids > 0:
-            save_points(player, new_graids * 10, reason="Guild Raid", rank_at_cycle_start=player_rank)
-            print(f"[POINTS] {username}: +{new_graids * 10} guild raid point(s) ({new_graids} new raid(s))")
-
-        # Update baseline
-        c.execute(
-            "UPDATE baseline SET username = ?, wars = ?, total_graids = ? WHERE uuid = ?",
-            (username, current_wars, current_graids, uuid)
-        )
-
-    conn.commit()
-    conn.close()
+    return shared_award_points_from_diff(
+        member_stats,
+        guild_members,
+        POINTS_BASELINE_DB,
+        API_TRACKING_FOLDER,
+        save_points,
+    )
 
 
 class FetchAPI:
@@ -565,178 +210,19 @@ class FetchAPI:
     
     async def make_request(self, session, url, headers=None):
         """Request helper method following aiohttp pattern."""
-        try:
-            req_headers = headers or self.headers
-            async with session.get(url, headers=req_headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return True, data
-                else:
-                    print(f"[API] Request failed with status {response.status}")
-                    return False, None
-        except Exception as e:
-            print(f"[API] Request failed for {url}: {e}")
-            return False, None
+        return await make_api_request(session, url, headers or self.headers, log_prefix="[API]")
         
     async def get_guild_info(self, guild_name: str) -> Optional[Dict]:
         """Fetch guild information from Wynncraft API."""
-        import urllib.parse
-        encoded_guild_name = urllib.parse.quote(guild_name)
-        url = f"{self.base_url}/guild/prefix/{encoded_guild_name}"
-        
-        async with aiohttp.ClientSession() as session:
-            success, data = await self.make_request(session, url)
-            if success:
-                return data
-            else:
-                print("[API] API request failed.")
-                return None
+        return await fetch_guild_info(self.base_url, guild_name, self.headers, log_prefix="[API]")
 
     def extract_guild_members(self, guild_data: Dict) -> List[Dict]:
         """Extract member data with ranks, UUIDs, and full globalData from guild data."""
-        members = []
-
-        if 'members' in guild_data:
-            members_data = guild_data['members']
-
-            for rank, rank_members in members_data.items():
-                if rank == 'total':
-                    continue
-
-                if isinstance(rank_members, dict):
-                    for username, member_info in rank_members.items():
-                        member_dict = {"username": username, "rank": rank}
-
-                        if isinstance(member_info, dict):
-                            # Copy the full member payload
-                            member_dict.update(member_info)
-
-                            global_data = member_info.get('globalData') or {}
-                            if isinstance(global_data, dict) and 'guildRaids' in global_data:
-                                member_dict['guildRaids'] = global_data['guildRaids']
-
-                        members.append(member_dict)
-
-        return members
+        return shared_extract_guild_members(guild_data)
     
     def get_player_stats(self, member: Dict, guild_data: Optional[Dict] = None) -> Dict:
         """Extract all relevant statistics from a guild member dict."""
-        stats = {
-            'timestamp': datetime.now(timezone.utc).isoformat(),
-            'uuid': None,
-            'guild': {
-                'uuid': None,
-                'name': None,
-                'prefix': None,
-                'rank': None
-            },
-            'playtime': 0,
-            'wars': 0,
-            'totalLevel': 0,
-            'mobsKilled': 0,
-            'chestsFound': 0,
-            'dungeons': {
-                'total': 0,
-                'list': {}
-            },
-            'raids': {
-                'total': 0,
-                'list': {}
-            },
-            'worldEvents': 0,
-            'lootRuns': 0,
-            'caves': 0,
-            'completedQuests': 0,
-            'pvp': {
-                'kills': 0,
-                'deaths': 0
-            }
-        }
-        
-        try:
-            # UUID and username live at the top of the member payload
-            if 'uuid' in member:
-                stats['uuid'] = member.get('uuid')
-            if 'username' in member:
-                stats['username'] = member.get('username')
-
-            # Guild info is pulled from the guild response itself
-            if isinstance(guild_data, dict):
-                stats['guild']['uuid'] = guild_data.get('uuid')
-                stats['guild']['name'] = guild_data.get('name')
-                stats['guild']['prefix'] = guild_data.get('prefix')
-            stats['guild']['rank'] = member.get('rank')
-
-            # Playtime is exposed at the member level in the guild payload
-            if 'playtime' in member and isinstance(member.get('playtime'), (int, float)):
-                stats['playtime'] = member['playtime']
-
-            global_data = member.get('globalData') or {}
-            if isinstance(global_data, dict):
-                # Playtime fallback
-                if stats['playtime'] == 0 and isinstance(global_data.get('playtime'), (int, float)):
-                    stats['playtime'] = global_data['playtime']
-
-                if isinstance(global_data.get('wars'), (int, float)):
-                    stats['wars'] = int(global_data['wars'])
-
-                if 'totalLevel' in global_data:
-                    stats['totalLevel'] = global_data['totalLevel'] or 0
-
-                if 'mobsKilled' in global_data:
-                    stats['mobsKilled'] = global_data['mobsKilled'] or 0
-                elif 'killedMobs' in global_data:
-                    stats['mobsKilled'] = global_data['killedMobs'] or 0
-
-                if 'chestsFound' in global_data:
-                    stats['chestsFound'] = global_data['chestsFound'] or 0
-                elif 'foundChests' in global_data:
-                    stats['chestsFound'] = global_data['foundChests'] or 0
-
-                dungeons = global_data.get('dungeons')
-                if isinstance(dungeons, dict):
-                    stats['dungeons']['total'] = dungeons.get('total', 0) or 0
-                    if isinstance(dungeons.get('list'), dict):
-                        stats['dungeons']['list'] = dungeons['list']
-
-                raids = global_data.get('raids')
-                if isinstance(raids, dict):
-                    stats['raids']['total'] = raids.get('total', 0) or 0
-                    if isinstance(raids.get('list'), dict):
-                        stats['raids']['list'] = raids['list']
-
-                if 'worldEvents' in global_data:
-                    stats['worldEvents'] = global_data['worldEvents'] or 0
-                elif 'completedWorldEvents' in global_data:
-                    stats['worldEvents'] = global_data['completedWorldEvents'] or 0
-
-                # The new API key is lowercase `lootruns`; fall back to old
-                # casings so historical snapshots keep working.
-                if 'lootRuns' in global_data:
-                    stats['lootRuns'] = global_data['lootRuns'] or 0
-                elif 'lootruns' in global_data:
-                    stats['lootRuns'] = global_data['lootruns'] or 0
-                elif 'completedLootRuns' in global_data:
-                    stats['lootRuns'] = global_data['completedLootRuns'] or 0
-
-                if 'caves' in global_data:
-                    stats['caves'] = global_data['caves'] or 0
-                elif 'completedCaves' in global_data:
-                    stats['caves'] = global_data['completedCaves'] or 0
-
-                if isinstance(global_data.get('completedQuests'), (int, float)):
-                    stats['completedQuests'] = int(global_data['completedQuests'])
-
-                pvp = global_data.get('pvp')
-                if isinstance(pvp, dict):
-                    stats['pvp']['kills'] = pvp.get('kills', 0) or 0
-                    stats['pvp']['deaths'] = pvp.get('deaths', 0) or 0
-
-            return stats
-
-        except (KeyError, TypeError, ValueError) as e:
-            print(f"[API] Error extracting player stats: {e}")
-            return stats
+        return shared_extract_member_stats(member, guild_data=guild_data, log_prefix="[API]")
     
     async def save_data(self, guild_name: str, member_stats: list, guild_level: int = None, guild_members: list = None):
         """Save member statistics to SQLite database with timestamp."""
@@ -810,130 +296,14 @@ class FetchAPI:
                 ],
             )
 
-            # Create tables
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS player_stats (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT NOT NULL,
-                    uuid TEXT,
-                    timestamp TEXT,
-                    guild_uuid TEXT,
-                    guild_name TEXT,
-                    guild_prefix TEXT,
-                    guild_rank TEXT,
-                    playtime INTEGER,
-                    wars INTEGER,
-                    total_level INTEGER,
-                    mobs_killed INTEGER,
-                    chests_found INTEGER,
-                    dungeons_total INTEGER,
-                    dungeons_list TEXT,
-                    raids_total INTEGER,
-                    raids_list TEXT,
-                    world_events INTEGER,
-                    loot_runs INTEGER,
-                    caves INTEGER,
-                    completed_quests INTEGER,
-                    pvp_kills INTEGER,
-                    pvp_deaths INTEGER
-                )
-            ''')
-            
-            # Create UUID to username mapping table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS uuid_username_map (
-                    uuid TEXT PRIMARY KEY,
-                    username TEXT NOT NULL
-                )
-            ''')
-            
-            # Insert data and build UUID mapping
-            uuid_username_pairs = []
-            for stats in member_stats:
-                # Collect UUID-username pairs for mapping table
-                if stats.get('uuid') and stats.get('username'):
-                    uuid_username_pairs.append((stats['uuid'], stats['username']))
-                
-                guild_data = stats.get('guild', {})
-                dungeons_data = stats.get('dungeons', {})
-                raids_data = stats.get('raids', {})
-                pvp_data = stats.get('pvp', {})
-                
-                cursor.execute('''
-                    INSERT INTO player_stats (
-                        username, uuid, timestamp,
-                        guild_uuid, guild_name, guild_prefix, guild_rank,
-                        playtime, wars, total_level, mobs_killed, chests_found,
-                        dungeons_total, dungeons_list, raids_total, raids_list,
-                        world_events, loot_runs, caves, completed_quests,
-                        pvp_kills, pvp_deaths
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    stats.get('username'),
-                    stats.get('uuid'),
-                    stats.get('timestamp'),
-                    guild_data.get('uuid') if isinstance(guild_data, dict) else None,
-                    guild_data.get('name') if isinstance(guild_data, dict) else None,
-                    guild_data.get('prefix') if isinstance(guild_data, dict) else None,
-                    guild_data.get('rank') if isinstance(guild_data, dict) else None,
-                    stats.get('playtime', 0),
-                    stats.get('wars', 0),
-                    stats.get('totalLevel', 0),
-                    stats.get('mobsKilled', 0),
-                    stats.get('chestsFound', 0),
-                    dungeons_data.get('total', 0) if isinstance(dungeons_data, dict) else 0,
-                    json.dumps(dungeons_data.get('list', {})) if isinstance(dungeons_data, dict) else '{}',
-                    raids_data.get('total', 0) if isinstance(raids_data, dict) else 0,
-                    json.dumps(raids_data.get('list', {})) if isinstance(raids_data, dict) else '{}',
-                    stats.get('worldEvents', 0),
-                    stats.get('lootRuns', 0),
-                    stats.get('caves', 0),
-                    stats.get('completedQuests', 0),
-                    pvp_data.get('kills', 0) if isinstance(pvp_data, dict) else 0,
-                    pvp_data.get('deaths', 0) if isinstance(pvp_data, dict) else 0
-                ))
-            
-            # Insert UUID to username mappings
-            if uuid_username_pairs:
-                cursor.executemany(
-                    "INSERT OR REPLACE INTO uuid_username_map (uuid, username) VALUES (?, ?)",
-                    uuid_username_pairs
-                )
-            
-            # Save guild raid stats from guild API
-            if guild_members:
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS guild_raid_stats (
-                        username TEXT NOT NULL,
-                        uuid TEXT,
-                        total_graids INTEGER DEFAULT 0,
-                        canyon_colossus INTEGER DEFAULT 0,
-                        orphions_nexus INTEGER DEFAULT 0,
-                        grootslangs INTEGER DEFAULT 0,
-                        nameless_anomaly INTEGER DEFAULT 0
-                    )
-                ''')
-                
-                for member in guild_members:
-                    graids = member.get('guildRaids', {})
-                    graid_list = graids.get('list', {}) if isinstance(graids, dict) else {}
-                    cursor.execute('''
-                        INSERT INTO guild_raid_stats (username, uuid, total_graids, canyon_colossus, orphions_nexus, grootslangs, nameless_anomaly)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        member.get('username'),
-                        member.get('uuid'),
-                        graids.get('total', 0) if isinstance(graids, dict) else 0,
-                        graid_list.get('The Canyon Colossus', 0),
-                        graid_list.get("Orphion's Nexus of Light", 0),
-                        graid_list.get('Nest of the Grootslangs', 0),
-                        graid_list.get('The Nameless Anomaly', 0)
-                    ))
-                
-                # Detect and store guild-wide graid fault offsets
+            save_result = shared_save_player_and_raid_stats(
+                cursor,
+                member_stats,
+                guild_members,
+                include_shortened_rank=False,
+            )
+            if save_result.get("guild_raid_count", 0):
                 self._detect_and_store_graid_fault_offsets(conn, db_path)
-                
-                # Update aspects_data.json with new graid data
                 update_aspects_from_guild_data(guild_members)
             
             # Save additional data (recruited, quest progress, event progress, badges)
@@ -963,358 +333,34 @@ class FetchAPI:
             traceback.print_exc()
     
     def _get_previous_api_db(self, current_db_path):
-        db_files = []
-        folder = str(API_TRACKING_FOLDER)
-        if os.path.isdir(folder):
-            for day_name in os.listdir(folder):
-                if not day_name.startswith("api_"):
-                    continue
-                day_path = os.path.join(folder, day_name)
-                if not os.path.isdir(day_path):
-                    continue
-                for fname in os.listdir(day_path):
-                    if fname.endswith(".db"):
-                        db_files.append(os.path.join(day_path, fname))
-        db_files.sort(key=os.path.getmtime)
-        current_abs = os.path.abspath(str(current_db_path))
-        for db in reversed(db_files):
-            if os.path.abspath(db) != current_abs:
-                return db
-        return None
+        return shared_get_previous_api_db(API_TRACKING_FOLDER, current_db_path)
 
     def _get_previous_day_latest_db(self, current_db_path):
-        current_folder = os.path.basename(os.path.dirname(os.path.abspath(str(current_db_path))))
-        if not current_folder.startswith("api_"):
-            return None
-        try:
-            current_date = datetime.strptime(current_folder[4:], "%d-%m-%Y").date()
-        except ValueError:
-            return None
-        best_date = None
-        best_path = None
-        folder = str(API_TRACKING_FOLDER)
-        for name in os.listdir(folder):
-            if not name.startswith("api_"):
-                continue
-            day_path = os.path.join(folder, name)
-            if not os.path.isdir(day_path):
-                continue
-            try:
-                folder_date = datetime.strptime(name[4:], "%d-%m-%Y").date()
-            except ValueError:
-                continue
-            if folder_date >= current_date:
-                continue
-            if best_date is not None and folder_date < best_date:
-                continue
-            db_files = sorted([f for f in os.listdir(day_path) if f.endswith(".db")])
-            if db_files:
-                best_date = folder_date
-                best_path = os.path.join(day_path, db_files[-1])
-        return best_path
+        return shared_get_previous_day_latest_db(API_TRACKING_FOLDER, current_db_path)
 
     def _read_graid_totals_from_db(self, db_path):
-        if not db_path:
-            return {}
-        try:
-            c = sqlite3.connect(db_path)
-            cur = c.cursor()
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='guild_raid_stats'")
-            if not cur.fetchone():
-                c.close()
-                return {}
-            result = {}
-            for row in cur.execute("SELECT LOWER(username), total_graids FROM guild_raid_stats").fetchall():
-                result[row[0]] = row[1] or 0
-            c.close()
-            return result
-        except Exception:
-            return {}
+        return shared_read_graid_totals_from_db(db_path)
 
     def _read_prev_offsets_from_db(self, db_path):
-        if not db_path:
-            return {}
-        try:
-            c = sqlite3.connect(db_path)
-            cur = c.cursor()
-            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='graid_fault_offsets'")
-            if not cur.fetchone():
-                c.close()
-                return {}
-            result = {}
-            for row in cur.execute("SELECT LOWER(username), username, uuid, offset FROM graid_fault_offsets").fetchall():
-                result[row[0]] = {"username": row[1], "uuid": row[2], "offset": row[3] or 0}
-            c.close()
-            return result
-        except Exception:
-            return {}
+        return shared_read_prev_offsets_from_db(db_path)
 
     @staticmethod
     def _detect_graid_fault_deltas(prev_totals, curr_totals):
-        common = set(prev_totals.keys()) & set(curr_totals.keys())
-        if len(common) < GRAID_FAULT_MIN_MEMBERS:
-            return {}
-        positive_deltas = []
-        for ulow in common:
-            prev_val = prev_totals[ulow]
-            delta = curr_totals[ulow] - prev_val
-            if delta > 0 and prev_val > 0:
-                positive_deltas.append((ulow, delta))
-        if len(positive_deltas) < GRAID_FAULT_MIN_MEMBERS:
-            return {}
-        affected_pct = len(positive_deltas) / len(common)
-        median_delta = statistics.median([d for _, d in positive_deltas])
-        total_delta = sum(d for _, d in positive_deltas)
-        avg_delta = total_delta / len(common)
-        individual_spike = (affected_pct >= GRAID_FAULT_MIN_AFFECTED_PCT and median_delta >= GRAID_FAULT_MIN_MEDIAN_DELTA)
-        guild_wide_spike = (affected_pct >= 0.6 and avg_delta >= GRAID_FAULT_GUILD_WIDE_AVG)
-        extreme_jumps = sum(1 for _, d in positive_deltas if d >= 200) >= 3
-        if individual_spike or guild_wide_spike or extreme_jumps:
-            print(f"[GRAID_FAULT] Detected: {len(positive_deltas)}/{len(common)} affected ({affected_pct:.0%}), median={median_delta:.0f}, avg={avg_delta:.0f}")
-            return {ulow: delta for ulow, delta in positive_deltas}
-        return {}
+        return shared_detect_graid_fault_deltas(prev_totals, curr_totals)
 
     def _detect_and_store_graid_fault_offsets(self, conn, current_db_path):
-        cursor = conn.cursor()
-        prev_db_path = self._get_previous_api_db(current_db_path)
-        prev_day_db_path = self._get_previous_day_latest_db(current_db_path)
-        prev_offsets = self._read_prev_offsets_from_db(prev_db_path)
-        if not prev_offsets and prev_day_db_path:
-            prev_offsets = self._read_prev_offsets_from_db(prev_day_db_path)
-        curr_graids = {}
-        try:
-            for row in cursor.execute("SELECT LOWER(username), username, uuid, total_graids FROM guild_raid_stats").fetchall():
-                curr_graids[row[0]] = {"username": row[1], "uuid": row[2], "total": row[3] or 0}
-        except Exception:
-            return
-        curr_totals = {ulow: info["total"] for ulow, info in curr_graids.items()}
-        new_fault_deltas = {}
-        if prev_db_path:
-            prev_totals = self._read_graid_totals_from_db(prev_db_path)
-            if prev_totals:
-                new_fault_deltas = self._detect_graid_fault_deltas(prev_totals, curr_totals)
-        if not new_fault_deltas and prev_day_db_path and prev_db_path:
-            prev_folder = os.path.basename(os.path.dirname(os.path.abspath(str(prev_db_path))))
-            curr_folder = os.path.basename(os.path.dirname(os.path.abspath(str(current_db_path))))
-            if prev_folder != curr_folder:
-                prev_day_totals = self._read_graid_totals_from_db(prev_day_db_path)
-                if prev_day_totals:
-                    new_fault_deltas = self._detect_graid_fault_deltas(prev_day_totals, curr_totals)
-        merged = {}
-        for ulow, data in prev_offsets.items():
-            merged[ulow] = dict(data)
-        for ulow, delta in new_fault_deltas.items():
-            if ulow in merged:
-                merged[ulow]["offset"] += delta
-            else:
-                info = curr_graids.get(ulow, {})
-                merged[ulow] = {"username": info.get("username", ulow), "uuid": info.get("uuid"), "offset": delta}
-        if merged:
-            cursor.execute('CREATE TABLE IF NOT EXISTS graid_fault_offsets (username TEXT NOT NULL, uuid TEXT, offset INTEGER DEFAULT 0)')
-            for data in merged.values():
-                cursor.execute("INSERT INTO graid_fault_offsets (username, uuid, offset) VALUES (?, ?, ?)", (data["username"], data["uuid"], data["offset"]))
-            if new_fault_deltas:
-                print(f"[GRAID_FAULT] Stored offsets for {len(merged)} players (new faults: {len(new_fault_deltas)})")
-            else:
-                print(f"[GRAID_FAULT] Carried forward offsets for {len(merged)} players")
+        return shared_detect_and_store_graid_fault_offsets(
+            conn,
+            current_db_path,
+            API_TRACKING_FOLDER,
+        )
 
     async def save_additional_data(self, conn, guild_name: str):
-        """Save recruited_data.db data into the same database.
-        Also derive and store badge tiers per player based on the collected data.
-        """
-        def _parse_threshold(label: str) -> int:
-            """Convert badge threshold labels like '10k', '1.5k', '750' into integer values."""
-            try:
-                s = label.strip().lower()
-                multiplier = 1
-                if s.endswith("k"):
-                    multiplier = 1000
-                    s = s[:-1]
-                value = float(s)
-                return int(value * multiplier)
-            except Exception:
-                return 0
-
-        def _get_badge_for_value(category: str, value: int):
-            """Return (tier_label, role_id) for the best badge the value qualifies for."""
-            thresholds = BADGE_ROLES.get(category, {})
-            best_label = None
-            best_role = None
-            best_threshold = -1
-            for label, role_id in thresholds.items():
-                threshold_value = _parse_threshold(label)
-                if value >= threshold_value and threshold_value > best_threshold:
-                    best_threshold = threshold_value
-                    best_label = label
-                    best_role = role_id
-            return best_label, best_role
-
-        try:
-            cursor = conn.cursor()
-            current_timestamp = datetime.now(timezone.utc).isoformat()
-            
-            # Save recruited_data.db if it exists
-            if RECRUITED_DB_PATH.exists():
-                recruited_conn = sqlite3.connect(RECRUITED_DB_PATH)
-                recruited_cursor = recruited_conn.cursor()
-                
-                # Create recruited table
-                cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS recruited (
-                        recruiter TEXT NOT NULL,
-                        recruited TEXT NOT NULL,
-                        timestamp TEXT NOT NULL
-                    )
-                ''')
-                
-                # Copy data from recruited table
-                recruited_cursor.execute("SELECT recruiter, recruited, timestamp FROM recruited")
-                recruited_data = recruited_cursor.fetchall()
-                
-                cursor.executemany(
-                    "INSERT INTO recruited (recruiter, recruited, timestamp) VALUES (?, ?, ?)",
-                    recruited_data
-                )
-                
-                # Copy quest_progress table if it exists
-                recruited_cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='quest_progress'")
-                if recruited_cursor.fetchone():
-                    cursor.execute('''
-                        CREATE TABLE IF NOT EXISTS quest_progress (
-                            player TEXT NOT NULL,
-                            points INTEGER NOT NULL,
-                            last_updated TEXT,
-                            snapshot_timestamp TEXT NOT NULL
-                        )
-                    ''')
-                    
-                    recruited_cursor.execute("SELECT player, points, last_updated FROM quest_progress")
-                    quest_data = recruited_cursor.fetchall()
-                    
-                    quest_data_with_timestamp = [(player, points, last_updated, current_timestamp) for player, points, last_updated in quest_data]
-                    
-                    cursor.executemany(
-                        "INSERT INTO quest_progress (player, points, last_updated, snapshot_timestamp) VALUES (?, ?, ?, ?)",
-                        quest_data_with_timestamp
-                    )
-                
-                # Copy event_progress table if it exists
-                recruited_cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='event_progress'")
-                if recruited_cursor.fetchone():
-                    cursor.execute('''
-                        CREATE TABLE IF NOT EXISTS event_progress (
-                            player TEXT NOT NULL,
-                            points INTEGER NOT NULL,
-                            last_updated TEXT,
-                            snapshot_timestamp TEXT NOT NULL
-                        )
-                    ''')
-                    
-                    recruited_cursor.execute("SELECT player, points, last_updated FROM event_progress")
-                    event_data = recruited_cursor.fetchall()
-                    
-                    event_data_with_timestamp = [(player, points, last_updated, current_timestamp) for player, points, last_updated in event_data]
-                    
-                    cursor.executemany(
-                        "INSERT INTO event_progress (player, points, last_updated, snapshot_timestamp) VALUES (?, ?, ?, ?)",
-                        event_data_with_timestamp
-                    )
-                
-                recruited_conn.close()
-            else:
-                print("[API] recruited_data.db not found, skipping...")
-            
-            # Derive and store badge tiers
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS badges (
-                    player TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    tier TEXT NOT NULL,
-                    role_id INTEGER,
-                    value INTEGER NOT NULL,
-                    snapshot_timestamp TEXT NOT NULL
-                )
-            ''')
-
-            badge_rows = []
-
-            # War Badges: based on wars from player_stats
-            try:
-                cursor.execute("SELECT username, wars FROM player_stats")
-                for username, wars in cursor.fetchall():
-                    wars = wars or 0
-                    tier, role_id = _get_badge_for_value("War Badges", wars)
-                    if tier is not None:
-                        badge_rows.append((username, "War Badges", tier, role_id, wars, current_timestamp))
-            except Exception as e:
-                print(f"[API] Failed to compute war badges: {e}")
-
-            # Quest Badges: based on points from quest_progress
-            try:
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='quest_progress'")
-                if cursor.fetchone():
-                    cursor.execute("SELECT player, points FROM quest_progress")
-                    for player, points in cursor.fetchall():
-                        points = points or 0
-                        tier, role_id = _get_badge_for_value("Quest Badges", points)
-                        if tier is not None:
-                            badge_rows.append((player, "Quest Badges", tier, role_id, points, current_timestamp))
-            except Exception as e:
-                print(f"[API] Failed to compute quest badges: {e}")
-
-            # Recruitment Badges: based on number of recruits per recruiter
-            try:
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='recruited'")
-                if cursor.fetchone():
-                    cursor.execute("SELECT recruiter, COUNT(*) FROM recruited GROUP BY recruiter")
-                    for recruiter, count in cursor.fetchall():
-                        count = count or 0
-                        tier, role_id = _get_badge_for_value("Recruitment Badges", count)
-                        if tier is not None:
-                            badge_rows.append((recruiter, "Recruitment Badges", tier, role_id, count, current_timestamp))
-            except Exception as e:
-                print(f"[API] Failed to compute recruitment badges: {e}")
-
-            # Raid Badges: based on guild_raid_stats table (from guild API)
-            try:
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='guild_raid_stats'")
-                if cursor.fetchone():
-                    cursor.execute("SELECT username, total_graids FROM guild_raid_stats")
-                    for username, total_graids in cursor.fetchall():
-                        total_graids = total_graids or 0
-                        tier, role_id = _get_badge_for_value("Raid Badges", total_graids)
-                        if tier is not None:
-                            badge_rows.append((username, "Raid Badges", tier, role_id, total_graids, current_timestamp))
-            except Exception as e:
-                print(f"[API] Failed to compute raid badges: {e}")
-
-            # Event Badges: based on points from event_progress
-            try:
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='event_progress'")
-                if cursor.fetchone():
-                    cursor.execute("SELECT player, points FROM event_progress")
-                    for player, points in cursor.fetchall():
-                        points = points or 0
-                        tier, role_id = _get_badge_for_value("Event Badges", points)
-                        if tier is not None:
-                            badge_rows.append((player, "Event Badges", tier, role_id, points, current_timestamp))
-            except Exception as e:
-                print(f"[API] Failed to compute event badges: {e}")
-
-            if badge_rows:
-                cursor.executemany(
-                    "INSERT INTO badges (player, category, tier, role_id, value, snapshot_timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-                    badge_rows
-                )
-            else:
-                print("[API] No badge records computed for this snapshot")
-            
-            conn.commit()
-        
-        except Exception as e:
-            print(f"[API] Error saving additional data: {e}")
-            import traceback
-            traceback.print_exc()
+        return shared_save_additional_data(
+            conn,
+            RECRUITED_DB_PATH,
+            badge_roles=BADGE_ROLES,
+        )
     
     async def analyze_guild_stats(self, guild_name: str) -> Dict:
         """Analyze stats for all members of a guild using a single guild API call."""
@@ -1327,32 +373,9 @@ class FetchAPI:
 
         guild_level = guild_data.get('level')
 
-        members = self.extract_guild_members(guild_data)
+        members, member_stats = build_member_stats_from_guild_payload(guild_data, log_prefix="[API]")
         if not members:
             return {"error": "No members found in guild data"}
-
-        # Build stats straight from the guild payload
-        member_stats = []
-        for member in members:
-            player_stats = self.get_player_stats(member, guild_data=guild_data)
-            member_stats.append({
-                "username": member.get('username'),
-                "uuid": player_stats.get('uuid'),
-                "timestamp": player_stats['timestamp'],
-                "guild": player_stats['guild'],
-                "playtime": player_stats['playtime'],
-                "wars": player_stats['wars'],
-                "totalLevel": player_stats['totalLevel'],
-                "mobsKilled": player_stats['mobsKilled'],
-                "chestsFound": player_stats['chestsFound'],
-                "dungeons": player_stats['dungeons'],
-                "raids": player_stats['raids'],
-                "worldEvents": player_stats['worldEvents'],
-                "lootRuns": player_stats['lootRuns'],
-                "caves": player_stats['caves'],
-                "completedQuests": player_stats['completedQuests'],
-                "pvp": player_stats['pvp'],
-            })
 
         # Save data
         await self.save_data(guild_name, member_stats, guild_level, guild_members=members)

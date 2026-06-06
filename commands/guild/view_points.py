@@ -47,9 +47,36 @@ def _calc_le(username: str, total_points: int, history: list[dict], guild_ranks:
     """
     rank = guild_ranks.get(username.lower(), "")
     if rank in HR_RANKS:
-        real_points = sum(r["points_gained"] for r in history if not is_dirty_reason(r["reason"]))
+        explicit_dirty_available = any(r.get("is_dirty") is not None for r in history)
+        if explicit_dirty_available:
+            real_points = sum(r["points_gained"] for r in history if not bool(r.get("is_dirty")))
+        else:
+            real_points = sum(r["points_gained"] for r in history if not is_dirty_reason(r["reason"]))
         return real_points / 10
     return total_points / 10
+
+
+def _infer_clean_dirty_from_history(points: int, cycle_hist: list[dict], username: str, guild_ranks: dict) -> tuple[int, int]:
+    """
+    Infer clean/dirty split for legacy aggregate rows where clean_ep/dirty_ep are missing.
+
+    Priority:
+    1) If per-record is_dirty is available, trust that (captures rank-at-award behavior).
+    2) Otherwise use legacy reason+rank inference as best effort.
+    """
+    explicit_dirty_available = any(r.get("is_dirty") is not None for r in cycle_hist)
+    if explicit_dirty_available:
+        dirty = sum(r["points_gained"] for r in cycle_hist if bool(r.get("is_dirty")))
+        clean = max(0, points - dirty)
+        return clean, dirty
+
+    rank = guild_ranks.get(username.lower(), "")
+    if rank in HR_RANKS:
+        dirty = sum(r["points_gained"] for r in cycle_hist if is_dirty_reason(r["reason"]))
+        clean = max(0, points - dirty)
+        return clean, dirty
+
+    return points, 0
 
 
 def _get_clean_dirty_for_cycles(uuid: str, cycle_ids: list[int],
@@ -77,14 +104,8 @@ def _get_clean_dirty_for_cycles(uuid: str, cycle_ids: list[int],
         clean, dirty, points = rows.get(cid, (0, 0, 0))
         # Fallback: if both persisted values are 0 but points > 0, use runtime calc
         if clean == 0 and dirty == 0 and points > 0 and history is not None and guild_ranks is not None and username:
-            rank = guild_ranks.get(username.lower(), "")
             cycle_hist = [r for r in history if r["cycle_id"] == cid]
-            if rank in HR_RANKS:
-                dirty = sum(r["points_gained"] for r in cycle_hist if is_dirty_reason(r["reason"]))
-                clean = points - dirty
-            else:
-                clean = points
-                dirty = 0
+            clean, dirty = _infer_clean_dirty_from_history(points, cycle_hist, username, guild_ranks)
         result[cid] = (clean, dirty)
     return result
 
@@ -175,6 +196,7 @@ def _get_player_history(uuid: str) -> list[dict]:
     table = _player_points_table(uuid)
     conn = sqlite3.connect(POINTS_DB)
     c = conn.cursor()
+    used_legacy_query = False
     try:
         c.execute(
             f'SELECT record_id, username, points_gained, cycle_id, reason, timestamp, '
@@ -183,7 +205,16 @@ def _get_player_history(uuid: str) -> list[dict]:
         )
         rows = c.fetchall()
     except sqlite3.OperationalError:
-        rows = []
+        try:
+            c.execute(
+                f'SELECT record_id, username, points_gained, cycle_id, reason, timestamp '
+                f'FROM "{table}" ORDER BY timestamp DESC'
+            )
+            legacy_rows = c.fetchall()
+            rows = [(*r, None) for r in legacy_rows]
+            used_legacy_query = True
+        except sqlite3.OperationalError:
+            rows = []
     conn.close()
 
     return [
@@ -194,7 +225,7 @@ def _get_player_history(uuid: str) -> list[dict]:
             "cycle_id": r[3],
             "reason": r[4],
             "timestamp": r[5],
-            "is_dirty": r[6],
+            "is_dirty": None if used_legacy_query else r[6],
         }
         for r in rows
     ]
@@ -273,12 +304,12 @@ def _build_leaderboard_txt(players: list[dict], cycle_ids: list[int], guild_rank
         dirty = p.get("dirty_ep", 0)
         # Fallback if persisted values are 0 but points > 0
         if clean == 0 and dirty == 0 and p["points"] > 0:
-            rank = guild_ranks.get(p["username"].lower(), "")
-            if rank in HR_RANKS:
-                dirty = sum(r["points_gained"] for r in h if is_dirty_reason(r["reason"]))
-                clean = p["points"] - dirty
-            else:
-                clean = p["points"]
+            clean, dirty = _infer_clean_dirty_from_history(
+                p["points"],
+                h,
+                p["username"],
+                guild_ranks,
+            )
         lines.append(f"{i:<6} {p['username']:<24} {p['points']:>8}  {clean:>8}  {dirty:>8}")
 
     return "\n".join(lines)
@@ -473,12 +504,12 @@ def setup(bot, has_required_role, config):
             c_ep = p.get("clean_ep", 0)
             d_ep = p.get("dirty_ep", 0)
             if c_ep == 0 and d_ep == 0 and p["points"] > 0:
-                rank_str = guild_ranks.get(p["username"].lower(), "")
-                if rank_str in HR_RANKS:
-                    d_ep = sum(r["points_gained"] for r in h if is_dirty_reason(r["reason"]))
-                    c_ep = p["points"] - d_ep
-                else:
-                    c_ep = p["points"]
+                c_ep, d_ep = _infer_clean_dirty_from_history(
+                    p["points"],
+                    h,
+                    p["username"],
+                    guild_ranks,
+                )
             board_lines.append(f"#{i} **{p['username']}** — {c_ep} CEP / {d_ep} DEP")
 
         embed.add_field(name="Top 10", value="\n".join(board_lines), inline=False)

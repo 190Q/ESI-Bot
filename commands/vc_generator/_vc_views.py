@@ -6,7 +6,7 @@ from _vc_core import (
     TempVCSystem,
     send_ephemeral,
     clamp,
-    PARLIAMENT_ROLE_ID,
+    PRIVILEGED_ROLE_IDS,
     OWNER_ID,
     MAX_PERMIT_TARGETS_PER_ACTION,
     REGION_OPTIONS,
@@ -42,7 +42,7 @@ class PermitSelectorView(UserBoundView):
         self.channel_id = channel_id
         self.owner_id = int(owner_id or 0)
         self.blocked_user_ids = {uid for uid in (self.owner_id, int(OWNER_ID or 0)) if uid > 0}
-        self.blocked_role_ids = {int(PARLIAMENT_ROLE_ID)} if int(PARLIAMENT_ROLE_ID or 0) > 0 else set()
+        self.blocked_role_ids = {int(rid) for rid in PRIVILEGED_ROLE_IDS if int(rid) > 0}
         self.banned_user_ids = {int(uid) for uid in (banned_user_ids or []) if str(uid).isdigit()}
         self.banned_role_ids = {int(rid) for rid in (banned_role_ids or []) if str(rid).isdigit()}
         self.pending_user_ids = [
@@ -185,7 +185,7 @@ class PermitSelectorView(UserBoundView):
         previous_role_ids = set(
             int(rid)
             for rid in entry.get("permitted_roles", [])
-            if str(rid).isdigit() and int(rid) != PARLIAMENT_ROLE_ID
+            if str(rid).isdigit() and int(rid) not in self.blocked_role_ids
         )
         safe_user_ids = [
             uid for uid in self.pending_user_ids
@@ -211,7 +211,7 @@ class PermitSelectorView(UserBoundView):
         removed_role_ids = previous_role_ids - selected_role_set
 
         entry["permitted_users"] = list(dict.fromkeys(safe_user_ids))
-        entry["permitted_roles"] = list(dict.fromkeys(safe_role_ids + [PARLIAMENT_ROLE_ID]))
+        entry["permitted_roles"] = list(dict.fromkeys(safe_role_ids + list(PRIVILEGED_ROLE_IDS)))
 
         changed = bool(added_user_ids or removed_user_ids or added_role_ids or removed_role_ids)
         if changed:
@@ -281,7 +281,7 @@ class BanSelectorView(UserBoundView):
         self.channel_id = channel_id
         self.owner_id = int(owner_id or 0)
         self.blocked_user_ids = {uid for uid in (self.owner_id, int(OWNER_ID or 0)) if uid > 0}
-        self.blocked_role_ids = {int(PARLIAMENT_ROLE_ID)} if int(PARLIAMENT_ROLE_ID or 0) > 0 else set()
+        self.blocked_role_ids = {int(rid) for rid in PRIVILEGED_ROLE_IDS if int(rid) > 0}
         self.pending_user_ids = [
             uid for uid in list(dict.fromkeys(default_user_ids or []))
             if int(uid) not in self.blocked_user_ids
@@ -432,7 +432,7 @@ class BanSelectorView(UserBoundView):
         current_permitted_roles = [int(rid) for rid in entry.get("permitted_roles", []) if str(rid).isdigit()]
         removed_permit_user_ids = set(uid for uid in current_permitted_users if uid in selected_user_set)
         removed_permit_role_ids = set(
-            rid for rid in current_permitted_roles if rid != PARLIAMENT_ROLE_ID and rid in selected_role_set
+            rid for rid in current_permitted_roles if rid not in self.blocked_role_ids and rid in selected_role_set
         )
 
         entry["banned_users"] = list(dict.fromkeys(safe_user_ids))
@@ -440,10 +440,11 @@ class BanSelectorView(UserBoundView):
         entry["permitted_users"] = [uid for uid in current_permitted_users if uid not in selected_user_set]
         entry["permitted_roles"] = [
             rid for rid in current_permitted_roles
-            if rid == PARLIAMENT_ROLE_ID or rid not in selected_role_set
+            if rid in self.blocked_role_ids or rid not in selected_role_set
         ]
-        if PARLIAMENT_ROLE_ID not in entry["permitted_roles"]:
-            entry["permitted_roles"].append(PARLIAMENT_ROLE_ID)
+        for role_id in PRIVILEGED_ROLE_IDS:
+            if role_id not in entry["permitted_roles"]:
+                entry["permitted_roles"].append(role_id)
 
         changed = bool(
             added_user_ids
@@ -1280,6 +1281,7 @@ class VCPanelView(UserBoundView):
             return
         owner_id = int(entry.get("owner_id") or 0)
         blocked_user_ids = {uid for uid in (owner_id, int(OWNER_ID or 0)) if uid > 0}
+        privileged_role_ids = {int(rid) for rid in PRIVILEGED_ROLE_IDS if int(rid) > 0}
         banned_user_ids = {int(uid) for uid in entry.get("banned_users", []) if str(uid).isdigit()}
         banned_role_ids = {int(rid) for rid in entry.get("banned_roles", []) if str(rid).isdigit()}
 
@@ -1302,7 +1304,7 @@ class VCPanelView(UserBoundView):
                 normalized = int(role_id)
             except (TypeError, ValueError):
                 continue
-            if normalized == PARLIAMENT_ROLE_ID:
+            if normalized in privileged_role_ids:
                 continue
             if normalized in banned_role_ids:
                 continue
@@ -1342,6 +1344,7 @@ class VCPanelView(UserBoundView):
             return
         owner_id = int(entry.get("owner_id") or 0)
         blocked_user_ids = {uid for uid in (owner_id, int(OWNER_ID or 0)) if uid > 0}
+        privileged_role_ids = {int(rid) for rid in PRIVILEGED_ROLE_IDS if int(rid) > 0}
 
         default_user_ids = []
         for user_id in entry.get("banned_users", []):
@@ -1360,7 +1363,7 @@ class VCPanelView(UserBoundView):
                 normalized = int(role_id)
             except (TypeError, ValueError):
                 continue
-            if normalized == PARLIAMENT_ROLE_ID:
+            if normalized in privileged_role_ids:
                 continue
             if interaction.guild.get_role(normalized):
                 default_role_ids.append(normalized)

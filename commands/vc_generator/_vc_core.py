@@ -10,8 +10,15 @@ from typing import Optional, Dict, Any, List
 from utils.paths import DATA_DIR
 
 PARLIAMENT_ROLE_ID = 600185623474601995
+TTS_BOT_ROLE_ID = 1295411931338899632
+PRIVILEGED_ROLE_IDS = [
+    rid
+    for rid in dict.fromkeys([PARLIAMENT_ROLE_ID, TTS_BOT_ROLE_ID])
+    if rid
+]
+PRIVILEGED_ROLE_ID_SET = set(PRIVILEGED_ROLE_IDS)
 OWNER_ID = int(os.getenv("OWNER_ID")) if os.getenv("OWNER_ID") else 0
-REQUIRED_ADMIN_ROLES = [rid for rid in [OWNER_ID, PARLIAMENT_ROLE_ID] if rid]
+REQUIRED_ADMIN_ROLES = [rid for rid in dict.fromkeys([OWNER_ID, *PRIVILEGED_ROLE_IDS]) if rid]
 
 MAX_PERMIT_TARGETS_PER_ACTION = 10
 MAX_STORED_LOG_ENTRIES = 200
@@ -436,13 +443,13 @@ class TempVCSystem:
             "permitted_roles": [
                 int(x)
                 for x in source.get("permitted_roles", [])
-                if str(x).isdigit() and int(x) != PARLIAMENT_ROLE_ID
+                if str(x).isdigit() and int(x) not in PRIVILEGED_ROLE_ID_SET
             ],
             "banned_users": [int(x) for x in source.get("banned_users", []) if str(x).isdigit()],
             "banned_roles": [
                 int(x)
                 for x in source.get("banned_roles", [])
-                if str(x).isdigit() and int(x) != PARLIAMENT_ROLE_ID
+                if str(x).isdigit() and int(x) not in PRIVILEGED_ROLE_ID_SET
             ],
         }
         normalized["permitted_users"] = list(dict.fromkeys(normalized["permitted_users"]))
@@ -567,7 +574,7 @@ class TempVCSystem:
         entry["region"] = normalized_preset["region"]
         entry["template"] = normalized_preset["template"]
         entry["permitted_users"] = list(normalized_preset["permitted_users"])
-        entry["permitted_roles"] = list(normalized_preset["permitted_roles"]) + [PARLIAMENT_ROLE_ID]
+        entry["permitted_roles"] = list(normalized_preset["permitted_roles"]) + list(PRIVILEGED_ROLE_IDS)
         entry["banned_users"] = list(normalized_preset["banned_users"])
         entry["banned_roles"] = list(normalized_preset["banned_roles"])
 
@@ -724,7 +731,7 @@ class TempVCSystem:
             "blocked_knock_users": [],
             "banned_users": [],
             "banned_roles": [],
-            "permitted_roles": [PARLIAMENT_ROLE_ID],
+            "permitted_roles": list(PRIVILEGED_ROLE_IDS),
             "member_join_times": {},
             "logs": [],
         }
@@ -756,13 +763,17 @@ class TempVCSystem:
             base["banned_users"].extend(base["blocked_knock_users"])
         blocked_user_ids = {uid for uid in [int(base.get("owner_id") or 0), int(OWNER_ID or 0)] if uid > 0}
         base["banned_users"] = [uid for uid in base["banned_users"] if uid not in blocked_user_ids]
-        base["banned_roles"] = [rid for rid in base["banned_roles"] if rid != PARLIAMENT_ROLE_ID]
+        base["banned_roles"] = [rid for rid in base["banned_roles"] if rid not in PRIVILEGED_ROLE_ID_SET]
         banned_user_set = set(base["banned_users"])
         banned_role_set = set(base["banned_roles"])
         base["permitted_users"] = [uid for uid in base["permitted_users"] if uid not in banned_user_set]
-        base["permitted_roles"] = [rid for rid in base["permitted_roles"] if rid == PARLIAMENT_ROLE_ID or rid not in banned_role_set]
-        if PARLIAMENT_ROLE_ID not in base["permitted_roles"]:
-            base["permitted_roles"].append(PARLIAMENT_ROLE_ID)
+        base["permitted_roles"] = [
+            rid for rid in base["permitted_roles"]
+            if rid in PRIVILEGED_ROLE_ID_SET or rid not in banned_role_set
+        ]
+        for role_id in PRIVILEGED_ROLE_IDS:
+            if role_id not in base["permitted_roles"]:
+                base["permitted_roles"].append(role_id)
         base["permitted_users"] = list(dict.fromkeys(base["permitted_users"]))
         base["blocked_knock_users"] = list(dict.fromkeys(base["blocked_knock_users"]))
         base["banned_users"] = list(dict.fromkeys(base["banned_users"]))
@@ -844,7 +855,7 @@ class TempVCSystem:
             return True
         if OWNER_ID and member.id == OWNER_ID:
             return True
-        return any(role.id == PARLIAMENT_ROLE_ID for role in member.roles)
+        return any(role.id in PRIVILEGED_ROLE_ID_SET for role in member.roles)
 
     def can_manage(self, member: discord.Member, entry: Dict[str, Any]) -> bool:
         return self.is_admin_member(member) or member.id == int(entry.get("owner_id") or 0)
@@ -949,7 +960,7 @@ class TempVCSystem:
         for role_id in entry.get("permitted_roles", []):
             role = guild.get_role(int(role_id))
             if role:
-                if role.id == PARLIAMENT_ROLE_ID:
+                if role.id in PRIVILEGED_ROLE_ID_SET:
                     overwrites[role] = self._owner_overwrite(entry)
                 else:
                     overwrites[role] = permit_overwrite
@@ -972,8 +983,10 @@ class TempVCSystem:
         return overwrites
 
     async def sync_channel(self, channel: discord.VoiceChannel, entry: Dict[str, Any], reason: Optional[str] = None):
-        if PARLIAMENT_ROLE_ID not in entry.get("permitted_roles", []):
-            entry.setdefault("permitted_roles", []).append(PARLIAMENT_ROLE_ID)
+        entry.setdefault("permitted_roles", [])
+        for role_id in PRIVILEGED_ROLE_IDS:
+            if role_id not in entry["permitted_roles"]:
+                entry["permitted_roles"].append(role_id)
         max_bitrate = int(channel.guild.bitrate_limit)
         bitrate = clamp(int(entry.get("bitrate", 64000)), 8000, max_bitrate)
         user_limit = clamp(int(entry.get("user_limit", 0)), 0, 99)

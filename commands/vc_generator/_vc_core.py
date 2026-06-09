@@ -47,57 +47,16 @@ REGION_OPTIONS = [
     ("Russia", "russia"),
 ]
 
-DEFAULT_TEMPLATES = {
-    "default": {
-        "display_name": "Default",
-        "locked": False,
-        "hidden": False,
-        "push_to_talk": False,
-        "user_limit": 0,
-        "bitrate": 64000,
-        "region": "auto",
-        "name_format": "{owner}'s VC",
-    },
-    "duo": {
-        "display_name": "Duo / Private",
-        "locked": True,
-        "hidden": False,
-        "push_to_talk": False,
-        "user_limit": 2,
-        "bitrate": 64000,
-        "region": "auto",
-        "name_format": "{owner}'s Duo",
-    },
-    "squad": {
-        "display_name": "Squad",
-        "locked": False,
-        "hidden": False,
-        "push_to_talk": False,
-        "user_limit": 5,
-        "bitrate": 64000,
-        "region": "auto",
-        "name_format": "{owner}'s Squad",
-    },
-    "raid": {
-        "display_name": "Raid",
-        "locked": False,
-        "hidden": False,
-        "push_to_talk": True,
-        "user_limit": 4,
-        "bitrate": 64000,
-        "region": "auto",
-        "name_format": "{owner}'s Raid Party",
-    },
-    "event": {
-        "display_name": "Event / Meeting",
-        "locked": False,
-        "hidden": False,
-        "push_to_talk": True,
-        "user_limit": 20,
-        "bitrate": 96000,
-        "region": "auto",
-        "name_format": "{owner}'s Event VC",
-    },
+FALLBACK_TEMPLATE = {
+    "display_name": "Default",
+    "locked": False,
+    "hidden": False,
+    "push_to_talk": False,
+    "user_limit": 0,
+    "bitrate": 64000,
+    "region": "auto",
+    "name_format": "{owner}'s VC",
+    "permitted_roles": [],
 }
 
 
@@ -385,26 +344,41 @@ class TempVCSystem:
             "default_user_limit": 0,
             "default_bitrate": 64000,
             "default_template": "default",
-            "templates": dict(DEFAULT_TEMPLATES),
+            "templates": {},
         }
 
     def _normalize_templates(self, templates: Dict[str, Any]) -> Dict[str, Any]:
-        normalized = dict(DEFAULT_TEMPLATES)
+        normalized = {}
         if isinstance(templates, dict):
             for key, value in templates.items():
                 if not isinstance(value, dict):
                     continue
-                if key not in normalized:
-                    normalized[key] = {}
-                normalized[key] = {
-                    "display_name": str(value.get("display_name", normalized[key].get("display_name", key))),
-                    "locked": bool(value.get("locked", normalized[key].get("locked", False))),
-                    "hidden": bool(value.get("hidden", normalized[key].get("hidden", False))),
-                    "push_to_talk": bool(value.get("push_to_talk", normalized[key].get("push_to_talk", False))),
-                    "user_limit": clamp(int(value.get("user_limit", normalized[key].get("user_limit", 0))), 0, 99),
-                    "bitrate": max(8000, int(value.get("bitrate", normalized[key].get("bitrate", 64000)))),
-                    "region": str(value.get("region", normalized[key].get("region", "auto")) or "auto"),
-                    "name_format": str(value.get("name_format", normalized[key].get("name_format", "{owner}'s VC"))),
+                normalized_key = str(key or "").strip()
+                if not normalized_key:
+                    continue
+                permitted_roles = [
+                    int(x)
+                    for x in value.get("permitted_roles", [])
+                    if str(x).isdigit() and int(x) not in PRIVILEGED_ROLE_ID_SET
+                ]
+                try:
+                    user_limit_raw = int(value.get("user_limit", 0))
+                except (TypeError, ValueError):
+                    user_limit_raw = 0
+                try:
+                    bitrate_raw = int(value.get("bitrate", 64000))
+                except (TypeError, ValueError):
+                    bitrate_raw = 64000
+                normalized[normalized_key] = {
+                    "display_name": str(value.get("display_name", normalized_key)),
+                    "locked": bool(value.get("locked", False)),
+                    "hidden": bool(value.get("hidden", False)),
+                    "push_to_talk": bool(value.get("push_to_talk", False)),
+                    "user_limit": clamp(user_limit_raw, 0, 99),
+                    "bitrate": max(8000, bitrate_raw),
+                    "region": str(value.get("region", "auto") or "auto"),
+                    "name_format": str(value.get("name_format", "{owner}'s VC")),
+                    "permitted_roles": list(dict.fromkeys(permitted_roles)),
                 }
         return normalized
 
@@ -513,9 +487,11 @@ class TempVCSystem:
         base["user_presets"] = self._normalize_user_presets(raw.get("user_presets", {}))
         base["default_user_limit"] = clamp(int(raw.get("default_user_limit", 0)), 0, 99)
         base["default_bitrate"] = max(8000, int(raw.get("default_bitrate", 64000)))
-        base["default_template"] = str(raw.get("default_template", "default"))
+        base["default_template"] = str(raw.get("default_template", "default") or "default")
         base["templates"] = self._normalize_templates(raw.get("templates", {}))
-        if base["default_template"] not in base["templates"]:
+        if base["default_template"] not in base["templates"] and base["templates"]:
+            base["default_template"] = next(iter(base["templates"].keys()))
+        elif base["default_template"] not in base["templates"]:
             base["default_template"] = "default"
         return base
 
@@ -566,6 +542,11 @@ class TempVCSystem:
 
     def apply_user_preset_to_entry(self, entry: Dict[str, Any], preset_settings: Dict[str, Any]):
         normalized_preset = self._normalize_preset_settings(preset_settings)
+        existing_non_privileged_roles = [
+            int(role_id)
+            for role_id in entry.get("permitted_roles", [])
+            if str(role_id).isdigit() and int(role_id) not in PRIVILEGED_ROLE_ID_SET
+        ]
         entry["locked"] = normalized_preset["locked"]
         entry["hidden"] = normalized_preset["hidden"]
         entry["push_to_talk"] = normalized_preset["push_to_talk"]
@@ -574,7 +555,11 @@ class TempVCSystem:
         entry["region"] = normalized_preset["region"]
         entry["template"] = normalized_preset["template"]
         entry["permitted_users"] = list(normalized_preset["permitted_users"])
-        entry["permitted_roles"] = list(normalized_preset["permitted_roles"]) + list(PRIVILEGED_ROLE_IDS)
+        entry["permitted_roles"] = list(
+            dict.fromkeys(
+                list(normalized_preset["permitted_roles"]) + existing_non_privileged_roles + list(PRIVILEGED_ROLE_IDS)
+            )
+        )
         entry["banned_users"] = list(normalized_preset["banned_users"])
         entry["banned_roles"] = list(normalized_preset["banned_roles"])
 
@@ -1008,9 +993,9 @@ class TempVCSystem:
 
     def _resolve_template(self, config: Dict[str, Any], template_name: str) -> Dict[str, Any]:
         templates = config.get("templates", {})
-        chosen = templates.get(template_name) or templates.get(config.get("default_template")) or templates.get("default")
+        chosen = templates.get(template_name) or templates.get(config.get("default_template"))
         if not chosen:
-            chosen = DEFAULT_TEMPLATES["default"]
+            chosen = FALLBACK_TEMPLATE
         return chosen
 
     def apply_template_to_entry(self, entry: Dict[str, Any], template_name: str, config: Dict[str, Any]):
@@ -1022,6 +1007,12 @@ class TempVCSystem:
         entry["user_limit"] = clamp(int(template.get("user_limit", entry.get("user_limit", 0))), 0, 99)
         entry["bitrate"] = max(8000, int(template.get("bitrate", entry.get("bitrate", 64000))))
         entry["region"] = str(template.get("region", "auto") or "auto")
+        template_permitted_roles = [
+            int(x)
+            for x in template.get("permitted_roles", [])
+            if str(x).isdigit() and int(x) not in PRIVILEGED_ROLE_ID_SET
+        ]
+        entry["permitted_roles"] = list(dict.fromkeys(template_permitted_roles + list(PRIVILEGED_ROLE_IDS)))
 
     def _compute_channel_name(self, owner: discord.Member, template: Dict[str, Any]) -> str:
         template_format = str(template.get("name_format", "{owner}'s VC"))

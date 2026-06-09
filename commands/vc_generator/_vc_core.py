@@ -1017,6 +1017,51 @@ class TempVCSystem:
         except Exception:
             formatted = f"{owner.display_name}'s VC"
         return clean_channel_name(formatted)
+    async def _send_creation_setup_embed(
+        self,
+        channel: discord.VoiceChannel,
+        owner: discord.Member,
+        default_preset_name: Optional[str] = None,
+    ):
+        embed = discord.Embed(
+            title="Temporary VC Setup",
+            description=(
+                f"{owner.mention}, your temporary VC is ready.\n"
+                "Use the controls below to quickly configure it."
+            ),
+            color=0x5865F2,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(
+            name="Quick Start",
+            value=(
+                "• Run `/vc_manage` to open the panel\n"
+                "• Use Lock/Hide/Limit/Rename/Ban/Permit buttons\n"
+                "• Use **Save Preset** / **Load Preset** for reusable setups"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Preset Management",
+            value=(
+                "Use `/vc_presets` to list, delete, or set your default preset.\n"
+                "Default presets are auto-applied on future temp VC creations."
+            ),
+            inline=False,
+        )
+        if isinstance(default_preset_name, str) and default_preset_name.strip():
+            embed.add_field(
+                name="Default Preset Applied",
+                value=f"✅ **{default_preset_name}** was auto-applied to this VC.",
+                inline=False,
+            )
+        try:
+            await channel.send(
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception:
+            pass
 
     async def _emit_log_channel_message(self, guild: discord.Guild, content: Optional[str] = None, embed: Optional[discord.Embed] = None):
         config = await self.get_guild_config(guild.id)
@@ -1096,6 +1141,11 @@ class TempVCSystem:
             except Exception:
                 self.add_log(base_entry, None, "move_failed", "Could not move owner automatically")
                 await self.upsert_entry(temp_channel.id, base_entry)
+            await self._send_creation_setup_embed(
+                temp_channel,
+                member,
+                default_preset_name=default_preset_name,
+            )
 
             await self._emit_log_channel_message(
                 member.guild,
@@ -1330,7 +1380,7 @@ class TempVCSystem:
 
 
         knock_embed = discord.Embed(
-            title="🚪 VC Knock Request",
+            title="VC Knock Request",
             description=f"{requester.mention} wants to join {channel.mention}.",
             color=0xFAA61A,
             timestamp=datetime.now(timezone.utc),
@@ -1355,7 +1405,7 @@ class TempVCSystem:
         await self._emit_log_channel_message(
             requester.guild,
             embed=discord.Embed(
-                title="🚪 VC Knock",
+                title="VC Knock",
                 description=f"{requester.mention} knocked on {channel.mention}",
                 color=0xFAA61A,
                 timestamp=datetime.now(timezone.utc),

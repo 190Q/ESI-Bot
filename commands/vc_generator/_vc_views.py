@@ -1223,7 +1223,7 @@ class VCPanelView(UserBoundView):
             return
         entry["locked"] = True
         await self._update_state(interaction, entry, channel, "lock", "Channel locked")
-        await self._refresh_with_status(interaction, "🔒 Channel locked.")
+        await self._refresh_with_status(interaction, "Channel locked.")
 
     async def unlock_channel(self, interaction: discord.Interaction):
         channel, entry = await self._get_context(interaction)
@@ -1233,7 +1233,7 @@ class VCPanelView(UserBoundView):
             return
         entry["locked"] = False
         await self._update_state(interaction, entry, channel, "unlock", "Channel unlocked")
-        await self._refresh_with_status(interaction, "🔓 Channel unlocked.")
+        await self._refresh_with_status(interaction, "Channel unlocked.")
 
     async def hide_channel(self, interaction: discord.Interaction):
         channel, entry = await self._get_context(interaction)
@@ -1243,7 +1243,7 @@ class VCPanelView(UserBoundView):
             return
         entry["hidden"] = True
         await self._update_state(interaction, entry, channel, "hide", "Channel hidden")
-        await self._refresh_with_status(interaction, "🙈 Channel hidden.")
+        await self._refresh_with_status(interaction, "Channel hidden.")
 
     async def show_channel(self, interaction: discord.Interaction):
         channel, entry = await self._get_context(interaction)
@@ -1501,7 +1501,7 @@ class VCPanelView(UserBoundView):
             await send_ephemeral(interaction, "This VC is open right now; you can join directly.")
             return
         result = await self.system.send_knock_notification(interaction.user, channel, entry)
-        await send_ephemeral(interaction, f"🚪 {result}")
+        await send_ephemeral(interaction, f"{result}")
 
     async def set_limit(self, interaction: discord.Interaction):
         channel, entry = await self._get_context(interaction)

@@ -292,7 +292,7 @@ def setup(bot, has_required_role, config):
             if not deleted_name:
                 await send_ephemeral(interaction, f"Preset **{preset_name}** was not found.")
                 return
-            await send_ephemeral(interaction, f"🗑️ Deleted preset **{deleted_name}**.")
+            await send_ephemeral(interaction, f"Deleted preset **{deleted_name}**.")
             return
 
         if chosen_action == "set_default":
@@ -400,7 +400,7 @@ def setup(bot, has_required_role, config):
                 await send_ephemeral(interaction, "This VC is open right now; you can join directly.")
                 return
             result = await system.send_knock_notification(interaction.user, target_channel, entry)
-            await send_ephemeral(interaction, f"🚪 {result}")
+            await send_ephemeral(interaction, f"{result}")
 
         if channel is not None:
             if not isinstance(channel, discord.VoiceChannel):

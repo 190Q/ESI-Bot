@@ -289,17 +289,10 @@ class TempVCSystem:
             CREATE TABLE IF NOT EXISTS "{table_name}" (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 message_id INTEGER NOT NULL UNIQUE,
-                channel_id INTEGER NOT NULL,
-                guild_id INTEGER NOT NULL,
                 author_id INTEGER NOT NULL,
-                author_name TEXT,
-                author_display_name TEXT,
                 author_is_bot INTEGER NOT NULL DEFAULT 0,
                 message_type INTEGER NOT NULL,
-                content TEXT,
                 created_at TEXT NOT NULL,
-                edited_at TEXT,
-                is_pinned INTEGER NOT NULL DEFAULT 0,
                 mentions_everyone INTEGER NOT NULL DEFAULT 0,
                 mention_user_ids TEXT,
                 mention_role_ids TEXT,
@@ -307,8 +300,7 @@ class TempVCSystem:
                 attachment_urls TEXT,
                 embed_count INTEGER NOT NULL DEFAULT 0,
                 sticker_count INTEGER NOT NULL DEFAULT 0,
-                referenced_message_id INTEGER,
-                jump_url TEXT
+                referenced_message_id INTEGER
             )
             """
         )
@@ -326,10 +318,7 @@ class TempVCSystem:
         mention_role_ids = [int(role.id) for role in message.role_mentions if int(getattr(role, "id", 0) or 0) > 0]
         attachment_urls = [str(attachment.url) for attachment in list(message.attachments or []) if getattr(attachment, "url", None)]
         author = message.author
-        author_display_name = getattr(author, "display_name", None)
-        author_name = getattr(author, "name", str(author))
         created_at = getattr(message, "created_at", None) or datetime.now(timezone.utc)
-        edited_at = getattr(message, "edited_at", None)
         reference = getattr(message, "reference", None)
         referenced_message_id = int(reference.message_id) if reference and getattr(reference, "message_id", None) else None
         message_type = int(getattr(message, "type", discord.MessageType.default).value)
@@ -341,17 +330,10 @@ class TempVCSystem:
                     f"""
                     INSERT OR REPLACE INTO "{table_name}" (
                         message_id,
-                        channel_id,
-                        guild_id,
                         author_id,
-                        author_name,
-                        author_display_name,
                         author_is_bot,
                         message_type,
-                        content,
                         created_at,
-                        edited_at,
-                        is_pinned,
                         mentions_everyone,
                         mention_user_ids,
                         mention_role_ids,
@@ -359,23 +341,15 @@ class TempVCSystem:
                         attachment_urls,
                         embed_count,
                         sticker_count,
-                        referenced_message_id,
-                        jump_url
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        referenced_message_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         int(message.id),
-                        channel_id,
-                        int(guild.id),
                         int(author.id),
-                        str(author_name) if author_name is not None else None,
-                        str(author_display_name) if author_display_name is not None else None,
                         1 if bool(getattr(author, "bot", False)) else 0,
                         message_type,
-                        str(getattr(message, "content", "") or ""),
                         created_at.astimezone(timezone.utc).isoformat(),
-                        edited_at.astimezone(timezone.utc).isoformat() if isinstance(edited_at, datetime) else None,
-                        1 if bool(getattr(message, "pinned", False)) else 0,
                         1 if bool(getattr(message, "mention_everyone", False)) else 0,
                         json.dumps(mention_user_ids, ensure_ascii=False),
                         json.dumps(mention_role_ids, ensure_ascii=False),
@@ -384,7 +358,6 @@ class TempVCSystem:
                         len(list(message.embeds or [])),
                         len(list(getattr(message, "stickers", []) or [])),
                         referenced_message_id,
-                        str(getattr(message, "jump_url", "") or ""),
                     ),
                 )
                 connection.commit()

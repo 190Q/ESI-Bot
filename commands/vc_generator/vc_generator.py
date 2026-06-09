@@ -26,11 +26,12 @@ VCPanelView = _vc_views.VCPanelView
 ChannelPickerView = _vc_views.ChannelPickerView
 KnockChannelPickerView = _vc_views.KnockChannelPickerView
 LISTENER_ATTR = "_vc_generator_listeners"
-LISTENER_EVENTS = ("on_ready", "on_guild_channel_delete", "on_voice_state_update")
+LISTENER_EVENTS = ("on_ready", "on_guild_channel_delete", "on_voice_state_update", "on_message")
 LISTENER_QUALNAMES = {
     "setup.<locals>.on_ready",
     "setup.<locals>.on_guild_channel_delete",
     "setup.<locals>.on_voice_state_update",
+    "setup.<locals>.on_message",
 }
 
 
@@ -116,9 +117,27 @@ def setup(bot, has_required_role, config):
             if await system.get_entry(after.channel.id):
                 await system.mark_member_join(member, after.channel)
 
+    async def on_message(message: discord.Message):
+        if not isinstance(message, discord.Message):
+            return
+        if getattr(message.author, "bot", False):
+            return
+        if not message.guild:
+            return
+        if not isinstance(message.channel, discord.VoiceChannel):
+            return
+        entry = await system.get_entry(message.channel.id)
+        if not entry:
+            return
+        try:
+            await system.save_temp_vc_message(message)
+        except Exception as exc:
+            print(f"[VC_GENERATOR] Failed to save temp VC message {getattr(message, 'id', 'unknown')}: {exc}")
+
     _register_listener(bot, "on_ready", on_ready)
     _register_listener(bot, "on_guild_channel_delete", on_guild_channel_delete)
     _register_listener(bot, "on_voice_state_update", on_voice_state_update)
+    _register_listener(bot, "on_message", on_message)
 
     @bot.tree.command(name="vc_setup", description="Configure the temporary VC generator")
     @app_commands.describe(

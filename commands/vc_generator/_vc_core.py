@@ -3,11 +3,11 @@ import discord
 import os
 import json
 import re
+import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
-
-from utils.paths import DATA_DIR
+from utils.paths import DATA_DIR, DB_DIR
 
 PARLIAMENT_ROLE_ID = 600185623474601995
 TTS_BOT_ROLE_ID = 1295411931338899632
@@ -29,6 +29,7 @@ MAX_USER_PRESET_NAME_LENGTH = 40
 TEMP_VC_CONFIG_FILE = DATA_DIR / "temp_vc_config.json"
 TEMP_VC_STATE_DIR = DATA_DIR / "temp_vc_channels"
 LEGACY_TEMP_VC_STATE_FILE = DATA_DIR / "temp_vc_channels.json"
+TEMP_VC_MESSAGES_DB_FILE = DB_DIR / "temp_vc_messages.db"
 
 REGION_OPTIONS = [
     ("Automatic", "auto"),
@@ -244,9 +245,11 @@ class TempVCSystem:
         self.bot = bot
         self._config_lock = asyncio.Lock()
         self._state_write_lock = asyncio.Lock()
+        self._message_db_lock = asyncio.Lock()
         self._member_creation_locks: Dict[str, asyncio.Lock] = {}
         self._channel_state_locks: Dict[str, asyncio.Lock] = {}
         DATA_DIR.mkdir(parents=True, exist_ok=True)
+        DB_DIR.mkdir(parents=True, exist_ok=True)
         self._ensure_files()
 
     def _get_member_creation_lock(self, guild_id: int, member_id: int) -> asyncio.Lock:
@@ -270,6 +273,121 @@ class TempVCSystem:
             self._write_json(TEMP_VC_CONFIG_FILE, {"guilds": {}})
         TEMP_VC_STATE_DIR.mkdir(parents=True, exist_ok=True)
         self._migrate_legacy_state_file()
+
+    def _message_table_name(self, channel_id: int) -> str:
+        try:
+            normalized_channel_id = int(channel_id)
+        except (TypeError, ValueError):
+            normalized_channel_id = 0
+        if normalized_channel_id <= 0:
+            raise ValueError("Invalid channel id for temp VC message table.")
+        return f"temp_vc_{normalized_channel_id}"
+
+    def _ensure_message_table(self, connection: sqlite3.Connection, table_name: str):
+        connection.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS "{table_name}" (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL UNIQUE,
+                channel_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                author_id INTEGER NOT NULL,
+                author_name TEXT,
+                author_display_name TEXT,
+                author_is_bot INTEGER NOT NULL DEFAULT 0,
+                message_type INTEGER NOT NULL,
+                content TEXT,
+                created_at TEXT NOT NULL,
+                edited_at TEXT,
+                is_pinned INTEGER NOT NULL DEFAULT 0,
+                mentions_everyone INTEGER NOT NULL DEFAULT 0,
+                mention_user_ids TEXT,
+                mention_role_ids TEXT,
+                attachment_count INTEGER NOT NULL DEFAULT 0,
+                attachment_urls TEXT,
+                embed_count INTEGER NOT NULL DEFAULT 0,
+                sticker_count INTEGER NOT NULL DEFAULT 0,
+                referenced_message_id INTEGER,
+                jump_url TEXT
+            )
+            """
+        )
+
+    async def save_temp_vc_message(self, message: discord.Message):
+        guild = message.guild
+        if guild is None:
+            return
+        channel_id = int(getattr(message.channel, "id", 0) or 0)
+        if channel_id <= 0:
+            return
+        table_name = self._message_table_name(channel_id)
+
+        mention_user_ids = [int(member.id) for member in message.mentions if int(getattr(member, "id", 0) or 0) > 0]
+        mention_role_ids = [int(role.id) for role in message.role_mentions if int(getattr(role, "id", 0) or 0) > 0]
+        attachment_urls = [str(attachment.url) for attachment in list(message.attachments or []) if getattr(attachment, "url", None)]
+        author = message.author
+        author_display_name = getattr(author, "display_name", None)
+        author_name = getattr(author, "name", str(author))
+        created_at = getattr(message, "created_at", None) or datetime.now(timezone.utc)
+        edited_at = getattr(message, "edited_at", None)
+        reference = getattr(message, "reference", None)
+        referenced_message_id = int(reference.message_id) if reference and getattr(reference, "message_id", None) else None
+        message_type = int(getattr(message, "type", discord.MessageType.default).value)
+
+        async with self._message_db_lock:
+            with sqlite3.connect(TEMP_VC_MESSAGES_DB_FILE) as connection:
+                self._ensure_message_table(connection, table_name)
+                connection.execute(
+                    f"""
+                    INSERT OR REPLACE INTO "{table_name}" (
+                        message_id,
+                        channel_id,
+                        guild_id,
+                        author_id,
+                        author_name,
+                        author_display_name,
+                        author_is_bot,
+                        message_type,
+                        content,
+                        created_at,
+                        edited_at,
+                        is_pinned,
+                        mentions_everyone,
+                        mention_user_ids,
+                        mention_role_ids,
+                        attachment_count,
+                        attachment_urls,
+                        embed_count,
+                        sticker_count,
+                        referenced_message_id,
+                        jump_url
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(message.id),
+                        channel_id,
+                        int(guild.id),
+                        int(author.id),
+                        str(author_name) if author_name is not None else None,
+                        str(author_display_name) if author_display_name is not None else None,
+                        1 if bool(getattr(author, "bot", False)) else 0,
+                        message_type,
+                        str(getattr(message, "content", "") or ""),
+                        created_at.astimezone(timezone.utc).isoformat(),
+                        edited_at.astimezone(timezone.utc).isoformat() if isinstance(edited_at, datetime) else None,
+                        1 if bool(getattr(message, "pinned", False)) else 0,
+                        1 if bool(getattr(message, "mention_everyone", False)) else 0,
+                        json.dumps(mention_user_ids, ensure_ascii=False),
+                        json.dumps(mention_role_ids, ensure_ascii=False),
+                        len(attachment_urls),
+                        json.dumps(attachment_urls, ensure_ascii=False),
+                        len(list(message.embeds or [])),
+                        len(list(getattr(message, "stickers", []) or [])),
+                        referenced_message_id,
+                        str(getattr(message, "jump_url", "") or ""),
+                    ),
+                )
+                connection.commit()
 
     def _entry_file_path(self, channel_id: int) -> Optional[Path]:
         try:

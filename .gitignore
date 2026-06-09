@@ -218,6 +218,7 @@ migrate_shop_db.py
 shop.db
 inactivity_exemptions.db
 playtime.db
+temp_vc_messages.db
 
 # Data folders
 alt_accounts.json

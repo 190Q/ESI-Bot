@@ -239,5 +239,7 @@ user_bans.json
 guild_capacity_override.json
 pending_invites.json
 events.json
+temp_vc_channels/
+temp_vc_config.json
 
 playtime_tracking.db.filepart

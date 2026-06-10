@@ -1002,6 +1002,19 @@ class TempVCSystem:
     def _format_permission_names(self, names: List[str]) -> str:
         return ", ".join(name.replace("_", " ").title() for name in names)
 
+    def _format_bot_channel_permission_snapshot(self, channel: discord.VoiceChannel) -> str:
+        bot_member = self._get_bot_member(channel.guild)
+        if bot_member is None:
+            return "effective -> Bot member unresolved in guild cache"
+        permissions = channel.permissions_for(bot_member)
+        return (
+            "effective -> "
+            f"Manage Channels: {permissions.manage_channels}, "
+            f"Manage Roles: {permissions.manage_roles}, "
+            f"Move Members: {permissions.move_members}, "
+            f"Administrator: {permissions.administrator}"
+        )
+
     def _can_set_role_overwrite(self, guild: discord.Guild, role: discord.Role) -> bool:
         bot_member = self._get_bot_member(guild)
         if bot_member is None:
@@ -1011,6 +1024,16 @@ class TempVCSystem:
         if role == guild.default_role:
             return True
         return bot_member.top_role > role
+
+    def _can_set_member_overwrite(self, guild: discord.Guild, member: discord.Member) -> bool:
+        bot_member = self._get_bot_member(guild)
+        if bot_member is None:
+            return False
+        if bot_member.guild_permissions.administrator:
+            return True
+        if member.id == bot_member.id:
+            return True
+        return bot_member.top_role > member.top_role
 
     def _partition_manageable_roles_for_overwrites(
         self,
@@ -1035,6 +1058,32 @@ class TempVCSystem:
                 manageable_ids.append(role_id)
             else:
                 skipped_labels.append(role.mention if getattr(role, "mention", None) else f"<@&{role_id}>")
+
+        return manageable_ids, skipped_labels
+
+    def _partition_manageable_members_for_overwrites(
+        self,
+        guild: discord.Guild,
+        user_ids: List[int],
+    ) -> tuple[List[int], List[str]]:
+        manageable_ids: List[int] = []
+        skipped_labels: List[str] = []
+        seen = set()
+
+        for raw_user_id in user_ids or []:
+            if not str(raw_user_id).isdigit():
+                continue
+            user_id = int(raw_user_id)
+            if user_id in seen:
+                continue
+            seen.add(user_id)
+            member = guild.get_member(user_id)
+            if member is None:
+                continue
+            if self._can_set_member_overwrite(guild, member):
+                manageable_ids.append(user_id)
+            else:
+                skipped_labels.append(member.mention if getattr(member, "mention", None) else f"<@{user_id}>")
 
         return manageable_ids, skipped_labels
 
@@ -1128,6 +1177,104 @@ class TempVCSystem:
             connect=False,
             speak=False,
         )
+
+    def _overwrite_target_key(self, target: Any) -> Optional[tuple[str, int]]:
+        target_id = int(getattr(target, "id", 0) or 0)
+        if target_id <= 0:
+            return None
+        if isinstance(target, discord.Role):
+            return ("role", target_id)
+        return ("member", target_id)
+
+    def _overwrite_target_label(self, target: Any) -> str:
+        if isinstance(target, discord.Role):
+            return target.mention if getattr(target, "mention", None) else f"<@&{target.id}>"
+        target_id = int(getattr(target, "id", 0) or 0)
+        if target_id > 0:
+            return f"<@{target_id}>"
+        return str(target)
+
+    def _sanitize_overwrite_for_channel(
+        self,
+        channel: discord.VoiceChannel,
+        overwrite: discord.PermissionOverwrite,
+    ) -> Optional[discord.PermissionOverwrite]:
+        bot_member = self._get_bot_member(channel.guild)
+        if bot_member is None:
+            return overwrite
+        bot_permissions = channel.permissions_for(bot_member)
+        if bot_permissions.administrator:
+            return overwrite
+
+        sanitized = discord.PermissionOverwrite()
+        for permission_name, value in overwrite:
+            if value is None:
+                continue
+            if bool(getattr(bot_permissions, permission_name, False)):
+                setattr(sanitized, permission_name, value)
+
+        if not any(value is not None for _, value in sanitized):
+            return None
+        return sanitized
+
+    async def _sync_overwrites_best_effort(
+        self,
+        channel: discord.VoiceChannel,
+        desired_overwrites: Dict[Any, discord.PermissionOverwrite],
+        entry: Dict[str, Any],
+        reason: str,
+    ):
+        current_overwrites = dict(channel.overwrites)
+        current_by_key: Dict[tuple[str, int], tuple[Any, discord.PermissionOverwrite]] = {}
+        for target, overwrite in current_overwrites.items():
+            key = self._overwrite_target_key(target)
+            if key is not None:
+                current_by_key[key] = (target, overwrite)
+
+        desired_by_key: Dict[tuple[str, int], tuple[Any, discord.PermissionOverwrite]] = {}
+        for target, overwrite in desired_overwrites.items():
+            key = self._overwrite_target_key(target)
+            if key is None:
+                continue
+            desired_by_key[key] = (target, overwrite)
+
+        changed_count = 0
+        failed_targets: List[str] = []
+
+        for key, (target, overwrite) in desired_by_key.items():
+            current = current_by_key.get(key)
+            if current and current[1].pair() == overwrite.pair():
+                continue
+            try:
+                await channel.set_permissions(target, overwrite=overwrite, reason=reason)
+                changed_count += 1
+            except discord.Forbidden:
+                failed_targets.append(self._overwrite_target_label(target))
+            except discord.HTTPException as exc:
+                status = getattr(exc, "status", "unknown")
+                code = getattr(exc, "code", "unknown")
+                failed_targets.append(
+                    f"{self._overwrite_target_label(target)} ({status}/{code})"
+                )
+
+        if failed_targets:
+            failed_text = ", ".join(failed_targets[:8])
+            if len(failed_targets) > 8:
+                failed_text = f"{failed_text}, +{len(failed_targets) - 8} more"
+            self.add_log(
+                entry,
+                None,
+                "overwrite_targets_skipped",
+                f"Some overwrite targets could not be updated: {failed_text}",
+            )
+            print(
+                f"[VC_GENERATOR] Some overwrite targets could not be updated for channel {channel.id}: {failed_text}"
+            )
+        elif changed_count > 0:
+            print(
+                f"[VC_GENERATOR] Applied partial/best-effort overwrite sync for channel {channel.id}; "
+                f"changed {changed_count} targets."
+            )
     def _build_channel_overwrites(self, guild: discord.Guild, entry: Dict[str, Any]) -> Dict[Any, discord.PermissionOverwrite]:
         overwrites: Dict[Any, discord.PermissionOverwrite] = {
             guild.default_role: self._build_everyone_overwrite(entry)
@@ -1136,7 +1283,7 @@ class TempVCSystem:
         owner_id = int(entry.get("owner_id") or 0)
         if owner_id:
             owner_member = guild.get_member(owner_id)
-            if owner_member:
+            if owner_member and self._can_set_member_overwrite(guild, owner_member):
                 overwrites[owner_member] = self._owner_overwrite(entry)
 
         permit_overwrite = self._permit_overwrite(entry)
@@ -1153,7 +1300,11 @@ class TempVCSystem:
                 else:
                     overwrites[role] = permit_overwrite
 
-        for user_id in entry.get("permitted_users", []):
+        permitted_user_ids, _ = self._partition_manageable_members_for_overwrites(
+            guild,
+            entry.get("permitted_users", []),
+        )
+        for user_id in permitted_user_ids:
             member = guild.get_member(int(user_id))
             if member:
                 overwrites[member] = permit_overwrite
@@ -1166,7 +1317,11 @@ class TempVCSystem:
             if role:
                 overwrites[role] = ban_overwrite
 
-        for user_id in entry.get("banned_users", []):
+        banned_user_ids, _ = self._partition_manageable_members_for_overwrites(
+            guild,
+            entry.get("banned_users", []),
+        )
+        for user_id in banned_user_ids:
             member = guild.get_member(int(user_id))
             if member:
                 overwrites[member] = ban_overwrite
@@ -1198,11 +1353,19 @@ class TempVCSystem:
                 reason=edit_reason,
             )
         except discord.Forbidden:
+            permission_snapshot = self._format_bot_channel_permission_snapshot(channel)
             self.add_log(
                 entry,
                 None,
                 "overwrite_sync_skipped",
-                "Could not apply full overwrite sync; updated channel settings without overwrite changes.",
+                (
+                    "Could not apply full overwrite sync; updated channel settings without overwrite changes. "
+                    f"{permission_snapshot}"
+                ),
+            )
+            print(
+                f"[VC_GENERATOR] Overwrite sync denied for channel {channel.id}; "
+                f"retrying update without overwrites ({permission_snapshot})"
             )
             await channel.edit(
                 user_limit=user_limit,
@@ -1210,6 +1373,7 @@ class TempVCSystem:
                 rtc_region=rtc_region,
                 reason=edit_reason,
             )
+            await self._sync_overwrites_best_effort(channel, overwrites, entry, edit_reason)
 
         entry["bitrate"] = bitrate
         entry["user_limit"] = user_limit

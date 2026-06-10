@@ -639,11 +639,6 @@ class TempVCSystem:
 
     def apply_user_preset_to_entry(self, entry: Dict[str, Any], preset_settings: Dict[str, Any]):
         normalized_preset = self._normalize_preset_settings(preset_settings)
-        existing_non_privileged_roles = [
-            int(role_id)
-            for role_id in entry.get("permitted_roles", [])
-            if str(role_id).isdigit() and int(role_id) not in PRIVILEGED_ROLE_ID_SET
-        ]
         entry["locked"] = normalized_preset["locked"]
         entry["hidden"] = normalized_preset["hidden"]
         entry["push_to_talk"] = normalized_preset["push_to_talk"]
@@ -654,7 +649,7 @@ class TempVCSystem:
         entry["permitted_users"] = list(normalized_preset["permitted_users"])
         entry["permitted_roles"] = list(
             dict.fromkeys(
-                list(normalized_preset["permitted_roles"]) + existing_non_privileged_roles + list(PRIVILEGED_ROLE_IDS)
+                list(normalized_preset["permitted_roles"]) + list(PRIVILEGED_ROLE_IDS)
             )
         )
         entry["banned_users"] = list(normalized_preset["banned_users"])
@@ -1351,12 +1346,49 @@ class TempVCSystem:
             if key is None:
                 continue
             desired_by_key[key] = (target, overwrite)
-        self._prune_target_overwrite_retry_state(channel.id, set(desired_by_key.keys()))
+
+        stale_targets_to_remove: List[tuple[tuple[str, int], Any]] = []
+        for key, (target, _) in current_by_key.items():
+            if key in desired_by_key:
+                continue
+            if key[0] == "member":
+                if isinstance(target, discord.Member) and not self._can_set_member_overwrite(channel.guild, target):
+                    continue
+                stale_targets_to_remove.append((key, target))
+                continue
+            if key[0] == "role":
+                role_target = target if isinstance(target, discord.Role) else channel.guild.get_role(int(key[1]))
+                if role_target is None or role_target.id == channel.guild.default_role.id:
+                    continue
+                if not self._can_set_role_overwrite(channel.guild, role_target):
+                    continue
+                stale_targets_to_remove.append((key, target))
+
+        retained_retry_keys = set(desired_by_key.keys()) | {key for key, _ in stale_targets_to_remove}
+        self._prune_target_overwrite_retry_state(channel.id, retained_retry_keys)
 
         changed_count = 0
         failed_targets: List[str] = []
         now_ts = monotonic()
 
+        remove_signature = (-1, -1)
+        for key, target in stale_targets_to_remove:
+            if self._is_target_overwrite_retry_suppressed(channel.id, key, remove_signature, now_ts):
+                continue
+            try:
+                await channel.set_permissions(target, overwrite=None, reason=reason)
+                changed_count += 1
+                self._clear_target_overwrite_retry(channel.id, key)
+            except discord.Forbidden:
+                self._mark_target_overwrite_retry(channel.id, key, remove_signature, monotonic())
+                failed_targets.append(f"{self._overwrite_target_label(target)} (remove)")
+            except discord.HTTPException as exc:
+                self._mark_target_overwrite_retry(channel.id, key, remove_signature, monotonic())
+                status = getattr(exc, "status", "unknown")
+                code = getattr(exc, "code", "unknown")
+                failed_targets.append(
+                    f"{self._overwrite_target_label(target)} (remove {status}/{code})"
+                )
         for key, (target, overwrite) in desired_by_key.items():
             current = current_by_key.get(key)
             if current and current[1].pair() == overwrite.pair():
@@ -1398,10 +1430,35 @@ class TempVCSystem:
                 f"[VC_GENERATOR] Applied partial/best-effort overwrite sync for channel {channel.id}; "
                 f"changed {changed_count} targets."
             )
-    def _build_channel_overwrites(self, guild: discord.Guild, entry: Dict[str, Any]) -> Dict[Any, discord.PermissionOverwrite]:
-        overwrites: Dict[Any, discord.PermissionOverwrite] = {
-            guild.default_role: self._build_everyone_overwrite(entry)
-        }
+
+    def _build_category_baseline_overwrites(
+        self,
+        guild: discord.Guild,
+        category: Optional[discord.CategoryChannel],
+    ) -> Dict[Any, discord.PermissionOverwrite]:
+        if not isinstance(category, discord.CategoryChannel):
+            return {}
+        baseline_overwrites: Dict[Any, discord.PermissionOverwrite] = {}
+        for target, overwrite in dict(category.overwrites).items():
+            if isinstance(target, (discord.Member, discord.User)):
+                continue
+            if isinstance(target, discord.Role):
+                if target.id != guild.default_role.id and self._can_set_role_overwrite(guild, target):
+                    continue
+            baseline_overwrites[target] = overwrite
+        return baseline_overwrites
+
+    def _build_channel_overwrites(
+        self,
+        guild: discord.Guild,
+        entry: Dict[str, Any],
+        category: Optional[discord.CategoryChannel] = None,
+    ) -> Dict[Any, discord.PermissionOverwrite]:
+        overwrites: Dict[Any, discord.PermissionOverwrite] = self._build_category_baseline_overwrites(
+            guild,
+            category,
+        )
+        overwrites[guild.default_role] = self._build_everyone_overwrite(entry)
 
         owner_id = int(entry.get("owner_id") or 0)
         if owner_id:
@@ -1464,7 +1521,8 @@ class TempVCSystem:
         user_limit = clamp(int(entry.get("user_limit", 0)), 0, 99)
         region = str(entry.get("region", "auto") or "auto")
         rtc_region = None if region == "auto" else region
-        overwrites = self._build_channel_overwrites(channel.guild, entry)
+        channel_category = channel.category if isinstance(channel.category, discord.CategoryChannel) else None
+        overwrites = self._build_channel_overwrites(channel.guild, entry, category=channel_category)
         overwrite_signature = self._build_overwrite_signature(overwrites)
         edit_reason = reason or "Temporary VC state update"
         current_region = str(getattr(channel, "rtc_region", None) or "auto")
@@ -1691,7 +1749,7 @@ class TempVCSystem:
                     "overwrite_roles_skipped",
                     f"Skipped role overwrites (hierarchy): {skipped_text}",
                 )
-            initial_overwrites = self._build_channel_overwrites(member.guild, base_entry)
+            initial_overwrites = self._build_channel_overwrites(member.guild, base_entry, category=category)
             create_reason = f"Temporary VC created for {member}"
             create_kwargs = {
                 "name": channel_name,

@@ -22,9 +22,11 @@ else:
 TempVCSystem = _vc_core.TempVCSystem
 send_ephemeral = _vc_core.send_ephemeral
 DEFAULT_GENERATOR_CHANNEL_NAME = _vc_core.DEFAULT_GENERATOR_CHANNEL_NAME
+clamp = _vc_core.clamp
 VCPanelView = _vc_views.VCPanelView
 ChannelPickerView = _vc_views.ChannelPickerView
 KnockChannelPickerView = _vc_views.KnockChannelPickerView
+PresetBuilderView = _vc_views.PresetBuilderView
 LISTENER_ATTR = "_vc_generator_listeners"
 LISTENER_EVENTS = ("on_ready", "on_guild_channel_delete", "on_voice_state_update", "on_message")
 LISTENER_QUALNAMES = {
@@ -253,10 +255,11 @@ def setup(bot, has_required_role, config):
     @bot.tree.command(name="vc_presets", description="Manage your saved temp VC presets")
     @app_commands.describe(
         action="Choose how to manage your presets",
-        preset_name="Preset name (required for delete/set_default)",
+        preset_name="Preset name (required for delete/set_default, optional for create)",
     )
     @app_commands.choices(
         action=[
+            app_commands.Choice(name="Create preset (panel)", value="create"),
             app_commands.Choice(name="List presets", value="list"),
             app_commands.Choice(name="Delete preset", value="delete"),
             app_commands.Choice(name="Set default preset", value="set_default"),
@@ -268,10 +271,58 @@ def setup(bot, has_required_role, config):
         action: app_commands.Choice[str],
         preset_name: Optional[str] = None,
     ):
+        if interaction.guild is None:
+            await send_ephemeral(interaction, "This command can only be used in a server.")
+            return
         chosen_action = action.value
         bucket = await system.get_user_preset_bucket(interaction.guild.id, interaction.user.id)
         presets = bucket.get("presets", {})
         default_preset = bucket.get("default_preset")
+        if chosen_action == "create":
+            config = await system.get_guild_config(interaction.guild.id)
+            requested_name = system.normalize_user_preset_name(preset_name or "")
+            loaded_name: Optional[str] = None
+            draft_settings: Optional[dict] = None
+
+            if requested_name:
+                matched_name, matched_settings = await system.get_user_preset(
+                    interaction.guild.id,
+                    interaction.user.id,
+                    requested_name,
+                )
+                if matched_name and matched_settings:
+                    loaded_name = matched_name
+                    requested_name = matched_name
+                    draft_settings = matched_settings
+
+            if draft_settings is None:
+                base_entry = system._default_channel_entry(interaction.guild.id)
+                base_entry["owner_id"] = interaction.user.id
+                base_entry["bitrate"] = clamp(
+                    int(config.get("default_bitrate", 64000)),
+                    8000,
+                    int(interaction.guild.bitrate_limit),
+                )
+                base_entry["user_limit"] = clamp(int(config.get("default_user_limit", 0)), 0, 99)
+                template_name = str(config.get("default_template", "default") or "default")
+                system.apply_template_to_entry(base_entry, template_name, config)
+                draft_settings = system.build_user_preset_from_entry(base_entry)
+
+            view = PresetBuilderView(
+                system=system,
+                guild_id=interaction.guild.id,
+                requester_id=interaction.user.id,
+                draft_settings=draft_settings,
+                initial_preset_name=requested_name or None,
+            )
+            status = (
+                f"Loaded existing preset '{loaded_name}' into the builder."
+                if loaded_name
+                else "Adjust settings, then use Save Preset."
+            )
+            embed = view.build_panel_embed(interaction.guild, status=status)
+            await send_ephemeral(interaction, embed=embed, view=view)
+            return
 
         if chosen_action == "list":
             if not presets:

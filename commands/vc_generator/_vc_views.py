@@ -846,6 +846,971 @@ class TemplateSelectView(UserBoundView):
         await self.system.upsert_entry(channel.id, entry)
         await send_ephemeral(interaction, f"✅ Template **{template_name}** applied.")
 
+class PresetPermitSelectorView(UserBoundView):
+    def __init__(
+        self,
+        builder_view: "PresetBuilderView",
+        default_user_ids: Optional[List[int]] = None,
+        default_role_ids: Optional[List[int]] = None,
+        banned_user_ids: Optional[List[int]] = None,
+        banned_role_ids: Optional[List[int]] = None,
+    ):
+        super().__init__(requester_id=builder_view.requester_id, timeout=180)
+        self.builder_view = builder_view
+        self.owner_id = int(builder_view.requester_id or 0)
+        self.blocked_user_ids = {uid for uid in (self.owner_id, int(OWNER_ID or 0)) if uid > 0}
+        self.blocked_role_ids = {int(rid) for rid in PRIVILEGED_ROLE_IDS if int(rid) > 0}
+        self.banned_user_ids = {int(uid) for uid in (banned_user_ids or []) if str(uid).isdigit()}
+        self.banned_role_ids = {int(rid) for rid in (banned_role_ids or []) if str(rid).isdigit()}
+        self.pending_user_ids = [
+            uid for uid in list(dict.fromkeys(default_user_ids or []))
+            if int(uid) not in self.blocked_user_ids and int(uid) not in self.banned_user_ids
+        ]
+        self.pending_role_ids = [
+            rid for rid in list(dict.fromkeys(default_role_ids or []))
+            if int(rid) not in self.blocked_role_ids and int(rid) not in self.banned_role_ids
+        ]
+        self.ignored_targets: List[str] = []
+
+        default_values = [
+            discord.SelectDefaultValue(id=user_id, type=discord.SelectDefaultValueType.user)
+            for user_id in self.pending_user_ids
+        ] + [
+            discord.SelectDefaultValue(id=role_id, type=discord.SelectDefaultValueType.role)
+            for role_id in self.pending_role_ids
+        ]
+        default_values = default_values[:25]
+        max_values = min(25, max(MAX_PERMIT_TARGETS_PER_ACTION, len(default_values), 1))
+
+        self.selector = discord.ui.MentionableSelect(
+            placeholder="Select users/roles to permit",
+            min_values=0,
+            max_values=max_values,
+            default_values=default_values,
+        )
+        self.selector.callback = self._permit_callback
+        self.add_item(self.selector)
+
+    def _collect_selected_ids(self, guild: discord.Guild) -> tuple[List[int], List[int], List[str]]:
+        selected_user_ids: List[int] = []
+        selected_role_ids: List[int] = []
+        ignored: List[str] = []
+
+        for target in list(self.selector.values):
+            if isinstance(target, discord.Role):
+                if target == guild.default_role:
+                    ignored.append("@everyone")
+                    continue
+                if target.id in self.blocked_role_ids:
+                    ignored.append(f"{target.mention} (privileged role)")
+                    continue
+                if target.id in self.banned_role_ids:
+                    ignored.append(f"{target.mention} (currently banned)")
+                    continue
+                selected_role_ids.append(target.id)
+                continue
+
+            target_id = int(getattr(target, "id", 0) or 0)
+            if target_id > 0:
+                if target_id in self.blocked_user_ids:
+                    if self.owner_id and target_id == self.owner_id:
+                        ignored.append(f"{target.mention} (VC owner)")
+                    else:
+                        ignored.append(f"{target.mention} (OWNER_ID)")
+                    continue
+                if target_id in self.banned_user_ids:
+                    ignored.append(f"{target.mention} (currently banned)")
+                    continue
+                if isinstance(target, discord.Member) and any(role.id in self.banned_role_ids for role in target.roles):
+                    ignored.append(f"{target.mention} (has a banned role)")
+                    continue
+                selected_user_ids.append(target_id)
+        return list(dict.fromkeys(selected_user_ids)), list(dict.fromkeys(selected_role_ids)), ignored
+
+    async def _permit_callback(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.edit_message(content="Guild context is unavailable.", embed=None, view=None)
+            return
+        self.pending_user_ids, self.pending_role_ids, self.ignored_targets = self._collect_selected_ids(interaction.guild)
+        await interaction.response.defer()
+
+    def _format_users(self, guild: discord.Guild, ids: set[int]) -> str:
+        mentions = []
+        for user_id in sorted(ids):
+            member = guild.get_member(user_id)
+            mentions.append(member.mention if member else f"<@{user_id}>")
+        return ", ".join(mentions)
+
+    def _format_roles(self, guild: discord.Guild, ids: set[int]) -> str:
+        mentions = []
+        for role_id in sorted(ids):
+            role = guild.get_role(role_id)
+            mentions.append(role.mention if role else f"<@&{role_id}>")
+        return ", ".join(mentions)
+
+    async def _send_updated_panel(self, interaction: discord.Interaction, status: str):
+        await self.builder_view.send_updated_panel(interaction, status=status)
+
+    @discord.ui.button(label="Save", style=discord.ButtonStyle.success, row=1)
+    async def save_changes(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.edit_message(content="Guild context is unavailable.", embed=None, view=None)
+            return
+
+        draft = self.builder_view.draft_settings
+        previous_user_ids = set(int(uid) for uid in draft.get("permitted_users", []) if str(uid).isdigit())
+        previous_role_ids = set(
+            int(rid)
+            for rid in draft.get("permitted_roles", [])
+            if str(rid).isdigit() and int(rid) not in self.blocked_role_ids
+        )
+        safe_user_ids = [
+            uid for uid in self.pending_user_ids
+            if uid not in self.blocked_user_ids and uid not in self.banned_user_ids
+        ]
+        safe_role_ids = [
+            rid for rid in self.pending_role_ids
+            if rid not in self.blocked_role_ids and rid not in self.banned_role_ids
+        ]
+
+        blocked_by_banned_role_user_ids: set[int] = set()
+        for user_id in safe_user_ids:
+            member = interaction.guild.get_member(int(user_id))
+            if member and any(role.id in self.banned_role_ids for role in member.roles):
+                blocked_by_banned_role_user_ids.add(int(user_id))
+        if blocked_by_banned_role_user_ids:
+            safe_user_ids = [uid for uid in safe_user_ids if uid not in blocked_by_banned_role_user_ids]
+
+        selected_user_set = set(safe_user_ids)
+        selected_role_set = set(safe_role_ids)
+        added_user_ids = selected_user_set - previous_user_ids
+        removed_user_ids = previous_user_ids - selected_user_set
+        added_role_ids = selected_role_set - previous_role_ids
+        removed_role_ids = previous_role_ids - selected_role_set
+
+        draft["permitted_users"] = list(dict.fromkeys(safe_user_ids))
+        draft["permitted_roles"] = list(dict.fromkeys(safe_role_ids + list(PRIVILEGED_ROLE_IDS)))
+        self.builder_view._normalize_draft_settings()
+
+        changed = bool(added_user_ids or removed_user_ids or added_role_ids or removed_role_ids)
+        lines = []
+        if added_user_ids:
+            lines.append(f"Users added: {self._format_users(interaction.guild, added_user_ids)}")
+        if removed_user_ids:
+            lines.append(f"Users removed: {self._format_users(interaction.guild, removed_user_ids)}")
+        if added_role_ids:
+            lines.append(f"Roles added: {self._format_roles(interaction.guild, added_role_ids)}")
+        if removed_role_ids:
+            lines.append(f"Roles removed: {self._format_roles(interaction.guild, removed_role_ids)}")
+        if blocked_by_banned_role_user_ids:
+            lines.append(f"Blocked (has banned role): {self._format_users(interaction.guild, blocked_by_banned_role_user_ids)}")
+        if self.ignored_targets:
+            lines.append(f"Ignored: {', '.join(self.ignored_targets)}")
+
+        header = "✅ Permit list saved." if changed else "No permit changes were made."
+        embed = discord.Embed(
+            title="Permit Users/Roles",
+            description=header if not lines else f"{header}\n" + "\n".join(lines),
+            color=0x57F287 if changed else 0x5865F2,
+        )
+        await interaction.response.edit_message(content=None, embed=embed, view=None)
+        await self._send_updated_panel(
+            interaction,
+            status="✅ Draft permit list updated." if changed else "No permit changes were made.",
+        )
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
+    async def cancel_changes(self, interaction: discord.Interaction, _: discord.ui.Button):
+        embed = discord.Embed(
+            title="Permit Users/Roles",
+            description="❎ Changes cancelled. No updates were applied.",
+            color=0x747F8D,
+        )
+        await interaction.response.edit_message(content=None, embed=embed, view=None)
+        self.stop()
+
+
+class PresetBanSelectorView(UserBoundView):
+    def __init__(
+        self,
+        builder_view: "PresetBuilderView",
+        default_user_ids: Optional[List[int]] = None,
+        default_role_ids: Optional[List[int]] = None,
+    ):
+        super().__init__(requester_id=builder_view.requester_id, timeout=180)
+        self.builder_view = builder_view
+        self.owner_id = int(builder_view.requester_id or 0)
+        self.blocked_user_ids = {uid for uid in (self.owner_id, int(OWNER_ID or 0)) if uid > 0}
+        self.blocked_role_ids = {int(rid) for rid in PRIVILEGED_ROLE_IDS if int(rid) > 0}
+        self.pending_user_ids = [
+            uid for uid in list(dict.fromkeys(default_user_ids or []))
+            if int(uid) not in self.blocked_user_ids
+        ]
+        self.pending_role_ids = [
+            rid for rid in list(dict.fromkeys(default_role_ids or []))
+            if int(rid) not in self.blocked_role_ids
+        ]
+        self.ignored_targets: List[str] = []
+
+        default_values = [
+            discord.SelectDefaultValue(id=user_id, type=discord.SelectDefaultValueType.user)
+            for user_id in self.pending_user_ids
+        ] + [
+            discord.SelectDefaultValue(id=role_id, type=discord.SelectDefaultValueType.role)
+            for role_id in self.pending_role_ids
+        ]
+        default_values = default_values[:25]
+        max_values = min(25, max(MAX_PERMIT_TARGETS_PER_ACTION, len(default_values), 1))
+
+        self.selector = discord.ui.MentionableSelect(
+            placeholder="Select users/roles to ban",
+            min_values=0,
+            max_values=max_values,
+            default_values=default_values,
+        )
+        self.selector.callback = self._ban_callback
+        self.add_item(self.selector)
+
+    def _collect_selected_ids(self, guild: discord.Guild) -> tuple[List[int], List[int], List[str]]:
+        selected_user_ids: List[int] = []
+        selected_role_ids: List[int] = []
+        ignored: List[str] = []
+
+        for target in list(self.selector.values):
+            if isinstance(target, discord.Role):
+                if target == guild.default_role:
+                    ignored.append("@everyone")
+                    continue
+                if target.id in self.blocked_role_ids:
+                    ignored.append(f"{target.mention} (privileged role)")
+                    continue
+                selected_role_ids.append(target.id)
+                continue
+
+            target_id = int(getattr(target, "id", 0) or 0)
+            if target_id > 0:
+                if target_id in self.blocked_user_ids:
+                    if self.owner_id and target_id == self.owner_id:
+                        ignored.append(f"{target.mention} (VC owner)")
+                    else:
+                        ignored.append(f"{target.mention} (OWNER_ID)")
+                    continue
+                selected_user_ids.append(target_id)
+        return list(dict.fromkeys(selected_user_ids)), list(dict.fromkeys(selected_role_ids)), ignored
+
+    async def _ban_callback(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.edit_message(content="Guild context is unavailable.", embed=None, view=None)
+            return
+        self.pending_user_ids, self.pending_role_ids, self.ignored_targets = self._collect_selected_ids(interaction.guild)
+        await interaction.response.defer()
+
+    def _format_users(self, guild: discord.Guild, ids: set[int]) -> str:
+        mentions = []
+        for user_id in sorted(ids):
+            member = guild.get_member(user_id)
+            mentions.append(member.mention if member else f"<@{user_id}>")
+        return ", ".join(mentions)
+
+    def _format_roles(self, guild: discord.Guild, ids: set[int]) -> str:
+        mentions = []
+        for role_id in sorted(ids):
+            role = guild.get_role(role_id)
+            mentions.append(role.mention if role else f"<@&{role_id}>")
+        return ", ".join(mentions)
+
+    async def _send_updated_panel(self, interaction: discord.Interaction, status: str):
+        guild = interaction.guild
+        if guild is None:
+            return
+        embed = self.builder_view.build_panel_embed(guild, status=status)
+        await send_ephemeral(interaction, embed=embed, view=self.builder_view)
+
+    @discord.ui.button(label="Save", style=discord.ButtonStyle.success, row=1)
+    async def save_changes(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.edit_message(content="Guild context is unavailable.", embed=None, view=None)
+            return
+
+        draft = self.builder_view.draft_settings
+        previous_user_ids = set(
+            int(uid) for uid in draft.get("banned_users", [])
+            if str(uid).isdigit() and int(uid) not in self.blocked_user_ids
+        )
+        previous_role_ids = set(
+            int(rid) for rid in draft.get("banned_roles", [])
+            if str(rid).isdigit() and int(rid) not in self.blocked_role_ids
+        )
+
+        safe_user_ids = [uid for uid in self.pending_user_ids if uid not in self.blocked_user_ids]
+        safe_role_ids = [rid for rid in self.pending_role_ids if rid not in self.blocked_role_ids]
+        selected_user_set = set(safe_user_ids)
+        selected_role_set = set(safe_role_ids)
+
+        added_user_ids = selected_user_set - previous_user_ids
+        removed_user_ids = previous_user_ids - selected_user_set
+        added_role_ids = selected_role_set - previous_role_ids
+        removed_role_ids = previous_role_ids - selected_role_set
+
+        current_permitted_users = [int(uid) for uid in draft.get("permitted_users", []) if str(uid).isdigit()]
+        current_permitted_roles = [int(rid) for rid in draft.get("permitted_roles", []) if str(rid).isdigit()]
+        removed_permit_user_ids = set(uid for uid in current_permitted_users if uid in selected_user_set)
+        removed_permit_role_ids = set(
+            rid for rid in current_permitted_roles if rid not in self.blocked_role_ids and rid in selected_role_set
+        )
+
+        draft["banned_users"] = list(dict.fromkeys(safe_user_ids))
+        draft["banned_roles"] = list(dict.fromkeys(safe_role_ids))
+        draft["permitted_users"] = [uid for uid in current_permitted_users if uid not in selected_user_set]
+        draft["permitted_roles"] = [
+            rid for rid in current_permitted_roles
+            if rid in self.blocked_role_ids or rid not in selected_role_set
+        ]
+        for role_id in PRIVILEGED_ROLE_IDS:
+            if role_id not in draft["permitted_roles"]:
+                draft["permitted_roles"].append(role_id)
+        self.builder_view._normalize_draft_settings()
+
+        changed = bool(
+            added_user_ids
+            or removed_user_ids
+            or added_role_ids
+            or removed_role_ids
+            or removed_permit_user_ids
+            or removed_permit_role_ids
+        )
+        lines = []
+        if added_user_ids:
+            lines.append(f"Users banned: {self._format_users(interaction.guild, added_user_ids)}")
+        if removed_user_ids:
+            lines.append(f"Users unbanned: {self._format_users(interaction.guild, removed_user_ids)}")
+        if added_role_ids:
+            lines.append(f"Roles banned: {self._format_roles(interaction.guild, added_role_ids)}")
+        if removed_role_ids:
+            lines.append(f"Roles unbanned: {self._format_roles(interaction.guild, removed_role_ids)}")
+        if removed_permit_user_ids:
+            lines.append(f"Users removed from permit: {self._format_users(interaction.guild, removed_permit_user_ids)}")
+        if removed_permit_role_ids:
+            lines.append(f"Roles removed from permit: {self._format_roles(interaction.guild, removed_permit_role_ids)}")
+        if self.ignored_targets:
+            lines.append(f"Ignored: {', '.join(self.ignored_targets)}")
+
+        header = "✅ Banned list saved." if changed else "No banned-list changes were made."
+        embed = discord.Embed(
+            title="Ban Users/Roles",
+            description=header if not lines else f"{header}\n" + "\n".join(lines),
+            color=0xED4245 if changed else 0x5865F2,
+        )
+        await interaction.response.edit_message(content=None, embed=embed, view=None)
+        await self._send_updated_panel(
+            interaction,
+            status="✅ Draft banned list updated." if changed else "No banned-list changes were made.",
+        )
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
+    async def cancel_changes(self, interaction: discord.Interaction, _: discord.ui.Button):
+        embed = discord.Embed(
+            title="Ban Users/Roles",
+            description="❎ Changes cancelled. No updates were applied.",
+            color=0x747F8D,
+        )
+        await interaction.response.edit_message(content=None, embed=embed, view=None)
+        self.stop()
+
+
+class PresetLimitModal(Modal, title="Set Preset User Limit"):
+    user_limit = TextInput(
+        label="User limit (0-99, 0 = unlimited)",
+        placeholder="e.g. 5",
+        required=True,
+        max_length=2,
+    )
+
+    def __init__(self, builder_view: "PresetBuilderView", current_limit: int = 0):
+        super().__init__()
+        self.builder_view = builder_view
+        try:
+            limit_value = int(current_limit)
+        except (TypeError, ValueError):
+            limit_value = 0
+        self.user_limit.default = str(clamp(limit_value, 0, 99))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.builder_view.requester_id:
+            await send_ephemeral(interaction, "This preset panel belongs to another user.")
+            return
+        try:
+            new_limit = int(self.user_limit.value.strip())
+        except ValueError:
+            await send_ephemeral(interaction, "Please provide a valid number between 0 and 99.")
+            return
+        if new_limit < 0 or new_limit > 99:
+            await send_ephemeral(interaction, "Limit must be between 0 and 99.")
+            return
+        self.builder_view.draft_settings["user_limit"] = clamp(new_limit, 0, 99)
+        self.builder_view._normalize_draft_settings()
+        await self.builder_view.send_updated_panel(
+            interaction,
+            status=f"✅ Draft preset user limit set to {self.builder_view.draft_settings['user_limit']}.",
+        )
+
+
+class PresetBitrateModal(Modal, title="Set Preset Bitrate"):
+    bitrate_input = TextInput(
+        label="Bitrate (kbps or bps)",
+        placeholder="e.g. 96 (kbps) or 96000 (bps)",
+        required=True,
+        max_length=8,
+    )
+
+    def __init__(self, builder_view: "PresetBuilderView", current_bitrate: int = 64000):
+        super().__init__()
+        self.builder_view = builder_view
+        try:
+            bitrate_value = int(current_bitrate)
+        except (TypeError, ValueError):
+            bitrate_value = 64000
+        if bitrate_value < 0:
+            bitrate_value = 64000
+        self.bitrate_input.default = str(bitrate_value)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.builder_view.requester_id:
+            await send_ephemeral(interaction, "This preset panel belongs to another user.")
+            return
+        if interaction.guild is None:
+            await send_ephemeral(interaction, "Guild context is unavailable.")
+            return
+        try:
+            raw_value = int(self.bitrate_input.value.strip())
+        except ValueError:
+            await send_ephemeral(interaction, "Bitrate must be a number.")
+            return
+
+        bitrate = raw_value * 1000 if raw_value < 1000 else raw_value
+        max_bitrate = int(interaction.guild.bitrate_limit)
+        if bitrate < 8000 or bitrate > max_bitrate:
+            await send_ephemeral(
+                interaction,
+                f"Bitrate must be between **8 kbps** and **{max_bitrate // 1000} kbps** for this guild.",
+            )
+            return
+
+        self.builder_view.draft_settings["bitrate"] = bitrate
+        self.builder_view._normalize_draft_settings()
+        await self.builder_view.send_updated_panel(
+            interaction,
+            status=f"✅ Draft preset bitrate set to {bitrate // 1000} kbps.",
+        )
+
+
+class PresetRegionSelectView(UserBoundView):
+    def __init__(self, builder_view: "PresetBuilderView"):
+        super().__init__(requester_id=builder_view.requester_id, timeout=120)
+        self.builder_view = builder_view
+        options = [discord.SelectOption(label=label, value=value) for label, value in REGION_OPTIONS]
+        select = discord.ui.Select(
+            placeholder="Choose a preset region",
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+        select.callback = self._region_callback
+        self.add_item(select)
+        self.select = select
+
+    async def _region_callback(self, interaction: discord.Interaction):
+        chosen = self.select.values[0]
+        self.builder_view.draft_settings["region"] = chosen
+        self.builder_view._normalize_draft_settings()
+        await interaction.response.edit_message(
+            content=f"✅ Draft preset region set to **{chosen}**.",
+            embed=None,
+            view=None,
+        )
+        await self.builder_view.send_updated_panel(
+            interaction,
+            status=f"✅ Draft preset region set to {chosen}.",
+        )
+        self.stop()
+
+
+class PresetTemplateSelectView(UserBoundView):
+    def __init__(self, builder_view: "PresetBuilderView", templates: Dict[str, Dict[str, Any]]):
+        super().__init__(requester_id=builder_view.requester_id, timeout=120)
+        self.builder_view = builder_view
+        self.templates = templates
+        options = []
+        for key, cfg in list(templates.items())[:25]:
+            options.append(
+                discord.SelectOption(
+                    label=str(cfg.get("display_name", key))[:100],
+                    value=key,
+                    description=(
+                        f"limit {cfg.get('user_limit', 0)} | "
+                        f"{'locked' if cfg.get('locked') else 'open'} | "
+                        f"{'hidden' if cfg.get('hidden') else 'visible'}"
+                    )[:100],
+                )
+            )
+        select = discord.ui.Select(
+            placeholder="Choose a template for this preset draft",
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+        select.callback = self._template_callback
+        self.add_item(select)
+        self.select = select
+
+    async def _template_callback(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.edit_message(content="Guild context is unavailable.", embed=None, view=None)
+            return
+        template_name = self.select.values[0]
+        config = await self.builder_view.system.get_guild_config(interaction.guild.id)
+        draft_entry = self.builder_view._draft_to_entry()
+        self.builder_view.system.apply_template_to_entry(draft_entry, template_name, config)
+        self.builder_view.draft_settings = self.builder_view.system.build_user_preset_from_entry(draft_entry)
+        self.builder_view._normalize_draft_settings()
+        await interaction.response.edit_message(
+            content=f"✅ Applied template **{template_name}** to draft preset.",
+            embed=None,
+            view=None,
+        )
+        await self.builder_view.send_updated_panel(
+            interaction,
+            status=f"✅ Applied template {template_name} to draft preset.",
+        )
+        self.stop()
+
+
+class PresetDraftSaveModal(Modal, title="Save Draft Preset"):
+    preset_name = TextInput(
+        label="Preset name",
+        placeholder="e.g. Ranked Duo",
+        required=True,
+        max_length=40,
+    )
+
+    def __init__(self, builder_view: "PresetBuilderView", set_as_default: bool = False):
+        super().__init__()
+        self.builder_view = builder_view
+        self.set_as_default = set_as_default
+        if isinstance(builder_view.initial_preset_name, str) and builder_view.initial_preset_name.strip():
+            self.preset_name.default = builder_view.initial_preset_name.strip()[:40]
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.builder_view.requester_id:
+            await send_ephemeral(interaction, "This preset panel belongs to another user.")
+            return
+        if interaction.guild is None:
+            await send_ephemeral(interaction, "Guild context is unavailable.")
+            return
+
+        preset_name = self.builder_view.system.normalize_user_preset_name(self.preset_name.value)
+        if not preset_name:
+            await send_ephemeral(interaction, "Preset name cannot be empty.")
+            return
+
+        self.builder_view._normalize_draft_settings()
+        try:
+            result = await self.builder_view.system.save_user_preset(
+                interaction.guild.id,
+                interaction.user.id,
+                preset_name,
+                self.builder_view.draft_settings,
+            )
+        except ValueError as exc:
+            await send_ephemeral(interaction, str(exc))
+            return
+
+        saved_name = str(result.get("name", preset_name))
+        if self.set_as_default:
+            await self.builder_view.system.set_user_default_preset(
+                interaction.guild.id,
+                interaction.user.id,
+                saved_name,
+            )
+        self.builder_view.initial_preset_name = saved_name
+
+        verb = "Saved" if result.get("created") else "Updated"
+        message = f"✅ {verb} preset **{saved_name}** ({result.get('count', 0)} total)."
+        if self.set_as_default:
+            message += "\n⭐ Set as your default preset."
+        await send_ephemeral(interaction, message)
+
+
+class PresetBuilderView(UserBoundView):
+    def __init__(
+        self,
+        system: TempVCSystem,
+        guild_id: int,
+        requester_id: int,
+        draft_settings: Dict[str, Any],
+        initial_preset_name: Optional[str] = None,
+    ):
+        super().__init__(requester_id=requester_id, timeout=900)
+        self.system = system
+        self.guild_id = int(guild_id)
+        self.initial_preset_name = initial_preset_name
+        self.draft_settings = dict(draft_settings or {})
+        self._normalize_draft_settings()
+        self._build_buttons()
+
+    def _add_action_button(self, label: str, style: discord.ButtonStyle, row: int, callback):
+        button = discord.ui.Button(label=label, style=style, row=row)
+
+        async def wrapper(interaction: discord.Interaction):
+            await callback(interaction)
+
+        button.callback = wrapper
+        self.add_item(button)
+        return button
+
+    def _build_buttons(self):
+        self._add_action_button("Lock", discord.ButtonStyle.secondary, 0, self.lock_channel)
+        self._add_action_button("Unlock", discord.ButtonStyle.secondary, 0, self.unlock_channel)
+        self._add_action_button("Hide", discord.ButtonStyle.secondary, 0, self.hide_channel)
+        self._add_action_button("Show", discord.ButtonStyle.secondary, 0, self.show_channel)
+        self._add_action_button("Push-to-talk", discord.ButtonStyle.secondary, 0, self.toggle_ptt)
+
+        self._add_action_button("Permit", discord.ButtonStyle.primary, 1, self.permit_targets)
+        self._add_action_button("Ban", discord.ButtonStyle.danger, 1, self.ban_targets)
+        self._add_action_button("Clear Permit", discord.ButtonStyle.secondary, 1, self.clear_permit_targets)
+        self._add_action_button("Clear Ban", discord.ButtonStyle.secondary, 1, self.clear_ban_targets)
+        self._add_action_button("Template", discord.ButtonStyle.primary, 1, self.apply_template)
+
+        self._add_action_button("Limit", discord.ButtonStyle.primary, 2, self.set_limit)
+        self._add_action_button("+Limit", discord.ButtonStyle.success, 2, self.increase_limit)
+        self._add_action_button("-Limit", discord.ButtonStyle.danger, 2, self.decrease_limit)
+        self._add_action_button("Bitrate", discord.ButtonStyle.primary, 2, self.set_bitrate)
+        self._add_action_button("Region", discord.ButtonStyle.primary, 2, self.change_region)
+
+        self._add_action_button("Save Preset", discord.ButtonStyle.success, 3, self.save_preset)
+        self._add_action_button("Save + Default", discord.ButtonStyle.success, 3, self.save_preset_and_default)
+        self._add_action_button("Refresh", discord.ButtonStyle.secondary, 3, self.refresh_panel)
+        self._add_action_button("Close", discord.ButtonStyle.danger, 3, self.close_panel)
+
+    def _normalize_draft_settings(self):
+        self.draft_settings = self.system._normalize_preset_settings(self.draft_settings)
+
+    async def send_updated_panel(self, interaction: discord.Interaction, status: str = ""):
+        guild = interaction.guild
+        if guild is None:
+            await send_ephemeral(interaction, "Guild context is unavailable.")
+            return
+        embed = self.build_panel_embed(guild, status=status)
+        await send_ephemeral(interaction, embed=embed, view=self)
+
+    def _draft_to_entry(self) -> Dict[str, Any]:
+        entry = self.system._default_channel_entry(self.guild_id)
+        entry["owner_id"] = self.requester_id
+        self.system.apply_user_preset_to_entry(entry, self.draft_settings)
+        return entry
+
+    def _format_targets(self, guild: discord.Guild, ids: List[int], *, is_role: bool) -> str:
+        cleaned_ids = [int(item) for item in ids if str(item).isdigit()]
+        if not cleaned_ids:
+            return "*None*"
+        labels = []
+        for target_id in cleaned_ids[:20]:
+            if is_role:
+                role = guild.get_role(target_id)
+                labels.append(role.mention if role else f"<@&{target_id}>")
+            else:
+                member = guild.get_member(target_id)
+                labels.append(member.mention if member else f"<@{target_id}>")
+        text = ", ".join(labels)
+        if len(cleaned_ids) > 20:
+            text = f"{text}, +{len(cleaned_ids) - 20} more"
+        return text
+
+    def build_panel_embed(self, guild: discord.Guild, status: str = "") -> discord.Embed:
+        state_text = (
+            f"Locked: **{'Yes' if self.draft_settings.get('locked') else 'No'}**\n"
+            f"Hidden: **{'Yes' if self.draft_settings.get('hidden') else 'No'}**\n"
+            f"Push-to-talk: **{'On' if self.draft_settings.get('push_to_talk') else 'Off'}**\n"
+            f"Template: **{self.draft_settings.get('template', 'default')}**"
+        )
+        draft_name = (
+            f"**{self.initial_preset_name}**"
+            if isinstance(self.initial_preset_name, str) and self.initial_preset_name.strip()
+            else "*Not set (choose when saving)*"
+        )
+        embed = discord.Embed(
+            title="Preset Builder",
+            description=(
+                "Configure a preset draft using the buttons below. "
+                "Channel-only actions were removed from this panel."
+            ),
+            color=0x5865F2,
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Preset Name", value=draft_name, inline=False)
+        embed.add_field(name="State", value=state_text, inline=False)
+        embed.add_field(
+            name="Channel Settings",
+            value=(
+                f"**User Limit:** {int(self.draft_settings.get('user_limit', 0))}\n"
+                f"**Bitrate:** {int(self.draft_settings.get('bitrate', 64000)) // 1000} kbps\n"
+                f"**Region:** {self.draft_settings.get('region', 'auto')}"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Permitted Users/Roles",
+            value=(
+                f"{self._format_targets(guild, self.draft_settings.get('permitted_users', []), is_role=False)}\n"
+                f"{self._format_targets(guild, self.draft_settings.get('permitted_roles', []), is_role=True)}"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Banned Users/Roles",
+            value=(
+                f"{self._format_targets(guild, self.draft_settings.get('banned_users', []), is_role=False)}\n"
+                f"{self._format_targets(guild, self.draft_settings.get('banned_roles', []), is_role=True)}"
+            ),
+            inline=False,
+        )
+        if status:
+            embed.set_footer(text=status)
+        return embed
+
+    async def _refresh_with_status(self, interaction: discord.Interaction, status: str = ""):
+        if interaction.guild is None:
+            await send_ephemeral(interaction, "Guild context is unavailable.")
+            return
+        embed = self.build_panel_embed(interaction.guild, status=status)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(content=None, embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(content=None, embed=embed, view=self)
+
+    async def lock_channel(self, interaction: discord.Interaction):
+        self.draft_settings["locked"] = True
+        self._normalize_draft_settings()
+        await self._refresh_with_status(interaction, "Draft preset locked.")
+
+    async def unlock_channel(self, interaction: discord.Interaction):
+        self.draft_settings["locked"] = False
+        self._normalize_draft_settings()
+        await self._refresh_with_status(interaction, "Draft preset unlocked.")
+
+    async def hide_channel(self, interaction: discord.Interaction):
+        self.draft_settings["hidden"] = True
+        self._normalize_draft_settings()
+        await self._refresh_with_status(interaction, "Draft preset hidden.")
+
+    async def show_channel(self, interaction: discord.Interaction):
+        self.draft_settings["hidden"] = False
+        self._normalize_draft_settings()
+        await self._refresh_with_status(interaction, "Draft preset visible.")
+
+    async def toggle_ptt(self, interaction: discord.Interaction):
+        self.draft_settings["push_to_talk"] = not bool(self.draft_settings.get("push_to_talk"))
+        self._normalize_draft_settings()
+        status = "🎙️ Draft push-to-talk enabled." if self.draft_settings["push_to_talk"] else "🎙️ Draft push-to-talk disabled."
+        await self._refresh_with_status(interaction, status)
+
+    async def permit_targets(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await send_ephemeral(interaction, "Guild context is unavailable.")
+            return
+
+        owner_id = int(self.requester_id or 0)
+        blocked_user_ids = {uid for uid in (owner_id, int(OWNER_ID or 0)) if uid > 0}
+        privileged_role_ids = {int(rid) for rid in PRIVILEGED_ROLE_IDS if int(rid) > 0}
+        banned_user_ids = {int(uid) for uid in self.draft_settings.get("banned_users", []) if str(uid).isdigit()}
+        banned_role_ids = {int(rid) for rid in self.draft_settings.get("banned_roles", []) if str(rid).isdigit()}
+
+        default_user_ids = []
+        for user_id in self.draft_settings.get("permitted_users", []):
+            try:
+                normalized = int(user_id)
+            except (TypeError, ValueError):
+                continue
+            if normalized in blocked_user_ids:
+                continue
+            if normalized in banned_user_ids:
+                continue
+            if interaction.guild.get_member(normalized):
+                default_user_ids.append(normalized)
+
+        default_role_ids = []
+        for role_id in self.draft_settings.get("permitted_roles", []):
+            try:
+                normalized = int(role_id)
+            except (TypeError, ValueError):
+                continue
+            if normalized in privileged_role_ids:
+                continue
+            if normalized in banned_role_ids:
+                continue
+            if interaction.guild.get_role(normalized):
+                default_role_ids.append(normalized)
+
+        editable_count = min(25, max(MAX_PERMIT_TARGETS_PER_ACTION, len(default_user_ids) + len(default_role_ids), 1))
+        await send_ephemeral(
+            interaction,
+            embed=discord.Embed(
+                title="Permit Users/Roles",
+                description=(
+                    "Edit the draft access list below. Keep selected entries to retain access, unselect to remove.\n"
+                    "Banned users/roles cannot be permitted until they are unbanned.\n"
+                    "Changes are only applied when you click Save; Cancel discards them.\n"
+                    f"You can choose up to {editable_count} entries."
+                ),
+                color=0x5865F2,
+            ),
+            view=PresetPermitSelectorView(
+                self,
+                default_user_ids=default_user_ids,
+                default_role_ids=default_role_ids,
+                banned_user_ids=list(banned_user_ids),
+                banned_role_ids=list(banned_role_ids),
+            ),
+        )
+
+    async def ban_targets(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await send_ephemeral(interaction, "Guild context is unavailable.")
+            return
+
+        owner_id = int(self.requester_id or 0)
+        blocked_user_ids = {uid for uid in (owner_id, int(OWNER_ID or 0)) if uid > 0}
+        privileged_role_ids = {int(rid) for rid in PRIVILEGED_ROLE_IDS if int(rid) > 0}
+
+        default_user_ids = []
+        for user_id in self.draft_settings.get("banned_users", []):
+            try:
+                normalized = int(user_id)
+            except (TypeError, ValueError):
+                continue
+            if normalized in blocked_user_ids:
+                continue
+            if interaction.guild.get_member(normalized):
+                default_user_ids.append(normalized)
+
+        default_role_ids = []
+        for role_id in self.draft_settings.get("banned_roles", []):
+            try:
+                normalized = int(role_id)
+            except (TypeError, ValueError):
+                continue
+            if normalized in privileged_role_ids:
+                continue
+            if interaction.guild.get_role(normalized):
+                default_role_ids.append(normalized)
+
+        editable_count = min(25, max(MAX_PERMIT_TARGETS_PER_ACTION, len(default_user_ids) + len(default_role_ids), 1))
+        await send_ephemeral(
+            interaction,
+            embed=discord.Embed(
+                title="Ban Users/Roles",
+                description=(
+                    "Select users/roles that should be blocked by this draft preset.\n"
+                    "Banned targets cannot join and cannot knock when this preset is applied.\n"
+                    "Changes are only applied when you click Save; Cancel discards them.\n"
+                    f"You can choose up to {editable_count} entries."
+                ),
+                color=0xED4245,
+            ),
+            view=PresetBanSelectorView(
+                self,
+                default_user_ids=default_user_ids,
+                default_role_ids=default_role_ids,
+            ),
+        )
+
+    async def clear_permit_targets(self, interaction: discord.Interaction):
+        self.draft_settings["permitted_users"] = []
+        self.draft_settings["permitted_roles"] = []
+        self._normalize_draft_settings()
+        await self._refresh_with_status(interaction, "Draft permit list cleared.")
+
+    async def clear_ban_targets(self, interaction: discord.Interaction):
+        self.draft_settings["banned_users"] = []
+        self.draft_settings["banned_roles"] = []
+        self._normalize_draft_settings()
+        await self._refresh_with_status(interaction, "Draft banned list cleared.")
+
+    async def set_limit(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(
+            PresetLimitModal(
+                self,
+                current_limit=int(self.draft_settings.get("user_limit", 0)),
+            )
+        )
+
+    async def increase_limit(self, interaction: discord.Interaction):
+        self.draft_settings["user_limit"] = clamp(int(self.draft_settings.get("user_limit", 0)) + 1, 0, 99)
+        self._normalize_draft_settings()
+        await self._refresh_with_status(interaction, f"👥 Draft user limit increased to {self.draft_settings['user_limit']}.")
+
+    async def decrease_limit(self, interaction: discord.Interaction):
+        self.draft_settings["user_limit"] = clamp(int(self.draft_settings.get("user_limit", 0)) - 1, 0, 99)
+        self._normalize_draft_settings()
+        await self._refresh_with_status(interaction, f"👥 Draft user limit decreased to {self.draft_settings['user_limit']}.")
+
+    async def set_bitrate(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(
+            PresetBitrateModal(
+                self,
+                current_bitrate=int(self.draft_settings.get("bitrate", 64000)),
+            )
+        )
+
+    async def change_region(self, interaction: discord.Interaction):
+        await send_ephemeral(
+            interaction,
+            embed=discord.Embed(
+                title="Select Preset Region",
+                description="Choose the voice region for this preset draft.",
+                color=0x5865F2,
+            ),
+            view=PresetRegionSelectView(self),
+        )
+
+    async def apply_template(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await send_ephemeral(interaction, "Guild context is unavailable.")
+            return
+        config = await self.system.get_guild_config(interaction.guild.id)
+        templates = config.get("templates", {})
+        if not templates:
+            await send_ephemeral(interaction, "No templates are configured for this server.")
+            return
+        await send_ephemeral(
+            interaction,
+            embed=discord.Embed(
+                title="Apply Template to Draft",
+                description="Choose a template to update the preset draft.",
+                color=0x5865F2,
+            ),
+            view=PresetTemplateSelectView(self, templates),
+        )
+
+    async def save_preset(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(PresetDraftSaveModal(self, set_as_default=False))
+
+    async def save_preset_and_default(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(PresetDraftSaveModal(self, set_as_default=True))
+
+    async def refresh_panel(self, interaction: discord.Interaction):
+        await self._refresh_with_status(interaction, "Refreshed.")
+
+    async def close_panel(self, interaction: discord.Interaction):
+        if interaction.response.is_done():
+            await interaction.edit_original_response(content="Preset builder closed.", embed=None, view=None)
+        else:
+            await interaction.response.edit_message(content="Preset builder closed.", embed=None, view=None)
+        self.stop()
+
+
 class PresetSaveModal(Modal, title="Save Temp VC Preset"):
     preset_name = TextInput(
         label="Preset name",

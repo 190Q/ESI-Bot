@@ -6,6 +6,7 @@ import re
 import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Optional, Dict, Any, List
 from utils.paths import DATA_DIR, DB_DIR
 
@@ -25,6 +26,9 @@ MAX_STORED_LOG_ENTRIES = 200
 DEFAULT_GENERATOR_CHANNEL_NAME = "Create VC"
 MAX_USER_PRESETS_PER_USER = 20
 MAX_USER_PRESET_NAME_LENGTH = 40
+OVERWRITE_BULK_RETRY_COOLDOWN_SECONDS = 20
+OVERWRITE_BULK_RETRY_NOTICE_COOLDOWN_SECONDS = 30
+OVERWRITE_TARGET_RETRY_COOLDOWN_SECONDS = 120
 
 TEMP_VC_CONFIG_FILE = DATA_DIR / "temp_vc_config.json"
 TEMP_VC_STATE_DIR = DATA_DIR / "temp_vc_channels"
@@ -248,6 +252,8 @@ class TempVCSystem:
         self._message_db_lock = asyncio.Lock()
         self._member_creation_locks: Dict[str, asyncio.Lock] = {}
         self._channel_state_locks: Dict[str, asyncio.Lock] = {}
+        self._overwrite_bulk_retry_state: Dict[int, Dict[str, Any]] = {}
+        self._overwrite_target_retry_state: Dict[tuple[int, str, int], Dict[str, Any]] = {}
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         DB_DIR.mkdir(parents=True, exist_ok=True)
         self._ensure_files()
@@ -906,6 +912,7 @@ class TempVCSystem:
                     pass
                 except OSError:
                     pass
+        self._clear_channel_overwrite_retry_state(int(channel_id))
 
     async def list_guild_entries(self, guild_id: int) -> Dict[int, Dict[str, Any]]:
         parsed = {}
@@ -1194,6 +1201,113 @@ class TempVCSystem:
             return f"<@{target_id}>"
         return str(target)
 
+    def _overwrite_pair_signature(self, overwrite: discord.PermissionOverwrite) -> tuple[int, int]:
+        allow, deny = overwrite.pair()
+        return (
+            int(getattr(allow, "value", 0)),
+            int(getattr(deny, "value", 0)),
+        )
+
+    def _build_overwrite_signature(self, overwrites: Dict[Any, discord.PermissionOverwrite]) -> tuple:
+        signature_items: List[tuple[str, int, int, int]] = []
+        for target, overwrite in overwrites.items():
+            key = self._overwrite_target_key(target)
+            if key is None:
+                continue
+            allow_value, deny_value = self._overwrite_pair_signature(overwrite)
+            signature_items.append((key[0], key[1], allow_value, deny_value))
+        signature_items.sort(key=lambda item: (item[0], item[1]))
+        return tuple(signature_items)
+
+    def _target_retry_key(self, channel_id: int, target_key: tuple[str, int]) -> tuple[int, str, int]:
+        return (int(channel_id), target_key[0], int(target_key[1]))
+
+    def _mark_bulk_overwrite_retry(self, channel_id: int, signature: tuple, now_ts: float):
+        self._overwrite_bulk_retry_state[int(channel_id)] = {
+            "signature": signature,
+            "retry_after": float(now_ts) + OVERWRITE_BULK_RETRY_COOLDOWN_SECONDS,
+            "last_notice_at": 0.0,
+        }
+
+    def _clear_bulk_overwrite_retry(self, channel_id: int, signature: Optional[tuple] = None):
+        channel_key = int(channel_id)
+        state = self._overwrite_bulk_retry_state.get(channel_key)
+        if state is None:
+            return
+        if signature is not None and state.get("signature") != signature:
+            return
+        self._overwrite_bulk_retry_state.pop(channel_key, None)
+
+    def _is_bulk_overwrite_retry_suppressed(self, channel_id: int, signature: tuple, now_ts: float) -> bool:
+        state = self._overwrite_bulk_retry_state.get(int(channel_id))
+        if state is None:
+            return False
+        if state.get("signature") != signature:
+            return False
+        retry_after = float(state.get("retry_after", 0.0) or 0.0)
+        return float(now_ts) < retry_after
+
+    def _consume_bulk_overwrite_retry_notice(self, channel_id: int, now_ts: float) -> bool:
+        state = self._overwrite_bulk_retry_state.get(int(channel_id))
+        if state is None:
+            return False
+        last_notice = float(state.get("last_notice_at", 0.0) or 0.0)
+        if float(now_ts) - last_notice < OVERWRITE_BULK_RETRY_NOTICE_COOLDOWN_SECONDS:
+            return False
+        state["last_notice_at"] = float(now_ts)
+        return True
+
+    def _mark_target_overwrite_retry(
+        self,
+        channel_id: int,
+        target_key: tuple[str, int],
+        overwrite_signature: tuple[int, int],
+        now_ts: float,
+    ):
+        self._overwrite_target_retry_state[self._target_retry_key(channel_id, target_key)] = {
+            "signature": overwrite_signature,
+            "retry_after": float(now_ts) + OVERWRITE_TARGET_RETRY_COOLDOWN_SECONDS,
+        }
+
+    def _clear_target_overwrite_retry(self, channel_id: int, target_key: tuple[str, int]):
+        self._overwrite_target_retry_state.pop(self._target_retry_key(channel_id, target_key), None)
+
+    def _is_target_overwrite_retry_suppressed(
+        self,
+        channel_id: int,
+        target_key: tuple[str, int],
+        overwrite_signature: tuple[int, int],
+        now_ts: float,
+    ) -> bool:
+        state = self._overwrite_target_retry_state.get(self._target_retry_key(channel_id, target_key))
+        if state is None:
+            return False
+        if state.get("signature") != overwrite_signature:
+            return False
+        retry_after = float(state.get("retry_after", 0.0) or 0.0)
+        return float(now_ts) < retry_after
+
+    def _prune_target_overwrite_retry_state(self, channel_id: int, desired_target_keys: set[tuple[str, int]]):
+        channel_key = int(channel_id)
+        stale_keys = [
+            cache_key
+            for cache_key in list(self._overwrite_target_retry_state.keys())
+            if cache_key[0] == channel_key and (cache_key[1], cache_key[2]) not in desired_target_keys
+        ]
+        for cache_key in stale_keys:
+            self._overwrite_target_retry_state.pop(cache_key, None)
+
+    def _clear_channel_overwrite_retry_state(self, channel_id: int):
+        channel_key = int(channel_id)
+        self._overwrite_bulk_retry_state.pop(channel_key, None)
+        stale_keys = [
+            cache_key
+            for cache_key in list(self._overwrite_target_retry_state.keys())
+            if cache_key[0] == channel_key
+        ]
+        for cache_key in stale_keys:
+            self._overwrite_target_retry_state.pop(cache_key, None)
+
     def _sanitize_overwrite_for_channel(
         self,
         channel: discord.VoiceChannel,
@@ -1237,20 +1351,29 @@ class TempVCSystem:
             if key is None:
                 continue
             desired_by_key[key] = (target, overwrite)
+        self._prune_target_overwrite_retry_state(channel.id, set(desired_by_key.keys()))
 
         changed_count = 0
         failed_targets: List[str] = []
+        now_ts = monotonic()
 
         for key, (target, overwrite) in desired_by_key.items():
             current = current_by_key.get(key)
             if current and current[1].pair() == overwrite.pair():
+                self._clear_target_overwrite_retry(channel.id, key)
+                continue
+            overwrite_signature = self._overwrite_pair_signature(overwrite)
+            if self._is_target_overwrite_retry_suppressed(channel.id, key, overwrite_signature, now_ts):
                 continue
             try:
                 await channel.set_permissions(target, overwrite=overwrite, reason=reason)
                 changed_count += 1
+                self._clear_target_overwrite_retry(channel.id, key)
             except discord.Forbidden:
+                self._mark_target_overwrite_retry(channel.id, key, overwrite_signature, monotonic())
                 failed_targets.append(self._overwrite_target_label(target))
             except discord.HTTPException as exc:
+                self._mark_target_overwrite_retry(channel.id, key, overwrite_signature, monotonic())
                 status = getattr(exc, "status", "unknown")
                 code = getattr(exc, "code", "unknown")
                 failed_targets.append(
@@ -1342,38 +1465,69 @@ class TempVCSystem:
         region = str(entry.get("region", "auto") or "auto")
         rtc_region = None if region == "auto" else region
         overwrites = self._build_channel_overwrites(channel.guild, entry)
+        overwrite_signature = self._build_overwrite_signature(overwrites)
         edit_reason = reason or "Temporary VC state update"
+        current_region = str(getattr(channel, "rtc_region", None) or "auto")
+        settings_changed = (
+            int(getattr(channel, "user_limit", 0) or 0) != user_limit
+            or int(getattr(channel, "bitrate", 0) or 0) != bitrate
+            or current_region != region
+        )
 
-        try:
-            await channel.edit(
-                user_limit=user_limit,
-                bitrate=bitrate,
-                rtc_region=rtc_region,
-                overwrites=overwrites,
-                reason=edit_reason,
-            )
-        except discord.Forbidden:
-            permission_snapshot = self._format_bot_channel_permission_snapshot(channel)
-            self.add_log(
-                entry,
-                None,
-                "overwrite_sync_skipped",
-                (
-                    "Could not apply full overwrite sync; updated channel settings without overwrite changes. "
-                    f"{permission_snapshot}"
-                ),
-            )
-            print(
-                f"[VC_GENERATOR] Overwrite sync denied for channel {channel.id}; "
-                f"retrying update without overwrites ({permission_snapshot})"
-            )
-            await channel.edit(
-                user_limit=user_limit,
-                bitrate=bitrate,
-                rtc_region=rtc_region,
-                reason=edit_reason,
-            )
+        now_ts = monotonic()
+        if self._is_bulk_overwrite_retry_suppressed(channel.id, overwrite_signature, now_ts):
+            if self._consume_bulk_overwrite_retry_notice(channel.id, now_ts):
+                retry_after = float(
+                    self._overwrite_bulk_retry_state.get(channel.id, {}).get("retry_after", now_ts) or now_ts
+                )
+                seconds_until_retry = max(1, int(retry_after - now_ts))
+                print(
+                    f"[VC_GENERATOR] Skipping full overwrite sync for channel {channel.id}; "
+                    f"retrying bulk overwrite update in ~{seconds_until_retry}s."
+                )
+            if settings_changed:
+                await channel.edit(
+                    user_limit=user_limit,
+                    bitrate=bitrate,
+                    rtc_region=rtc_region,
+                    reason=edit_reason,
+                )
             await self._sync_overwrites_best_effort(channel, overwrites, entry, edit_reason)
+        else:
+            try:
+                await channel.edit(
+                    user_limit=user_limit,
+                    bitrate=bitrate,
+                    rtc_region=rtc_region,
+                    overwrites=overwrites,
+                    reason=edit_reason,
+                )
+                self._clear_bulk_overwrite_retry(channel.id, overwrite_signature)
+            except discord.Forbidden:
+                self._mark_bulk_overwrite_retry(channel.id, overwrite_signature, monotonic())
+                permission_snapshot = self._format_bot_channel_permission_snapshot(channel)
+                self.add_log(
+                    entry,
+                    None,
+                    "overwrite_sync_skipped",
+                    (
+                        "Could not apply full overwrite sync; updated channel settings without overwrite changes. "
+                        f"{permission_snapshot}"
+                    ),
+                )
+                print(
+                    f"[VC_GENERATOR] Overwrite sync denied for channel {channel.id}; "
+                    f"retrying update without overwrites ({permission_snapshot})"
+                )
+                await channel.edit(
+                    user_limit=user_limit,
+                    bitrate=bitrate,
+                    rtc_region=rtc_region,
+                    reason=edit_reason,
+                )
+                await self._sync_overwrites_best_effort(channel, overwrites, entry, edit_reason)
+            else:
+                self._prune_target_overwrite_retry_state(channel.id, set())
 
         entry["bitrate"] = bitrate
         entry["user_limit"] = user_limit

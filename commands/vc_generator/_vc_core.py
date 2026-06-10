@@ -976,6 +976,116 @@ class TempVCSystem:
         merged.sort(key=lambda log: parse_iso(str(log.get("timestamp") or now_iso())))
         return merged[-MAX_STORED_LOG_ENTRIES:]
 
+    def _get_bot_member(self, guild: discord.Guild) -> Optional[discord.Member]:
+        bot_member = guild.me
+        if bot_member is not None:
+            return bot_member
+        bot_user = getattr(self.bot, "user", None)
+        bot_id = int(getattr(bot_user, "id", 0) or 0)
+        if bot_id <= 0:
+            return None
+        return guild.get_member(bot_id)
+
+    def _get_bot_overwrite_target(self, guild: discord.Guild) -> Optional[Any]:
+        bot_member = self._get_bot_member(guild)
+        if bot_member is not None:
+            return bot_member
+        bot_user = getattr(self.bot, "user", None)
+        bot_id = int(getattr(bot_user, "id", 0) or 0)
+        if bot_id <= 0:
+            return None
+        return discord.Object(id=bot_id)
+
+    def _missing_permission_names(self, permissions: discord.Permissions, required_names: List[str]) -> List[str]:
+        return [name for name in required_names if not bool(getattr(permissions, name, False))]
+
+    def _format_permission_names(self, names: List[str]) -> str:
+        return ", ".join(name.replace("_", " ").title() for name in names)
+
+    def _can_set_role_overwrite(self, guild: discord.Guild, role: discord.Role) -> bool:
+        bot_member = self._get_bot_member(guild)
+        if bot_member is None:
+            return False
+        if bot_member.guild_permissions.administrator:
+            return True
+        if role == guild.default_role:
+            return True
+        return bot_member.top_role > role
+
+    def _partition_manageable_roles_for_overwrites(
+        self,
+        guild: discord.Guild,
+        role_ids: List[int],
+    ) -> tuple[List[int], List[str]]:
+        manageable_ids: List[int] = []
+        skipped_labels: List[str] = []
+        seen = set()
+
+        for raw_role_id in role_ids or []:
+            if not str(raw_role_id).isdigit():
+                continue
+            role_id = int(raw_role_id)
+            if role_id in seen:
+                continue
+            seen.add(role_id)
+            role = guild.get_role(role_id)
+            if role is None:
+                continue
+            if self._can_set_role_overwrite(guild, role):
+                manageable_ids.append(role_id)
+            else:
+                skipped_labels.append(role.mention if getattr(role, "mention", None) else f"<@&{role_id}>")
+
+        return manageable_ids, skipped_labels
+
+    def _ensure_bot_temp_vc_permissions(
+        self,
+        guild: discord.Guild,
+        generator_channel: discord.VoiceChannel,
+        category: Optional[discord.CategoryChannel],
+    ):
+        bot_member = self._get_bot_member(guild)
+        if bot_member is None:
+            raise PermissionError("Bot member could not be resolved in this guild.")
+
+        missing_scopes: List[str] = []
+
+        if isinstance(category, discord.CategoryChannel):
+            target_permissions = category.permissions_for(bot_member)
+            target_scope = f"category '{category.name}'"
+        else:
+            target_permissions = bot_member.guild_permissions
+            target_scope = "guild-level permissions"
+
+        missing_target = self._missing_permission_names(
+            target_permissions,
+            ["manage_channels"],
+        )
+        if missing_target:
+            missing_scopes.append(f"{target_scope}: {self._format_permission_names(missing_target)}")
+
+        generator_permissions = generator_channel.permissions_for(bot_member)
+        missing_generator = self._missing_permission_names(
+            generator_permissions,
+            ["view_channel", "connect", "move_members"],
+        )
+        if missing_generator:
+            missing_scopes.append(
+                (
+                    f"generator channel '{generator_channel.name}': "
+                    f"{self._format_permission_names(missing_generator)} "
+                    f"(effective -> View Channel: {generator_permissions.view_channel}, "
+                    f"Connect: {generator_permissions.connect}, "
+                    f"Move Members: {generator_permissions.move_members}, "
+                    f"Administrator: {generator_permissions.administrator})"
+                )
+            )
+
+        if missing_scopes:
+            raise PermissionError(
+                "Missing required permissions for temp VC automation -> " + " | ".join(missing_scopes)
+            )
+
     def _build_everyone_overwrite(self, entry: Dict[str, Any]) -> discord.PermissionOverwrite:
         everyone_view = not entry.get("hidden", False)
         everyone_connect = not entry.get("locked", False) and not entry.get("hidden", False)
@@ -1018,9 +1128,7 @@ class TempVCSystem:
             connect=False,
             speak=False,
         )
-
-    def _build_channel_overwrites(self, channel: discord.VoiceChannel, entry: Dict[str, Any]) -> Dict[Any, discord.PermissionOverwrite]:
-        guild = channel.guild
+    def _build_channel_overwrites(self, guild: discord.Guild, entry: Dict[str, Any]) -> Dict[Any, discord.PermissionOverwrite]:
         overwrites: Dict[Any, discord.PermissionOverwrite] = {
             guild.default_role: self._build_everyone_overwrite(entry)
         }
@@ -1033,7 +1141,11 @@ class TempVCSystem:
 
         permit_overwrite = self._permit_overwrite(entry)
         ban_overwrite = self._ban_overwrite()
-        for role_id in entry.get("permitted_roles", []):
+        permitted_role_ids, _ = self._partition_manageable_roles_for_overwrites(
+            guild,
+            entry.get("permitted_roles", []),
+        )
+        for role_id in permitted_role_ids:
             role = guild.get_role(int(role_id))
             if role:
                 if role.id in PRIVILEGED_ROLE_ID_SET:
@@ -1045,8 +1157,11 @@ class TempVCSystem:
             member = guild.get_member(int(user_id))
             if member:
                 overwrites[member] = permit_overwrite
-
-        for role_id in entry.get("banned_roles", []):
+        banned_role_ids, _ = self._partition_manageable_roles_for_overwrites(
+            guild,
+            entry.get("banned_roles", []),
+        )
+        for role_id in banned_role_ids:
             role = guild.get_role(int(role_id))
             if role:
                 overwrites[role] = ban_overwrite
@@ -1055,6 +1170,9 @@ class TempVCSystem:
             member = guild.get_member(int(user_id))
             if member:
                 overwrites[member] = ban_overwrite
+        bot_overwrite_target = self._get_bot_overwrite_target(guild)
+        if bot_overwrite_target is not None:
+            overwrites[bot_overwrite_target] = self._owner_overwrite(entry)
 
         return overwrites
 
@@ -1068,15 +1186,30 @@ class TempVCSystem:
         user_limit = clamp(int(entry.get("user_limit", 0)), 0, 99)
         region = str(entry.get("region", "auto") or "auto")
         rtc_region = None if region == "auto" else region
-        overwrites = self._build_channel_overwrites(channel, entry)
+        overwrites = self._build_channel_overwrites(channel.guild, entry)
+        edit_reason = reason or "Temporary VC state update"
 
-        await channel.edit(
-            user_limit=user_limit,
-            bitrate=bitrate,
-            rtc_region=rtc_region,
-            overwrites=overwrites,
-            reason=reason or "Temporary VC state update",
-        )
+        try:
+            await channel.edit(
+                user_limit=user_limit,
+                bitrate=bitrate,
+                rtc_region=rtc_region,
+                overwrites=overwrites,
+                reason=edit_reason,
+            )
+        except discord.Forbidden:
+            self.add_log(
+                entry,
+                None,
+                "overwrite_sync_skipped",
+                "Could not apply full overwrite sync; updated channel settings without overwrite changes.",
+            )
+            await channel.edit(
+                user_limit=user_limit,
+                bitrate=bitrate,
+                rtc_region=rtc_region,
+                reason=edit_reason,
+            )
 
         entry["bitrate"] = bitrate
         entry["user_limit"] = user_limit
@@ -1202,6 +1335,8 @@ class TempVCSystem:
             if not isinstance(category, discord.CategoryChannel):
                 category = generator_channel.category
 
+            self._ensure_bot_temp_vc_permissions(member.guild, generator_channel, category)
+
             template_name = config.get("default_template", "default")
             template = self._resolve_template(config, template_name)
             channel_name = self._compute_channel_name(member, template)
@@ -1219,16 +1354,65 @@ class TempVCSystem:
             base_entry["member_join_times"] = {str(member.id): now_iso()}
             self.add_log(base_entry, member.id, "channel_created", f"Created from generator {generator_channel.name}")
 
-            temp_channel = await member.guild.create_voice_channel(
-                name=channel_name,
-                category=category,
-                user_limit=base_entry["user_limit"],
-                bitrate=clamp(base_entry["bitrate"], 8000, int(member.guild.bitrate_limit)),
-                rtc_region=None if base_entry["region"] == "auto" else base_entry["region"],
-                reason=f"Temporary VC created for {member}",
+            _, skipped_permit_roles = self._partition_manageable_roles_for_overwrites(
+                member.guild,
+                base_entry.get("permitted_roles", []),
             )
+            _, skipped_ban_roles = self._partition_manageable_roles_for_overwrites(
+                member.guild,
+                base_entry.get("banned_roles", []),
+            )
+            skipped_role_labels = list(dict.fromkeys(skipped_permit_roles + skipped_ban_roles))
+            if skipped_role_labels:
+                skipped_text = ", ".join(skipped_role_labels[:10])
+                if len(skipped_role_labels) > 10:
+                    skipped_text = f"{skipped_text}, +{len(skipped_role_labels) - 10} more"
+                self.add_log(
+                    base_entry,
+                    None,
+                    "overwrite_roles_skipped",
+                    f"Skipped role overwrites (hierarchy): {skipped_text}",
+                )
+            initial_overwrites = self._build_channel_overwrites(member.guild, base_entry)
+            create_reason = f"Temporary VC created for {member}"
+            create_kwargs = {
+                "name": channel_name,
+                "category": category,
+                "user_limit": base_entry["user_limit"],
+                "bitrate": clamp(base_entry["bitrate"], 8000, int(member.guild.bitrate_limit)),
+                "rtc_region": None if base_entry["region"] == "auto" else base_entry["region"],
+                "reason": create_reason,
+            }
 
-            await self.sync_channel(temp_channel, base_entry, reason="Apply initial temporary VC permissions")
+            try:
+                temp_channel = await member.guild.create_voice_channel(
+                    **create_kwargs,
+                    overwrites=initial_overwrites,
+                )
+            except discord.Forbidden:
+                self.add_log(
+                    base_entry,
+                    None,
+                    "initial_overwrites_skipped",
+                    "Could not apply full initial overwrites; retrying creation without explicit overwrites.",
+                )
+                try:
+                    temp_channel = await member.guild.create_voice_channel(**create_kwargs)
+                except discord.Forbidden as fallback_exc:
+                    target_scope = f"category '{category.name}'" if isinstance(category, discord.CategoryChannel) else "guild root"
+                    raise PermissionError(
+                        f"Discord denied channel creation in {target_scope}. Check Manage Channels for the bot role and role hierarchy."
+                    ) from fallback_exc
+
+            try:
+                await self.sync_channel(temp_channel, base_entry, reason="Apply initial temporary VC permissions")
+            except discord.Forbidden:
+                self.add_log(
+                    base_entry,
+                    None,
+                    "initial_sync_permissions_skipped",
+                    "Could not sync full temporary VC overwrites after creation; keeping channel with default/base permissions.",
+                )
             await self.upsert_entry(temp_channel.id, base_entry)
 
             try:

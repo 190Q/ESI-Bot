@@ -255,11 +255,12 @@ def setup(bot, has_required_role, config):
     @bot.tree.command(name="vc_presets", description="Manage your saved temp VC presets")
     @app_commands.describe(
         action="Choose how to manage your presets",
-        preset_name="Preset name (required for delete/set_default, optional for create)",
+        preset_name="Preset name (required for edit/delete/set_default, optional for create)",
     )
     @app_commands.choices(
         action=[
-            app_commands.Choice(name="Create preset (panel)", value="create"),
+            app_commands.Choice(name="Create preset", value="create"),
+            app_commands.Choice(name="Edit preset", value="edit"),
             app_commands.Choice(name="List presets", value="list"),
             app_commands.Choice(name="Delete preset", value="delete"),
             app_commands.Choice(name="Set default preset", value="set_default"),
@@ -278,6 +279,43 @@ def setup(bot, has_required_role, config):
         bucket = await system.get_user_preset_bucket(interaction.guild.id, interaction.user.id)
         presets = bucket.get("presets", {})
         default_preset = bucket.get("default_preset")
+
+        if chosen_action == "edit":
+            if not preset_name:
+                if not presets:
+                    await send_ephemeral(
+                        interaction,
+                        "You have no saved presets yet. Use **Create preset** first.",
+                    )
+                else:
+                    await send_ephemeral(
+                        interaction,
+                        "Provide `preset_name` to edit an existing preset.",
+                    )
+                return
+
+            matched_name, matched_settings = await system.get_user_preset(
+                interaction.guild.id,
+                interaction.user.id,
+                preset_name,
+            )
+            if not matched_name or not matched_settings:
+                await send_ephemeral(interaction, f"Preset **{preset_name}** was not found.")
+                return
+
+            view = PresetBuilderView(
+                system=system,
+                guild_id=interaction.guild.id,
+                requester_id=interaction.user.id,
+                draft_settings=matched_settings,
+                initial_preset_name=matched_name,
+            )
+            embed = view.build_panel_embed(
+                interaction.guild,
+                status=f"Editing preset '{matched_name}'. Use Save Preset to apply changes.",
+            )
+            await send_ephemeral(interaction, embed=embed, view=view)
+            return
         if chosen_action == "create":
             config = await system.get_guild_config(interaction.guild.id)
             requested_name = system.normalize_user_preset_name(preset_name or "")

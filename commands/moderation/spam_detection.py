@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 
-PROTECTED_ROLE_IDS = {}
+PROTECTED_ROLE_IDS = set()
 CHANNEL_RESTRICTED_ROLES = {
     1357064338615304412: [1330955133261189230],
     1491387160039919777: [1330955133261189230],
@@ -23,6 +23,8 @@ ACCOUNT_AGE_DAYS_THRESHOLD = 21
 MESSAGE_BURST_COUNT = 2
 MESSAGE_BURST_WINDOW_SECONDS = 15
 TIMEOUT_MINUTES = 10080
+SPAM_MATCH_LOOKBACK_SECONDS = 3600
+SPAM_MATCH_HISTORY_LIMIT = 200
 
 IMAGE_FILE_EXTENSIONS = {
     ".png",
@@ -117,6 +119,72 @@ def _calculate_signal_score(message: discord.Message, now: datetime):
 
     return len(triggered_signals), triggered_signals
 
+def _build_spam_signature(message: discord.Message):
+    normalized_content = " ".join((message.content or "").split()).strip().lower()
+    urls = tuple(sorted(_extract_urls(message.content or "")))
+    mentioned_role_ids = tuple(sorted(role.id for role in message.role_mentions))
+    has_image_attachment = any(_is_image_attachment(attachment) for attachment in message.attachments)
+    return {
+        "source_message_id": message.id,
+        "author_id": message.author.id,
+        "normalized_content": normalized_content,
+        "urls": urls,
+        "mentioned_role_ids": mentioned_role_ids,
+        "mention_everyone": message.mention_everyone,
+        "has_image_attachment": has_image_attachment,
+    }
+
+def _message_matches_signature(message: discord.Message, signature) -> bool:
+    if message.id == signature["source_message_id"] or message.author.id != signature["author_id"]:
+        return False
+
+    candidate_content = " ".join((message.content or "").split()).strip().lower()
+    candidate_urls = tuple(sorted(_extract_urls(message.content or "")))
+    candidate_role_ids = tuple(sorted(role.id for role in message.role_mentions))
+    candidate_has_image = any(_is_image_attachment(attachment) for attachment in message.attachments)
+
+    if signature["normalized_content"]:
+        return (
+            candidate_content == signature["normalized_content"]
+            and candidate_urls == signature["urls"]
+            and candidate_role_ids == signature["mentioned_role_ids"]
+            and message.mention_everyone == signature["mention_everyone"]
+            and candidate_has_image == signature["has_image_attachment"]
+        )
+
+    return (
+        candidate_urls == signature["urls"]
+        and candidate_role_ids == signature["mentioned_role_ids"]
+        and message.mention_everyone == signature["mention_everyone"]
+        and candidate_has_image == signature["has_image_attachment"]
+    )
+
+async def _delete_matching_spam_messages(source_message: discord.Message):
+    now = datetime.now(timezone.utc)
+    lookback_cutoff = now - timedelta(seconds=SPAM_MATCH_LOOKBACK_SECONDS)
+    signature = _build_spam_signature(source_message)
+    deleted_count = 0
+
+    try:
+        async for historical_message in source_message.channel.history(limit=SPAM_MATCH_HISTORY_LIMIT):
+            if historical_message.created_at < lookback_cutoff:
+                continue
+            if not _message_matches_signature(historical_message, signature):
+                continue
+            try:
+                await historical_message.delete()
+                deleted_count += 1
+            except discord.NotFound:
+                continue
+            except discord.Forbidden:
+                break
+            except discord.HTTPException:
+                continue
+    except Exception:
+        pass
+
+    return deleted_count
+
 async def _send_log(bot: discord.Client, message: discord.Message, signal_count: int, triggered_signals):
     if not LOG_CHANNEL_ID:
         return
@@ -208,6 +276,7 @@ def setup(bot, has_required_role=None, config=None):
         signal_score, triggered_signals = _calculate_signal_score(message, now)
         if signal_score < SIGNAL_THRESHOLD:
             return
+        await _delete_matching_spam_messages(message)
 
         try:
             await message.delete()

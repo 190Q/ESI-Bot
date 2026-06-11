@@ -5,13 +5,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 
-PROTECTED_ROLE_IDS = {
-    1357064338615304412,
-    1491387160039919777,
-    1370477368057008220,
-    1384811398667702344,
-    1370477190524833902,
-}
+PROTECTED_ROLE_IDS = {}
 CHANNEL_RESTRICTED_ROLES = {
     1357064338615304412: [1330955133261189230],
     1491387160039919777: [1330955133261189230],
@@ -95,7 +89,8 @@ def _calculate_signal_score(message: discord.Message, now: datetime):
         triggered_signals.append("everyone_or_here_ping")
 
     mentioned_role_ids = {role.id for role in message.role_mentions}
-    if PROTECTED_ROLE_IDS and any(role_id in PROTECTED_ROLE_IDS for role_id in mentioned_role_ids):
+    protected_role_ids_only = PROTECTED_ROLE_IDS - set(CHANNEL_RESTRICTED_ROLES.keys())
+    if protected_role_ids_only and any(role_id in protected_role_ids_only for role_id in mentioned_role_ids):
         triggered_signals.append("protected_role_ping")
 
     if any(_is_image_attachment(attachment) for attachment in message.attachments):

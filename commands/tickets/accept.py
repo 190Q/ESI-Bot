@@ -1061,7 +1061,7 @@ class AcceptConfirmView(discord.ui.View):
                         f"```Hello there {self.user.mention}, welcome back! You have been accepted into the guild! "
                         f"However, the guild is currently at full capacity so you have been placed in a waiting queue "
                         f"(position #{self.queue_position}). We will notify you as soon as a slot opens up! "
-                        f"Feel free to check out <#606712832716832778>, <#1023821930404532286> and <#1381293188630843502> "
+                        f"Feel free to check out <#606712832716832778>, <#1023821930404532286> and <#1515395575363797173> "
                         f"to catch up on what you've missed.\n\nIf you want to show off with "
                         f"guild badges, make sure your API is on so we can track your achievements and rank you up! "
                         f"(API is on by default)```"
@@ -1070,7 +1070,7 @@ class AcceptConfirmView(discord.ui.View):
                 else:
                     description += (
                         f"```Hello there {self.user.mention}, welcome back! You have been accepted into the guild! "
-                        f"Feel free to check out <#606712832716832778>, <#1023821930404532286> and <#1381293188630843502> "
+                        f"Feel free to check out <#606712832716832778>, <#1023821930404532286> and <#1515395575363797173> "
                         f"to catch up on what you've missed. You can join the guild in-game by typing '/gu join ESI' "
                         f"the next time you log on.\n\nIf you want to show off with "
                         f"guild badges, make sure your API is on so we can track your achievements and rank you up! "
@@ -1091,7 +1091,7 @@ class AcceptConfirmView(discord.ui.View):
                         f"We will notify you as soon as a slot opens up! In the meantime, feel free to check out "
                         f"the new channels you have access to such as <#1381289736903065662>, <#1381836409689870406> and "
                         f"<#1369575540675313674> if you want to grab some special roles. Also don't hesitate to head over "
-                        f"to <#1381293188630843502> for more details on the guild! {mention_nova}"
+                        f"to <#1515395575363797173> for more details on the guild! {mention_nova}"
                         f"If you want to show off with guild badges, make sure your API is on so we can track your "
                         f"achievements and rank you up! (API is on by default)```"
                     )
@@ -1101,7 +1101,7 @@ class AcceptConfirmView(discord.ui.View):
                         f"```Congrats {self.user.mention}, your application has been accepted! Feel free to check out "
                         f"the new channels you have access to such as <#1381289736903065662>, <#1381836409689870406> and "
                         f"<#1369575540675313674> if you want to grab some special roles. Also don't hesitate to head over "
-                        f"to <#1381293188630843502> for more details on the guild! {mention_nova}"
+                        f"to <#1515395575363797173> for more details on the guild! {mention_nova}"
                     )
                     if in_guild:
                         description += (

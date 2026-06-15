@@ -29,6 +29,7 @@ MAX_USER_PRESET_NAME_LENGTH = 40
 OVERWRITE_BULK_RETRY_COOLDOWN_SECONDS = 20
 OVERWRITE_BULK_RETRY_NOTICE_COOLDOWN_SECONDS = 30
 OVERWRITE_TARGET_RETRY_COOLDOWN_SECONDS = 120
+OWNER_TRANSFER_GRACE_SECONDS = 300
 
 TEMP_VC_CONFIG_FILE = DATA_DIR / "temp_vc_config.json"
 TEMP_VC_STATE_DIR = DATA_DIR / "temp_vc_channels"
@@ -125,7 +126,7 @@ class KnockResponseView(discord.ui.View):
             await send_ephemeral(interaction, "This temporary VC is no longer available.")
             return False
 
-        owner_id = int(entry.get("owner_id") or 0)
+        owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
         if owner_id != interaction.user.id:
             await send_ephemeral(interaction, "Only the VC owner can respond to this knock request.")
             return False
@@ -254,6 +255,7 @@ class TempVCSystem:
         self._channel_state_locks: Dict[str, asyncio.Lock] = {}
         self._overwrite_bulk_retry_state: Dict[int, Dict[str, Any]] = {}
         self._overwrite_target_retry_state: Dict[tuple[int, str, int], Dict[str, Any]] = {}
+        self._owner_transfer_tasks: Dict[int, asyncio.Task] = {}
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         DB_DIR.mkdir(parents=True, exist_ok=True)
         self._ensure_files()
@@ -273,6 +275,103 @@ class TempVCSystem:
             lock = asyncio.Lock()
             self._channel_state_locks[key] = lock
         return lock
+
+    def _cancel_owner_transfer_task(self, channel_id: int):
+        channel_key = int(channel_id)
+        task = self._owner_transfer_tasks.pop(channel_key, None)
+        if task and not task.done():
+            task.cancel()
+
+    def _schedule_owner_transfer(self, channel_id: int, owner_id: int, delay_seconds: Optional[float] = None):
+        channel_key = int(channel_id)
+        owner_key = int(owner_id or 0)
+        if channel_key <= 0 or owner_key <= 0:
+            return
+
+        self._cancel_owner_transfer_task(channel_key)
+        delay = float(OWNER_TRANSFER_GRACE_SECONDS if delay_seconds is None else max(0.0, delay_seconds))
+        task = asyncio.create_task(
+            self._process_owner_transfer_after_delay(channel_key, owner_key, delay),
+            name=f"temp-vc-owner-transfer-{channel_key}",
+        )
+        self._owner_transfer_tasks[channel_key] = task
+
+        def _handle_task_done(done_task: asyncio.Task):
+            existing = self._owner_transfer_tasks.get(channel_key)
+            if existing is done_task:
+                self._owner_transfer_tasks.pop(channel_key, None)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                print(f"[VC_GENERATOR] Owner transfer task failed for channel {channel_key}: {exc}")
+
+        task.add_done_callback(_handle_task_done)
+
+    async def _process_owner_transfer_after_delay(self, channel_id: int, expected_owner_id: int, delay_seconds: float):
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
+
+        entry = await self.get_entry(channel_id)
+        if not entry:
+            return
+
+        guild_id = int(entry.get("guild_id", 0) or 0)
+        guild = self.bot.get_guild(guild_id) if guild_id else None
+        if guild is None:
+            await self.remove_entry(channel_id)
+            return
+
+        channel = guild.get_channel(int(channel_id))
+        if not isinstance(channel, discord.VoiceChannel):
+            await self.remove_entry(channel_id)
+            return
+
+        current_owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
+        if current_owner_id != int(expected_owner_id):
+            if entry.pop("owner_absent_since", None) or entry.pop("pending_owner_id", None):
+                await self.upsert_entry(channel.id, entry)
+            return
+
+        owner_is_present = any(member.id == current_owner_id for member in channel.members)
+        if owner_is_present:
+            entry["owner_id"] = current_owner_id
+            if entry.pop("owner_absent_since", None) or entry.pop("pending_owner_id", None):
+                await self.upsert_entry(channel.id, entry)
+            return
+
+        if len(channel.members) == 0:
+            try:
+                await channel.delete(reason="Temporary VC emptied")
+            except Exception:
+                pass
+            await self.remove_entry(channel.id)
+            return
+
+        replacement_owner = self.get_oldest_member(channel, entry)
+        if replacement_owner is None or replacement_owner.id == current_owner_id:
+            if entry.pop("owner_absent_since", None) or entry.pop("pending_owner_id", None):
+                await self.upsert_entry(channel.id, entry)
+            return
+
+        entry["owner_id"] = replacement_owner.id
+        entry.pop("pending_owner_id", None)
+        entry.pop("owner_absent_since", None)
+        self.add_log(
+            entry,
+            None,
+            "owner_transferred",
+            (
+                f"Ownership transferred to {replacement_owner.id} after "
+                f"{OWNER_TRANSFER_GRACE_SECONDS // 60}-minute owner absence."
+            ),
+        )
+        try:
+            await self.sync_channel(channel, entry, reason="Temporary VC ownership transfer after grace period")
+        except Exception:
+            pass
+        await self.upsert_entry(channel.id, entry)
 
     def _ensure_files(self):
         if not TEMP_VC_CONFIG_FILE.exists():
@@ -799,6 +898,8 @@ class TempVCSystem:
         return {
             "guild_id": guild_id,
             "owner_id": None,
+            "pending_owner_id": None,
+            "owner_absent_since": None,
             "created_at": now_iso(),
             "locked": False,
             "hidden": False,
@@ -821,6 +922,12 @@ class TempVCSystem:
         base = self._default_channel_entry(guild_id)
         if isinstance(raw, dict):
             base["owner_id"] = int(raw["owner_id"]) if raw.get("owner_id") else None
+            pending_owner_raw = raw.get("pending_owner_id")
+            if pending_owner_raw and str(pending_owner_raw).isdigit():
+                base["pending_owner_id"] = int(pending_owner_raw)
+            owner_absent_since = raw.get("owner_absent_since")
+            if isinstance(owner_absent_since, str) and owner_absent_since.strip():
+                base["owner_absent_since"] = owner_absent_since.strip()
             base["created_at"] = str(raw.get("created_at") or base["created_at"])
             base["locked"] = bool(raw.get("locked", False))
             base["hidden"] = bool(raw.get("hidden", False))
@@ -843,6 +950,15 @@ class TempVCSystem:
             base["logs"] = list(raw.get("logs", []) or [])
         if base["blocked_knock_users"]:
             base["banned_users"].extend(base["blocked_knock_users"])
+        if base.get("owner_absent_since"):
+            if base.get("pending_owner_id") is None and base.get("owner_id"):
+                base["pending_owner_id"] = int(base["owner_id"])
+            if not base.get("owner_id") and base.get("pending_owner_id"):
+                base["owner_id"] = int(base["pending_owner_id"])
+        else:
+            base["pending_owner_id"] = None
+        if not base["owner_id"]:
+            base["owner_absent_since"] = None
         blocked_user_ids = {uid for uid in [int(base.get("owner_id") or 0), int(OWNER_ID or 0)] if uid > 0}
         base["banned_users"] = [uid for uid in base["banned_users"] if uid not in blocked_user_ids]
         base["banned_roles"] = [rid for rid in base["banned_roles"] if rid not in PRIVILEGED_ROLE_ID_SET]
@@ -900,6 +1016,7 @@ class TempVCSystem:
                 self._write_json(entry_path, normalized)
 
     async def remove_entry(self, channel_id: int):
+        self._cancel_owner_transfer_task(int(channel_id))
         entry_path = self._entry_file_path(channel_id)
         if entry_path is None:
             return
@@ -941,7 +1058,8 @@ class TempVCSystem:
         return any(role.id in PRIVILEGED_ROLE_ID_SET for role in member.roles)
 
     def can_manage(self, member: discord.Member, entry: Dict[str, Any]) -> bool:
-        return self.is_admin_member(member) or member.id == int(entry.get("owner_id") or 0)
+        effective_owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
+        return self.is_admin_member(member) or member.id == effective_owner_id
 
     def add_log(self, entry: Dict[str, Any], actor_id: Optional[int], action: str, details: str = ""):
         entry.setdefault("logs", [])
@@ -1465,7 +1583,7 @@ class TempVCSystem:
         )
         overwrites[guild.default_role] = self._build_everyone_overwrite(entry)
 
-        owner_id = int(entry.get("owner_id") or 0)
+        owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
         if owner_id:
             owner_member = guild.get_member(owner_id)
             if owner_member and self._can_set_member_overwrite(guild, owner_member):
@@ -1824,10 +1942,28 @@ class TempVCSystem:
         entry = await self.get_entry(channel.id)
         if not entry:
             return
+        changed = False
         entry.setdefault("member_join_times", {})
         member_id = str(member.id)
         if member_id not in entry["member_join_times"]:
             entry["member_join_times"][member_id] = now_iso()
+            changed = True
+
+        owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
+        if owner_id == member.id and entry.get("owner_absent_since"):
+            entry["owner_id"] = member.id
+            entry.pop("owner_absent_since", None)
+            entry.pop("pending_owner_id", None)
+            self._cancel_owner_transfer_task(channel.id)
+            self.add_log(
+                entry,
+                member.id,
+                "owner_returned",
+                "Owner rejoined before grace timeout; ownership retained.",
+            )
+            changed = True
+
+        if changed:
             await self.upsert_entry(channel.id, entry)
 
     async def handle_member_left(self, member: discord.Member, channel: discord.VoiceChannel):
@@ -1847,14 +1983,23 @@ class TempVCSystem:
             await self.remove_entry(channel.id)
             return
 
-        owner_id = int(entry.get("owner_id") or 0)
+        owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
         if owner_id == member.id:
-            entry["owner_id"] = None
-            self.add_log(entry, member.id, "owner_left", "Owner left the channel; VC is now claimable")
-            try:
-                await self.sync_channel(channel, entry, reason="Owner left temporary VC")
-            except Exception:
-                pass
+            entry["owner_id"] = member.id
+            entry["pending_owner_id"] = member.id
+            entry["owner_absent_since"] = now_iso()
+            self.add_log(
+                entry,
+                member.id,
+                "owner_left",
+                (
+                    "Owner left the channel; ownership will transfer in "
+                    f"{OWNER_TRANSFER_GRACE_SECONDS // 60} minutes if they do not return."
+                ),
+            )
+            await self.upsert_entry(channel.id, entry)
+            self._schedule_owner_transfer(channel.id, member.id)
+            return
 
         await self.upsert_entry(channel.id, entry)
 
@@ -1903,6 +2048,26 @@ class TempVCSystem:
                 await self.remove_entry(channel_id)
                 continue
 
+            owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
+            owner_absent_since_raw = entry.get("owner_absent_since")
+            if owner_id > 0 and isinstance(owner_absent_since_raw, str) and owner_absent_since_raw.strip():
+                owner_is_present = any(member.id == owner_id for member in channel.members)
+                if owner_is_present:
+                    entry["owner_id"] = owner_id
+                    entry.pop("owner_absent_since", None)
+                    entry.pop("pending_owner_id", None)
+                    self._cancel_owner_transfer_task(channel_id)
+                else:
+                    entry["pending_owner_id"] = owner_id
+                    elapsed_seconds = max(
+                        0.0,
+                        (datetime.now(timezone.utc) - parse_iso(owner_absent_since_raw)).total_seconds(),
+                    )
+                    remaining_seconds = max(0.0, OWNER_TRANSFER_GRACE_SECONDS - elapsed_seconds)
+                    self._schedule_owner_transfer(channel_id, owner_id, delay_seconds=remaining_seconds)
+            else:
+                self._cancel_owner_transfer_task(channel_id)
+
             try:
                 await self.sync_channel(channel, entry, reason="Reconcile temporary VC state")
             except Exception:
@@ -1914,6 +2079,8 @@ class TempVCSystem:
         join_map = entry.get("member_join_times", {})
         ranked = []
         for member in channel.members:
+            if member.bot:
+                continue
             ts = parse_iso(join_map.get(str(member.id), now_iso()))
             ranked.append((ts, member.id, member))
         if not ranked:
@@ -1922,7 +2089,7 @@ class TempVCSystem:
         return ranked[0][2]
 
     def build_panel_embed(self, channel: discord.VoiceChannel, entry: Dict[str, Any], viewer: discord.Member, status: str = "") -> discord.Embed:
-        owner_id = int(entry.get("owner_id") or 0)
+        owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
         owner_text = f"<@{owner_id}>" if owner_id else "*Unclaimed*"
         state_text = (
             f"Locked: **{'Yes' if entry.get('locked') else 'No'}**\n"
@@ -1973,7 +2140,7 @@ class TempVCSystem:
         return embed
 
     def build_info_embed(self, channel: discord.VoiceChannel, entry: Dict[str, Any]) -> discord.Embed:
-        owner_id = int(entry.get("owner_id") or 0)
+        owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
         owner_text = f"<@{owner_id}>" if owner_id else "*Unclaimed*"
         created = entry.get("created_at")
         created_display = f"<t:{int(parse_iso(created).timestamp())}:R>" if created else "Unknown"
@@ -2018,7 +2185,7 @@ class TempVCSystem:
         return embed
 
     async def send_knock_notification(self, requester: discord.Member, channel: discord.VoiceChannel, entry: Dict[str, Any]) -> str:
-        owner_id = int(entry.get("owner_id") or 0)
+        owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
         if owner_id <= 0:
             return "This temporary VC has no owner to notify."
         if requester.id == owner_id:

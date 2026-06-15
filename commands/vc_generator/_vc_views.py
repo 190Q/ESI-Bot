@@ -156,7 +156,7 @@ class PermitSelectorView(UserBoundView):
             channel.id,
             self.requester_id,
             show_claim_button=self.system.is_admin_member(interaction.user)
-            and int(entry.get("owner_id") or 0) != interaction.user.id,
+            and int(entry.get("owner_id") or entry.get("pending_owner_id") or 0) != interaction.user.id,
         )
         embed = self.system.build_panel_embed(channel, entry, interaction.user, status=status)
         await send_ephemeral(interaction, embed=embed, view=panel)
@@ -385,7 +385,7 @@ class BanSelectorView(UserBoundView):
             channel.id,
             self.requester_id,
             show_claim_button=self.system.is_admin_member(interaction.user)
-            and int(entry.get("owner_id") or 0) != interaction.user.id,
+            and int(entry.get("owner_id") or entry.get("pending_owner_id") or 0) != interaction.user.id,
         )
         embed = self.system.build_panel_embed(channel, entry, interaction.user, status=status)
         await send_ephemeral(interaction, embed=embed, view=panel)
@@ -758,6 +758,8 @@ class TransferOwnerView(UserBoundView):
             return
 
         entry["owner_id"] = target_member.id
+        entry.pop("owner_absent_since", None)
+        entry.pop("pending_owner_id", None)
         self.system.add_log(entry, interaction.user.id, "transfer", f"Ownership transferred to {target_member.id}")
         await self.system.sync_channel(channel, entry, reason=f"Ownership transfer by {interaction.user}")
         await self.system.upsert_entry(channel.id, entry)
@@ -833,7 +835,7 @@ class TemplateSelectView(UserBoundView):
         self.system.apply_template_to_entry(entry, template_name, config)
 
         template_cfg = config.get("templates", {}).get(template_name, {})
-        owner_id = int(entry.get("owner_id") or 0)
+        owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
         owner_member = interaction.guild.get_member(owner_id) if owner_id else None
         if owner_member and template_cfg.get("name_format"):
             new_name = self.system._compute_channel_name(owner_member, template_cfg)
@@ -1980,7 +1982,7 @@ class PresetLoadSelectView(UserBoundView):
             channel.id,
             self.requester_id,
             show_claim_button=self.system.is_admin_member(interaction.user)
-            and int(entry.get("owner_id") or 0) != interaction.user.id,
+            and int(entry.get("owner_id") or entry.get("pending_owner_id") or 0) != interaction.user.id,
         )
         embed = self.system.build_panel_embed(channel, entry, interaction.user, status=status)
         await send_ephemeral(interaction, embed=embed, view=panel)
@@ -2095,7 +2097,7 @@ class ChannelPickerView(UserBoundView):
             channel_id,
             self.requester_id,
             show_claim_button=self.system.is_admin_member(interaction.user)
-            and int(entry.get("owner_id") or 0) != interaction.user.id,
+            and int(entry.get("owner_id") or entry.get("pending_owner_id") or 0) != interaction.user.id,
         )
         embed = self.system.build_panel_embed(channel, entry, interaction.user)
         await interaction.response.edit_message(embed=embed, view=panel)
@@ -2223,7 +2225,7 @@ class VCPanelView(UserBoundView):
             return
         self._set_claim_button_visibility(
             self.system.is_admin_member(interaction.user)
-            and int(entry.get("owner_id") or 0) != interaction.user.id
+            and int(entry.get("owner_id") or entry.get("pending_owner_id") or 0) != interaction.user.id
         )
         embed = self.system.build_panel_embed(channel, entry, interaction.user, status=status)
         if interaction.response.is_done():
@@ -2299,7 +2301,7 @@ class VCPanelView(UserBoundView):
             return
         if not await self._require_manage(interaction, entry):
             return
-        owner_id = int(entry.get("owner_id") or 0)
+        owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
         blocked_user_ids = {uid for uid in (owner_id, int(OWNER_ID or 0)) if uid > 0}
         privileged_role_ids = {int(rid) for rid in PRIVILEGED_ROLE_IDS if int(rid) > 0}
         banned_user_ids = {int(uid) for uid in entry.get("banned_users", []) if str(uid).isdigit()}
@@ -2362,7 +2364,7 @@ class VCPanelView(UserBoundView):
             return
         if not await self._require_manage(interaction, entry):
             return
-        owner_id = int(entry.get("owner_id") or 0)
+        owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
         blocked_user_ids = {uid for uid in (owner_id, int(OWNER_ID or 0)) if uid > 0}
         privileged_role_ids = {int(rid) for rid in PRIVILEGED_ROLE_IDS if int(rid) > 0}
 
@@ -2442,6 +2444,8 @@ class VCPanelView(UserBoundView):
             await send_ephemeral(interaction, "Only Parliament/admin can claim ownership.")
             return
         entry["owner_id"] = interaction.user.id
+        entry.pop("owner_absent_since", None)
+        entry.pop("pending_owner_id", None)
         await self._update_state(interaction, entry, channel, "claim_admin", "Parliament/admin took ownership")
         await self._refresh_with_status(interaction, "👑 You took ownership as Parliament/admin.")
 

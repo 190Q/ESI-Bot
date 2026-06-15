@@ -276,6 +276,9 @@ class TempVCSystem:
             self._channel_state_locks[key] = lock
         return lock
 
+    def _has_non_bot_members(self, channel: discord.VoiceChannel) -> bool:
+        return any(not member.bot for member in channel.members)
+
     def _cancel_owner_transfer_task(self, channel_id: int):
         channel_key = int(channel_id)
         task = self._owner_transfer_tasks.pop(channel_key, None)
@@ -341,7 +344,7 @@ class TempVCSystem:
                 await self.upsert_entry(channel.id, entry)
             return
 
-        if len(channel.members) == 0:
+        if not self._has_non_bot_members(channel):
             try:
                 await channel.delete(reason="Temporary VC emptied")
             except Exception:
@@ -1975,7 +1978,7 @@ class TempVCSystem:
         if member_id_str in entry.get("member_join_times", {}):
             entry["member_join_times"].pop(member_id_str, None)
 
-        if len(channel.members) == 0:
+        if not self._has_non_bot_members(channel):
             try:
                 await channel.delete(reason="Temporary VC emptied")
             except Exception:
@@ -2040,7 +2043,7 @@ class TempVCSystem:
                 continue
 
             entry = self._normalize_channel_entry(payload, guild.id)
-            if len(channel.members) == 0:
+            if not self._has_non_bot_members(channel):
                 try:
                     await channel.delete(reason="Cleaning stale temporary VC")
                 except Exception:

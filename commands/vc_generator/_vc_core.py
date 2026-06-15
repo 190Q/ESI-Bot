@@ -510,6 +510,7 @@ class TempVCSystem:
             "bitrate": max(8000, bitrate_raw),
             "region": str(source.get("region", "auto") or "auto"),
             "template": str(source.get("template", "default") or "default"),
+            "custom_name": str(source.get("custom_name", "") or ""),
             "permitted_users": [int(x) for x in source.get("permitted_users", []) if str(x).isdigit()],
             "permitted_roles": [
                 int(x)
@@ -630,6 +631,7 @@ class TempVCSystem:
                 "bitrate": bitrate_raw,
                 "region": str(entry.get("region", "auto") or "auto"),
                 "template": str(entry.get("template", "default") or "default"),
+                "custom_name": str(entry.get("custom_name", "") or ""),
                 "permitted_users": list(entry.get("permitted_users", []) or []),
                 "permitted_roles": list(entry.get("permitted_roles", []) or []),
                 "banned_users": list(entry.get("banned_users", []) or []),
@@ -654,6 +656,7 @@ class TempVCSystem:
         )
         entry["banned_users"] = list(normalized_preset["banned_users"])
         entry["banned_roles"] = list(normalized_preset["banned_roles"])
+        entry["custom_name"] = str(normalized_preset.get("custom_name", "") or "")
 
         guild_id = int(entry.get("guild_id", 0) or 0)
         if guild_id > 0:
@@ -804,6 +807,7 @@ class TempVCSystem:
             "bitrate": 64000,
             "region": "auto",
             "template": "default",
+            "custom_name": "",
             "permitted_users": [],
             "blocked_knock_users": [],
             "banned_users": [],
@@ -825,6 +829,7 @@ class TempVCSystem:
             base["bitrate"] = max(8000, int(raw.get("bitrate", 64000)))
             base["region"] = str(raw.get("region", "auto") or "auto")
             base["template"] = str(raw.get("template", "default"))
+            base["custom_name"] = str(raw.get("custom_name", "") or "")
             base["permitted_users"] = [int(x) for x in raw.get("permitted_users", []) if str(x).isdigit()]
             base["blocked_knock_users"] = [int(x) for x in raw.get("blocked_knock_users", []) if str(x).isdigit()]
             base["banned_users"] = [int(x) for x in raw.get("banned_users", []) if str(x).isdigit()]
@@ -1726,6 +1731,9 @@ class TempVCSystem:
             default_preset_name, default_preset_settings = await self.get_user_default_preset(member.guild.id, member.id)
             if default_preset_settings:
                 self.apply_user_preset_to_entry(base_entry, default_preset_settings)
+                # Override name if preset has a custom_name
+                if base_entry.get("custom_name"):
+                    channel_name = base_entry["custom_name"]
                 self.add_log(base_entry, member.id, "preset_default_applied", f"Applied default preset {default_preset_name}")
             base_entry["member_join_times"] = {str(member.id): now_iso()}
             self.add_log(base_entry, member.id, "channel_created", f"Created from generator {generator_channel.name}")

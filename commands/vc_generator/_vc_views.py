@@ -542,6 +542,7 @@ class RenameModal(Modal, title="Rename Temporary VC"):
 
         name = clean_channel_name(self.new_name.value)
         await channel.edit(name=name, reason=f"Rename temporary VC by {interaction.user}")
+        entry["custom_name"] = name
         self.system.add_log(entry, interaction.user.id, "rename", f"Renamed to {name}")
         await self.system.upsert_entry(channel.id, entry)
         await send_ephemeral(interaction, f"✅ Channel renamed to **{name}**.")
@@ -1443,6 +1444,34 @@ class PresetDraftSaveModal(Modal, title="Save Draft Preset"):
         await send_ephemeral(interaction, message)
 
 
+class PresetRenameModal(Modal, title="Set Preset Channel Name"):
+    channel_name = TextInput(
+        label="Channel Name (blank = template default)",
+        placeholder="e.g. Ranked Duo VC",
+        required=False,
+        max_length=100,
+    )
+
+    def __init__(self, builder_view: "PresetBuilderView", current_name: str = ""):
+        super().__init__()
+        self.builder_view = builder_view
+        self.channel_name.default = (current_name or "")[:100]
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.builder_view.requester_id:
+            await send_ephemeral(interaction, "This preset panel belongs to another user.")
+            return
+        from _vc_core import clean_channel_name
+        raw = self.channel_name.value.strip()
+        self.builder_view.draft_settings["custom_name"] = clean_channel_name(raw) if raw else ""
+        self.builder_view._normalize_draft_settings()
+        name_display = f"**{self.builder_view.draft_settings['custom_name']}**" if self.builder_view.draft_settings["custom_name"] else "*cleared (will use template default)*"
+        await self.builder_view.send_updated_panel(
+            interaction,
+            status=f"✅ Draft preset channel name set to {name_display}.",
+        )
+
+
 class PresetBuilderView(UserBoundView):
     def __init__(
         self,
@@ -1488,14 +1517,24 @@ class PresetBuilderView(UserBoundView):
         self._add_action_button("-Limit", discord.ButtonStyle.danger, 2, self.decrease_limit)
         self._add_action_button("Bitrate", discord.ButtonStyle.primary, 2, self.set_bitrate)
         self._add_action_button("Region", discord.ButtonStyle.primary, 2, self.change_region)
-
-        self._add_action_button("Save Preset", discord.ButtonStyle.success, 3, self.save_preset)
-        self._add_action_button("Save + Default", discord.ButtonStyle.success, 3, self.save_preset_and_default)
-        self._add_action_button("Refresh", discord.ButtonStyle.secondary, 3, self.refresh_panel)
-        self._add_action_button("Close", discord.ButtonStyle.danger, 3, self.close_panel)
+        
+        self._add_action_button("Channel Name", discord.ButtonStyle.primary, 3, self.set_custom_name)
+        
+        self._add_action_button("Save Preset", discord.ButtonStyle.success, 4, self.save_preset)
+        self._add_action_button("Save + Default", discord.ButtonStyle.success, 4, self.save_preset_and_default)
+        self._add_action_button("Refresh", discord.ButtonStyle.secondary, 4, self.refresh_panel)
+        self._add_action_button("Close", discord.ButtonStyle.danger, 4, self.close_panel)
 
     def _normalize_draft_settings(self):
         self.draft_settings = self.system._normalize_preset_settings(self.draft_settings)
+
+    async def set_custom_name(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(
+            PresetRenameModal(
+                self,
+                current_name=str(self.draft_settings.get("custom_name", "") or ""),
+            )
+        )
 
     async def send_updated_panel(self, interaction: discord.Interaction, status: str = ""):
         guild = interaction.guild
@@ -1550,6 +1589,12 @@ class PresetBuilderView(UserBoundView):
             timestamp=discord.utils.utcnow(),
         )
         embed.add_field(name="Preset Name", value=draft_name, inline=False)
+        custom_name = str(self.draft_settings.get("custom_name", "") or "")
+        embed.add_field(
+            name="Custom Channel Name",
+            value=f"**{custom_name}**" if custom_name else "*Use template default*",
+            inline=False,
+        )
         embed.add_field(name="State", value=state_text, inline=False)
         embed.add_field(
             name="Channel Settings",
@@ -1819,11 +1864,12 @@ class PresetSaveModal(Modal, title="Save Temp VC Preset"):
         max_length=40,
     )
 
-    def __init__(self, system: TempVCSystem, channel_id: int, requester_id: int):
+    def __init__(self, system: TempVCSystem, channel_id: int, requester_id: int, set_as_default: bool = False):
         super().__init__()
         self.system = system
         self.channel_id = channel_id
         self.requester_id = requester_id
+        self.set_as_default = set_as_default
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
@@ -1855,15 +1901,23 @@ class PresetSaveModal(Modal, title="Save Temp VC Preset"):
             await send_ephemeral(interaction, str(exc))
             return
 
+        saved_name = str(result.get("name", preset_name))
+        if self.set_as_default:
+            await self.system.set_user_default_preset(
+                interaction.guild.id,
+                interaction.user.id,
+                saved_name,
+            )
+
         verb = "Saved" if result.get("created") else "Updated"
-        default_name = result.get("default_preset")
-        default_note = ""
-        if isinstance(default_name, str) and default_name.casefold() == str(result.get("name", "")).casefold():
-            default_note = "\nThis preset is your default preset."
-        await send_ephemeral(
-            interaction,
-            f"✅ {verb} preset **{result['name']}** ({result['count']} total).{default_note}",
-        )
+        message = f"✅ {verb} preset **{saved_name}** ({result.get('count', 0)} total)."
+        if self.set_as_default:
+            message += "\n⭐ Set as your default preset."
+        else:
+            default_name = result.get("default_preset")
+            if isinstance(default_name, str) and default_name.casefold() == saved_name.casefold():
+                message += "\nThis preset is your default preset."
+        await send_ephemeral(interaction, message)
 
 
 class PresetLoadSelectView(UserBoundView):
@@ -2133,9 +2187,10 @@ class VCPanelView(UserBoundView):
         self._add_action_button("VC Invite", discord.ButtonStyle.success, 3, self.create_invite)
         self._add_action_button("VC Info", discord.ButtonStyle.secondary, 3, self.show_info)
         self._add_action_button("Logs", discord.ButtonStyle.secondary, 3, self.show_logs)
-        self._add_action_button("Save Preset", discord.ButtonStyle.primary, 4, self.save_preset)
+        
+        self._add_action_button("Save Preset", discord.ButtonStyle.success, 4, self.save_preset)
+        self._add_action_button("Save + Default", discord.ButtonStyle.success, 4, self.save_preset_and_default)
         self._add_action_button("Load Preset", discord.ButtonStyle.secondary, 4, self.load_preset)
-
         self._add_action_button("Refresh", discord.ButtonStyle.secondary, 4, self.refresh_panel)
         self._add_action_button("Delete VC", discord.ButtonStyle.danger, 4, self.delete_channel)
 
@@ -2421,6 +2476,22 @@ class VCPanelView(UserBoundView):
                 self.system,
                 channel.id,
                 self.requester_id,
+                set_as_default=False,
+            )
+        )
+
+    async def save_preset_and_default(self, interaction: discord.Interaction):
+        channel, entry = await self._get_context(interaction)
+        if not channel:
+            return
+        if not await self._require_manage(interaction, entry):
+            return
+        await interaction.response.send_modal(
+            PresetSaveModal(
+                self.system,
+                channel.id,
+                self.requester_id,
+                set_as_default=True,
             )
         )
 

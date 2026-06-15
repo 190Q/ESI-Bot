@@ -201,7 +201,7 @@ async def _send_log(bot: discord.Client, message: discord.Message, signal_count:
         color=discord.Color.red(),
         timestamp=datetime.now(timezone.utc),
     )
-    embed.add_field(name="User", value=f"{message.author} ({message.author.id})", inline=False)
+    embed.add_field(name="User", value=f"{message.author.mention} ({message.author.id})", inline=False)
     embed.add_field(name="Channel", value=message.channel.mention, inline=False)
     embed.add_field(name="Signals Triggered", value=str(signal_count), inline=True)
     if triggered_signals:

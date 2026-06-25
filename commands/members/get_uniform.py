@@ -9,7 +9,9 @@ from PIL import Image
 from io import BytesIO
 import sqlite3
 from utils.permissions import has_roles
+from utils.paths import DATA_DIR
 
+USERNAME_MATCHES_PATH = DATA_DIR / "username_matches.json"
 WYNNCRAFT_KEY_11 = os.getenv('WYNNCRAFT_KEY_11')
 
 RANK_ROLES = [
@@ -165,7 +167,7 @@ def get_user_rank(user):
 def get_discord_id_from_minecraft(minecraft_username):
     """Get Discord ID from Minecraft username using username_matches.json"""
     try:
-        with open('username_matches.json', 'r') as f:
+        with open(USERNAME_MATCHES_PATH, 'r') as f:
             username_matches = json.load(f)
         
         # Search for the username in the stored data
@@ -187,7 +189,7 @@ def get_discord_id_from_minecraft(minecraft_username):
 def get_minecraft_username_from_discord(discord_id):
     """Get Minecraft username from Discord ID using username_matches.json"""
     try:
-        with open('username_matches.json', 'r') as f:
+        with open(USERNAME_MATCHES_PATH, 'r') as f:
             username_matches = json.load(f)
         
         discord_id_str = str(discord_id)

@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 import aiohttp
 from utils.permissions import has_roles
+from utils import errors
 
 # Path to the username ↔ user_id match database
 USERNAME_MATCH_DB_PATH = os.path.join(
@@ -67,13 +68,7 @@ def setup(bot, has_required_role, config):
 
         # Check permissions if required
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Check if user already has a linked username

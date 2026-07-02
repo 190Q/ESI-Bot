@@ -16,6 +16,7 @@ import tempfile
 import statistics
 from utils.permissions import has_roles
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
+from utils import errors
 
 API_TRACKING_FOLDER = DB_DIR / "api_tracking"
 
@@ -242,16 +243,14 @@ def setup(bot, has_required_role, config):
         # Check permissions
         if interaction.guild:
             if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-                await interaction.response.send_message(
-                    "❌ You don't have permission to use this command!",
-                    ephemeral=True
-                )
+                await errors.NO_PERMISSION.send(interaction)
                 return
         
-        await interaction.response.defer()
 
         if delta < 1 or delta > 60:
-            await interaction.followup.send("❌ Please select a valid number of days (1-60).", ephemeral=True)
+            await errors.INVALID_INPUT.send(
+                interaction, reason="Please select a valid number of days (1-60)."
+            )
             return
         
         # Check if requesting all players
@@ -262,17 +261,19 @@ def setup(bot, has_required_role, config):
             databases, error = get_databases_in_timeframe(delta)
             
             if not databases:
-                error_embed = discord.Embed(
-                    title="⚠️ Insufficient Data",
-                    description=(
+                await errors.send_custom_error(
+                    interaction,
+                    "Insufficient Data",
+                    (
                         f"Not enough historical data available for a {delta}-day comparison.\n\n"
-                        f"**Why?** {error}\n\n"
-                        f"💡 **Tip:** The bot automatically fetches data every 30 minutes. "
-                        f"Wait for more data to be collected, then try again!"
+                        f"**Why?** {error}"
                     ),
-                    color=0xFFA500
+                    steps=[
+                        "The bot automatically fetches data every 30 minutes. "
+                        "Wait for more data to be collected, then try again!"
+                    ],
+                    include_support=False,
                 )
-                await interaction.followup.send(embed=error_embed)
                 return
             
             # Get warcount from oldest and newest databases
@@ -307,8 +308,12 @@ def setup(bot, has_required_role, config):
                 player_deltas.sort(key=lambda x: x['delta'], reverse=True)
                 
                 if not player_deltas:
-                    await interaction.followup.send("❌ No player data found.")
+                    await errors.NO_DATA_AVAILABLE.send(
+                        interaction, reason="No player data found."
+                    )
                     return
+
+                await interaction.response.defer()
                 
                 # Create text file with all players
                 actual_days = (latest_time - oldest_time).total_seconds() / 86400
@@ -402,11 +407,13 @@ def setup(bot, has_required_role, config):
             # Single player logic
             # Validate username exists in the guild (latest database)
             if get_player_warcount(latest_db, username) is None:
-                await interaction.followup.send(
-                    f"❌ Player **{username}** was not found in the guild.",
-                    ephemeral=True
+                await errors.PLAYER_NOT_IN_GUILD.send(
+                    interaction,
+                    username=username,
                 )
                 return
+
+            await interaction.response.defer()
 
             # Calculate daily deltas and fill missing days with 0
             daily_deltas = get_daily_warcount_deltas(databases, username)
@@ -459,12 +466,7 @@ def setup(bot, has_required_role, config):
             await interaction.followup.send(embed=embed, file=graph_file)
         
         except Exception as e:
-            error_embed = discord.Embed(
-                title="❌ Error",
-                description=f"An error occurred: {str(e)}",
-                color=0xFF0000
-            )
-            await interaction.followup.send(embed=error_embed)
+            await errors.UNEXPECTED_ERROR.send(interaction)
             print(f"Error in playtime command: {e}")
             import traceback
             traceback.print_exc()

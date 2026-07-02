@@ -4,6 +4,7 @@ import os
 import random
 import json
 from utils.permissions import has_roles
+from utils import errors
 
 REQUIRED_ROLES = [
     int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else 0,
@@ -96,12 +97,7 @@ def setup(bot, has_required_role, config):
         
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Update the welcome channel

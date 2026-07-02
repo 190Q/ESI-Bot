@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List
 from utils.permissions import has_roles
+from utils import errors
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
 
 DB_FILE = "databases/recruited_data.db"
@@ -532,13 +533,7 @@ def setup(bot, has_required_role, config):
         if interaction.guild:
 
             if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-                missing_roles_embed = discord.Embed(
-                    title="Permission Denied",
-                    description="You don't have permission to use this command!",
-                    color=0xFF0000,
-                    timestamp=datetime.utcnow()
-                )
-                await interaction.followup.send(embed=missing_roles_embed, ephemeral=True)
+                await errors.NO_PERMISSION.send(interaction)
                 return
 
         # Validate time_ago parameter if provided
@@ -546,13 +541,10 @@ def setup(bot, has_required_role, config):
             hours_ago = parse_time_string(time_ago)
             if hours_ago is None:
                 print("Invalid time format")
-                error_embed = discord.Embed(
-                    title="Invalid Time Format",
-                    description="Please use a valid time format like '4 hours', '1 day', '30 minutes', or '1 week'",
-                    color=0xFF0000,
-                    timestamp=datetime.utcnow()
+                await errors.INVALID_INPUT.send(
+                    interaction,
+                    reason="Please use a valid time format like '4 hours', '1 day', '30 minutes', or '1 week'",
                 )
-                await interaction.followup.send(embed=error_embed, ephemeral=True)
                 return
         else:
             hours_ago = 168 # 1 week in hours
@@ -967,13 +959,10 @@ def setup(bot, has_required_role, config):
 
             # Check if there's any data
             if not player_stats:
-                no_data_embed = discord.Embed(
-                    title="Badge Statistics",
-                    description="No statistics available yet. Start completing quests and recruiting players!",
-                    color=0xFFA500,
-                    timestamp=datetime.utcnow()
+                await errors.NO_DATA_AVAILABLE.send(
+                    interaction,
+                    reason="No statistics available yet. Start completing quests and recruiting players!",
                 )
-                await interaction.followup.send(embed=no_data_embed)
                 return
 
             # Filter badge changes by type
@@ -1777,13 +1766,8 @@ def setup(bot, has_required_role, config):
                 pass
 
         except Exception as e:
-            error_embed = discord.Embed(
-                title="Database Error",
-                description=f"An error occurred while fetching statistics: `{str(e)}`",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=error_embed, ephemeral=True)
+            await errors.DATABASE_ERROR.send(interaction)
+            print(f"Error in badges command: {e}")
         
         finally:
             conn.close()

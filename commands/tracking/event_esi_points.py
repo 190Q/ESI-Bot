@@ -6,6 +6,7 @@ import os
 import json
 from utils.permissions import has_roles
 from utils.paths import PROJECT_ROOT
+from utils import errors
 import utils.esi_points as esi
 
 REQUIRED_ROLES = (
@@ -56,28 +57,17 @@ def setup(bot, has_required_role, config):
     ):
         """Award ESI points to a player for an event."""
 
-        await interaction.response.defer()
 
         # Permission check
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow(),
-            )
-            await interaction.followup.send(embed=missing_roles_embed)
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         # Validate the points value
         if esi_points <= 0:
-            invalid_points = discord.Embed(
-                title="Invalid Input",
-                description="ESI points has to be 1 or higher.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow(),
+            await errors.INVALID_INPUT.send(
+                interaction, reason="ESI points has to be 1 or higher."
             )
-            await interaction.followup.send(embed=invalid_points)
             return
 
         # Resolve the player's linked Minecraft username + UUID
@@ -85,17 +75,7 @@ def setup(bot, has_required_role, config):
         player_data = username_db.get(str(player.id))
 
         if not player_data:
-            no_username_embed = discord.Embed(
-                title="Username Not Found",
-                description=(
-                    f"No Minecraft username found for {player.mention}. Their discord "
-                    f"user ID must be linked to a minecraft username using `/link_user` "
-                    f"or `/accept`."
-                ),
-                color=0xFF0000,
-                timestamp=datetime.utcnow(),
-            )
-            await interaction.followup.send(embed=no_username_embed)
+            await errors.USERNAME_NOT_FOUND.send(interaction, user=player.mention)
             return
 
         player_uuid = player_data.get('uuid') if isinstance(player_data, dict) else None
@@ -104,16 +84,7 @@ def setup(bot, has_required_role, config):
         )
 
         if not player_uuid:
-            missing_embed = discord.Embed(
-                title="UUID Not Found",
-                description=(
-                    f"UUID not found for {player.mention}. Please ensure account is "
-                    f"properly linked."
-                ),
-                color=0xFF0000,
-                timestamp=datetime.utcnow(),
-            )
-            await interaction.followup.send(embed=missing_embed)
+            await errors.UUID_NOT_FOUND.send(interaction, user=player.mention)
             return
 
         resolved = [{
@@ -135,13 +106,7 @@ def setup(bot, has_required_role, config):
         result = await loop.run_in_executor(None, db_operation)
 
         if not result["success"]:
-            error_embed = discord.Embed(
-                title="Database Error",
-                description=f"An error occurred: `{result['error']}`",
-                color=0xFF0000,
-                timestamp=datetime.utcnow(),
-            )
-            await interaction.followup.send(embed=error_embed)
+            await errors.DATABASE_ERROR.send(interaction)
             return
 
         # Success response
@@ -158,6 +123,6 @@ def setup(bot, has_required_role, config):
             color=0x00FF00,
             timestamp=datetime.utcnow(),
         )
-        await interaction.followup.send(embed=result_embed)
+        await interaction.response.send_message(embed=result_embed)
 
     print("[OK] Loaded event_esi_points command")

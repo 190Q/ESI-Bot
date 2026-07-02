@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 from utils.permissions import has_roles
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
+from utils import errors
 
 API_TRACKING_FOLDER = DB_DIR / "api_tracking"
 
@@ -366,10 +367,7 @@ def setup(bot, has_required_role, config):
         # Check permissions
         if interaction.guild:
             if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-                await interaction.response.send_message(
-                    "❌ You don't have permission to use this command!",
-                    ephemeral=True
-                )
+                await errors.NO_PERMISSION.send(interaction)
                 return
         
         await interaction.response.defer(ephemeral=True)
@@ -378,19 +376,15 @@ def setup(bot, has_required_role, config):
             # Fetch current guild data
             guild_data = await fetch_guild_data()
             if not guild_data:
-                await interaction.followup.send(
-                    "❌ Failed to fetch guild data from Wynncraft API.",
-                    ephemeral=True
-                )
+                await errors.API_ERROR.send(interaction)
                 return
             
             # Extract members with graid data
             current_members = extract_members_with_graids(guild_data)
             
             if not current_members:
-                await interaction.followup.send(
-                    "❌ No members found in guild data.",
-                    ephemeral=True
+                await errors.NO_DATA_AVAILABLE.send(
+                    interaction, reason="No members were found in the guild data."
                 )
                 return
             
@@ -407,10 +401,7 @@ def setup(bot, has_required_role, config):
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         
         except Exception as e:
-            await interaction.followup.send(
-                f"❌ An error occurred: {str(e)}",
-                ephemeral=True
-            )
+            await errors.UNEXPECTED_ERROR.send(interaction)
             print(f"[ASPECTS] Error in aspects command: {e}")
             import traceback
             traceback.print_exc()

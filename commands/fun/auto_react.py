@@ -7,6 +7,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 import asyncio
 from utils.permissions import has_roles
+from utils import errors
 
 AUTO_REACT_DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "auto_reactions.json"
 ITEMS_PER_PAGE = 5
@@ -59,28 +60,14 @@ def setup(bot, has_required_role, config):
             try:
                 user_id = int(self.user_id_input.value.strip())
             except ValueError:
-                await interaction.response.send_message(
-                    embed=discord.Embed(
-                        title="❌ Invalid User ID",
-                        description="Please enter a valid numeric user ID.",
-                        color=0xFF0000
-                    ),
-                    ephemeral=True
-                )
+                await errors.INVALID_INPUT.send(interaction, reason="Please enter a valid numeric user ID.")
                 return
             
             # Try to fetch the user
             try:
                 target_user = await bot.fetch_user(user_id)
             except discord.NotFound:
-                await interaction.response.send_message(
-                    embed=discord.Embed(
-                        title="❌ User Not Found",
-                        description=f"Could not find a user with ID `{user_id}`.",
-                        color=0xFF0000
-                    ),
-                    ephemeral=True
-                )
+                await errors.NOT_FOUND.send(interaction, reason=f"Could not find a user with ID `{user_id}`.")
                 return
             
             # Parse emojis (split by spaces)
@@ -291,7 +278,7 @@ def setup(bot, has_required_role, config):
         @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary, row=0)
         async def prev_button(self, interaction: discord.Interaction, button: Button):
             if interaction.user.id != self.user_id:
-                await interaction.response.send_message("This is not your menu!", ephemeral=True)
+                await errors.send_custom_error(interaction, "Not Your Menu", "This is not your menu!")
                 return
             self.page = max(0, self.page - 1)
             self.update_buttons()
@@ -300,7 +287,7 @@ def setup(bot, has_required_role, config):
         @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary, row=0)
         async def next_button(self, interaction: discord.Interaction, button: Button):
             if interaction.user.id != self.user_id:
-                await interaction.response.send_message("This is not your menu!", ephemeral=True)
+                await errors.send_custom_error(interaction, "Not Your Menu", "This is not your menu!")
                 return
             self.page = min(self.total_pages - 1, self.page + 1)
             self.update_buttons()
@@ -309,14 +296,14 @@ def setup(bot, has_required_role, config):
         @discord.ui.button(label="Add Reaction", style=discord.ButtonStyle.success, emoji="➕", row=0)
         async def add_button(self, interaction: discord.Interaction, button: Button):
             if interaction.user.id != self.user_id:
-                await interaction.response.send_message("This is not your menu!", ephemeral=True)
+                await errors.send_custom_error(interaction, "Not Your Menu", "This is not your menu!")
                 return
             await interaction.response.send_modal(AddReactionModal(self))
         
         @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary, emoji="🔄", row=0)
         async def refresh_button(self, interaction: discord.Interaction, button: Button):
             if interaction.user.id != self.user_id:
-                await interaction.response.send_message("This is not your menu!", ephemeral=True)
+                await errors.send_custom_error(interaction, "Not Your Menu", "This is not your menu!")
                 return
             self.auto_reactions = load_auto_reactions()
             self.page = min(self.page, self.total_pages - 1)
@@ -332,13 +319,7 @@ def setup(bot, has_required_role, config):
         
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.now(timezone.utc)
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         view = AutoReactManageView(interaction.user.id)

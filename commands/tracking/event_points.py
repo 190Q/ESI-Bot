@@ -8,6 +8,7 @@ import os
 import json
 from utils.permissions import has_roles
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
+from utils import errors
 
 DB_FILE = os.path.join(str(PROJECT_ROOT), "databases", "recruited_data.db")
 
@@ -88,27 +89,17 @@ def setup(bot, has_required_role, config):
     async def event(interaction: discord.Interaction, player: discord.User, points: int, reason: str = ""):
         """Manage event points and badges for players"""
         
-        await interaction.response.defer()
 
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
             print(f"User {interaction.user} does not have required roles to use the /event command.")
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=missing_roles_embed)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         if points == 0:
-            invalid_points = discord.Embed(
-                title="Invalid Input",
-                description="Event points cannot be 0. Use positive or negative values.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
+            await errors.INVALID_INPUT.send(
+                interaction,
+                reason="Event points cannot be 0. Use positive or negative values.",
             )
-            await interaction.followup.send(embed=invalid_points)
             return
         
         # Get username and UUID from Discord user
@@ -116,13 +107,7 @@ def setup(bot, has_required_role, config):
         player_data = username_db.get(str(player.id))
         
         if not player_data:
-            no_username_embed = discord.Embed(
-                title="Username Not Found",
-                description=f"No Minecraft username found for {player.mention}. Their discord user ID must be linked to a minecraft username using `/link_user` or `/accept`.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=no_username_embed)
+            await errors.USERNAME_NOT_FOUND.send(interaction, user=player.mention)
             return
         
         # Extract UUID and username
@@ -130,13 +115,7 @@ def setup(bot, has_required_role, config):
         player_username = player_data.get('username') if isinstance(player_data, dict) else player_data
         
         if not player_uuid:
-            missing_embed = discord.Embed(
-                title="UUID Not Found",
-                description=f"UUID not found for {player.mention}. Please ensure account is properly linked.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=missing_embed)
+            await errors.UUID_NOT_FOUND.send(interaction, user=player.mention)
             return
 
         def db_operation():
@@ -189,13 +168,7 @@ def setup(bot, has_required_role, config):
         result = await loop.run_in_executor(None, db_operation)
 
         if not result["success"]:
-            error_embed = discord.Embed(
-                title="Database Error",
-                description=f"An error occurred: `{result['error']}`",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=error_embed)
+            await errors.DATABASE_ERROR.send(interaction)
             return
 
         # Build embed response
@@ -215,7 +188,7 @@ def setup(bot, has_required_role, config):
             color=embed_color,
             timestamp=datetime.utcnow()
         )
-        await interaction.followup.send(embed=result_embed)
+        await interaction.response.send_message(embed=result_embed)
         
         resolved = [{
             "uuid": player_uuid,

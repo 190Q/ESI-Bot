@@ -7,6 +7,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List
 from utils.permissions import has_roles
+from utils import errors
 
 REQUIRED_ROLES = [
     int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else 0
@@ -100,7 +101,7 @@ class ColorModal(Modal, title="Set Panel Color"):
         try:
             self.setup_view.panel_color = int(color_hex, 16)
         except ValueError:
-            await interaction.response.send_message("❌ Invalid hex color! Using default color.", ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="That isn't a valid hex color code.")
             self.setup_view.panel_color = 0x5865F2
             return
         
@@ -183,7 +184,7 @@ class AddApplicationModal(Modal, title="Add Application Type"):
     
     async def on_submit(self, interaction: discord.Interaction):
         if len(self.setup_view.applications) >= 5:
-            await interaction.response.send_message("Maximum of 5 applications reached!", ephemeral=True)
+            await errors.send_custom_error(interaction, "Limit Reached", "You can only add up to 5 applications.")
             return
         
         # Map color names to ButtonStyle
@@ -227,11 +228,11 @@ class ManualChannelModal(Modal, title="Enter Channel ID"):
             channel = interaction.guild.get_channel(channel_id)
             
             if channel is None:
-                await interaction.response.send_message("❌ Channel not found! Make sure the ID is correct.", ephemeral=True)
+                await errors.INVALID_INPUT.send(interaction, reason="No channel was found for that ID.")
                 return
             
             if not isinstance(channel, discord.TextChannel):
-                await interaction.response.send_message("❌ That's not a text channel!", ephemeral=True)
+                await errors.INVALID_INPUT.send(interaction, reason="That channel is not a text channel.")
                 return
             
             self.setup_view.channel = channel
@@ -255,7 +256,7 @@ class ManualChannelModal(Modal, title="Enter Channel ID"):
             await interaction.response.edit_message(embed=embed, view=view)
             
         except ValueError:
-            await interaction.response.send_message("❌ Invalid channel ID! Please enter numbers only.", ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="Channel ID must be a number.")
 
 # Modal for entering category ID
 class ManualCategoryModal(Modal, title="Enter Category ID"):
@@ -276,11 +277,11 @@ class ManualCategoryModal(Modal, title="Enter Category ID"):
             category = interaction.guild.get_channel(category_id)
             
             if category is None:
-                await interaction.response.send_message("❌ Category not found! Make sure the ID is correct.", ephemeral=True)
+                await errors.INVALID_INPUT.send(interaction, reason="No category was found for that ID.")
                 return
             
             if not isinstance(category, discord.CategoryChannel):
-                await interaction.response.send_message("❌ That's not a category!", ephemeral=True)
+                await errors.INVALID_INPUT.send(interaction, reason="That channel is not a category.")
                 return
             
             self.setup_view.ticket_category_id = category_id
@@ -296,7 +297,7 @@ class ManualCategoryModal(Modal, title="Enter Category ID"):
             await interaction.response.edit_message(embed=embed, view=view)
             
         except ValueError:
-            await interaction.response.send_message("❌ Invalid category ID! Please enter numbers only.", ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="Category ID must be a number.")
 
 # Modal for entering logging channel ID
 class ManualLoggingModal(Modal, title="Enter Logging Channel ID"):
@@ -317,18 +318,18 @@ class ManualLoggingModal(Modal, title="Enter Logging Channel ID"):
             channel = interaction.guild.get_channel(channel_id)
             
             if channel is None:
-                await interaction.response.send_message("❌ Channel not found! Make sure the ID is correct.", ephemeral=True)
+                await errors.INVALID_INPUT.send(interaction, reason="No channel was found for that ID.")
                 return
             
             if not isinstance(channel, discord.TextChannel):
-                await interaction.response.send_message("❌ That's not a text channel!", ephemeral=True)
+                await errors.INVALID_INPUT.send(interaction, reason="That channel is not a text channel.")
                 return
             
             self.setup_view.logging_channel_id = channel_id
             await self.setup_view.finalize_setup(interaction)
             
         except ValueError:
-            await interaction.response.send_message("❌ Invalid channel ID! Please enter numbers only.", ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="Channel ID must be a number.")
 
 # View for managing applications
 class ApplicationManagerView(View):
@@ -514,18 +515,18 @@ class ManualForwardingModal(Modal, title="Enter Forwarding Channel ID"):
             channel = interaction.guild.get_channel(channel_id)
             
             if channel is None:
-                await interaction.response.send_message("❌ Channel not found! Make sure the ID is correct.", ephemeral=True)
+                await errors.INVALID_INPUT.send(interaction, reason="No channel was found for that ID.")
                 return
             
             if not isinstance(channel, discord.TextChannel):
-                await interaction.response.send_message("❌ That's not a text channel!", ephemeral=True)
+                await errors.INVALID_INPUT.send(interaction, reason="That channel is not a text channel.")
                 return
             
             self.setup_view.forwarding_channel_id = channel_id
             await self.setup_view.complete_setup(interaction)
             
         except ValueError:
-            await interaction.response.send_message("❌ Invalid channel ID! Please enter numbers only.", ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="Channel ID must be a number.")
 
 # Main setup view
 class TicketSetupView(View):
@@ -712,11 +713,7 @@ class TicketSetupView(View):
             # Edit the message that was already responded to in finalize_setup
             await interaction.edit_original_response(embed=success_embed, view=None)
         except Exception as e:
-            await interaction.edit_original_response(
-                content=f"❌ Error creating panel: {str(e)}",
-                embed=None,
-                view=None
-            )
+            await errors.UNEXPECTED_ERROR.send(interaction)
 
 def load_panels():
     """Load ticket panels from JSON file"""
@@ -744,13 +741,7 @@ def setup(bot, has_required_role, config):
 
         # Check permissions if required
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Start the setup process
@@ -777,22 +768,13 @@ def setup(bot, has_required_role, config):
         """Toggle a ticket panel on/off"""
         
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         panels = load_panels()
         
         if panel_id not in panels:
-            await interaction.response.send_message(
-                f"❌ Panel with ID `{panel_id}` not found!",
-                ephemeral=True
-            )
+            await errors.NOT_FOUND.send(interaction, reason=f"Panel with ID `{panel_id}` was not found.")
             return
         
         panel_data = panels[panel_id]
@@ -800,10 +782,7 @@ def setup(bot, has_required_role, config):
         try:
             channel = interaction.guild.get_channel(panel_data['channel_id'])
             if not channel:
-                await interaction.response.send_message(
-                    "❌ Panel channel not found!",
-                    ephemeral=True
-                )
+                await errors.NOT_FOUND.send(interaction, reason="The panel's channel could not be found.")
                 return
             
             message = await channel.fetch_message(int(panel_id))
@@ -860,15 +839,9 @@ def setup(bot, has_required_role, config):
             await interaction.response.send_message(embed=status_embed, ephemeral=True)
             
         except discord.NotFound:
-            await interaction.response.send_message(
-                "❌ Panel message not found! It may have been deleted.",
-                ephemeral=True
-            )
+            await errors.NOT_FOUND.send(interaction, reason="The panel message could not be found. It may have been deleted.")
         except Exception as e:
-            await interaction.response.send_message(
-                f"❌ Error toggling panel: {str(e)}",
-                ephemeral=True
-            )
+            await errors.UNEXPECTED_ERROR.send(interaction)
     
     @bot.tree.command(
         name="panel_move",
@@ -878,22 +851,13 @@ def setup(bot, has_required_role, config):
         """Move a ticket panel to a different channel"""
         
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         panels = load_panels()
         
         if not panels:
-            await interaction.response.send_message(
-                "❌ No panels found! Create a panel first using `/setup_panel`.",
-                ephemeral=True
-            )
+            await errors.NOT_FOUND.send(interaction, reason="No panels found. Create a panel first using `/setup_panel`.")
             return
         
         embed = discord.Embed(
@@ -952,10 +916,7 @@ def setup(bot, has_required_role, config):
                 try:
                     old_channel = interaction.guild.get_channel(panel_data['channel_id'])
                     if not old_channel:
-                        await channel_interaction.response.send_message(
-                            "❌ Original panel channel not found!",
-                            ephemeral=True
-                        )
+                        await errors.NOT_FOUND.send(channel_interaction, reason="The original panel channel could not be found.")
                         return
                     
                     old_message = await old_channel.fetch_message(int(selected_panel_id))
@@ -1019,20 +980,16 @@ def setup(bot, has_required_role, config):
                     await channel_interaction.response.send_message(embed=success_embed, ephemeral=True)
                     
                 except discord.NotFound:
-                    await channel_interaction.response.send_message(
-                        "❌ Panel message not found! It may have been deleted.",
-                        ephemeral=True
-                    )
+                    await errors.NOT_FOUND.send(channel_interaction, reason="The panel message could not be found. It may have been deleted.")
                 except discord.Forbidden:
-                    await channel_interaction.response.send_message(
-                        "❌ I don't have permission to send messages in that channel or delete the original message!",
-                        ephemeral=True
+                    await errors.send_custom_error(
+                        channel_interaction,
+                        "Permission Error",
+                        "The bot can't send messages in that channel or delete the original message.",
+                        steps=["Check the bot's permissions in the target channel and try again."],
                     )
                 except Exception as e:
-                    await channel_interaction.response.send_message(
-                        f"❌ Error moving panel: {str(e)}",
-                        ephemeral=True
-                    )
+                    await errors.UNEXPECTED_ERROR.send(channel_interaction)
             
             channel_select.callback = channel_selected
             
@@ -1061,25 +1018,16 @@ def setup(bot, has_required_role, config):
                             target_channel = modal_interaction.guild.get_channel(channel_id)
                             
                             if not target_channel:
-                                await modal_interaction.response.send_message(
-                                    "❌ Channel not found!",
-                                    ephemeral=True
-                                )
+                                await errors.INVALID_INPUT.send(modal_interaction, reason="No channel was found for that ID.")
                                 return
                             
                             if not isinstance(target_channel, discord.TextChannel):
-                                await modal_interaction.response.send_message(
-                                    "❌ That's not a text channel!",
-                                    ephemeral=True
-                                )
+                                await errors.INVALID_INPUT.send(modal_interaction, reason="That channel is not a text channel.")
                                 return
                             
                             old_channel = modal_interaction.guild.get_channel(self.panel_data['channel_id'])
                             if not old_channel:
-                                await modal_interaction.response.send_message(
-                                    "❌ Original panel channel not found!",
-                                    ephemeral=True
-                                )
+                                await errors.NOT_FOUND.send(modal_interaction, reason="The original panel channel could not be found.")
                                 return
                             
                             old_message = await old_channel.fetch_message(int(self.selected_panel_id))
@@ -1143,15 +1091,9 @@ def setup(bot, has_required_role, config):
                             await modal_interaction.response.send_message(embed=success_embed, ephemeral=True)
                             
                         except ValueError:
-                            await modal_interaction.response.send_message(
-                                "❌ Invalid channel ID!",
-                                ephemeral=True
-                            )
+                            await errors.INVALID_INPUT.send(modal_interaction, reason="Channel ID must be a number.")
                         except Exception as e:
-                            await modal_interaction.response.send_message(
-                                f"❌ Error: {str(e)}",
-                                ephemeral=True
-                            )
+                            await errors.UNEXPECTED_ERROR.send(modal_interaction)
                 
                 await btn_interaction.response.send_modal(ManualChannelModal(selected_panel_id, panel_data))
             
@@ -1175,13 +1117,7 @@ def setup(bot, has_required_role, config):
         """Check which panels are registered and if their messages exist"""
         
         if not has_roles(interaction.user, PANEL_REQUIRED_ROLES) and PANEL_REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         panels = load_panels()
@@ -1219,13 +1155,7 @@ def setup(bot, has_required_role, config):
         """Refresh all panel buttons"""
         
         if not has_roles(interaction.user, PANEL_REQUIRED_ROLES) and PANEL_REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         await interaction.response.defer(ephemeral=True)

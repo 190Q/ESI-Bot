@@ -4,6 +4,7 @@ from datetime import datetime
 import asyncio
 import os
 from utils.permissions import has_roles
+from utils import errors
 
 VENTING_CHANNEL = 786149800373649408
 PROTECTED_MSG = [1391812798165680280, 1268744322736586752]
@@ -23,13 +24,7 @@ def setup(bot, has_required_role, config):
         """Purge all messages except protected ones"""
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         await interaction.response.defer(ephemeral=True)
@@ -43,10 +38,7 @@ def setup(bot, has_required_role, config):
             
         # Check if command is used in venting channel
         if interaction.channel.id != venting_channel_id:
-            await interaction.response.send_message(
-                "This command can only be used in the venting channel!",
-                ephemeral=True
-            )
+            await errors.WRONG_CHANNEL.send(interaction)
             return
         
         # Get the channel object
@@ -77,7 +69,7 @@ def setup(bot, has_required_role, config):
                     
                     await asyncio.sleep(0.7)  # Rate limit protection
                 except discord.Forbidden:
-                    await interaction.edit_original_response(content="I don't have permission to delete messages!", embed=None)
+                    await errors.send_custom_error(interaction, "Missing Permissions", "I don't have permission to delete messages in this channel.")
                     return
                 except discord.HTTPException:
                     pass
@@ -85,6 +77,6 @@ def setup(bot, has_required_role, config):
             await interaction.edit_original_response(content=f"Successfully deleted {deleted_count} messages and skipped {protected_count} protected messages!", embed=None)
             
         except Exception as e:
-            await interaction.edit_original_response(content=f"Error: {str(e)}", embed=None)
+            await errors.UNEXPECTED_ERROR.send(interaction)
     
     print("[OK] Loaded nuke_venting command")

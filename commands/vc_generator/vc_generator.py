@@ -6,6 +6,8 @@ from typing import Optional
 import discord
 from discord import app_commands
 
+from utils import errors
+
 CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
@@ -160,7 +162,7 @@ def setup(bot, has_required_role, config):
         create_generator_channel: bool = False,
     ):
         if not system.is_admin_member(interaction.user):
-            await send_ephemeral(interaction, "Only Parliament/admin can use `/vc_setup`.")
+            await errors.NO_PERMISSION.send(interaction, footer="Only Parliament/admin can use /vc_setup.")
             return
 
         guild_cfg = await system.get_guild_config(interaction.guild.id)
@@ -177,7 +179,7 @@ def setup(bot, has_required_role, config):
                 generator_channel = created_channel
                 notes.append(f"Created generator channel: {created_channel.mention}")
             except Exception as exc:
-                await send_ephemeral(interaction, f"Failed to create generator channel: {exc}")
+                await errors.UNEXPECTED_ERROR.send(interaction)
                 return
 
         if generator_channel is not None:
@@ -201,7 +203,7 @@ def setup(bot, has_required_role, config):
 
         if default_limit is not None:
             if default_limit < 0 or default_limit > 99:
-                await send_ephemeral(interaction, "Default user limit must be between 0 and 99.")
+                await errors.INVALID_INPUT.send(interaction, reason="Default user limit must be between 0 and 99.")
                 return
             changes["default_user_limit"] = int(default_limit)
             notes.append(f"Default limit: {default_limit}")
@@ -273,7 +275,7 @@ def setup(bot, has_required_role, config):
         preset_name: Optional[str] = None,
     ):
         if interaction.guild is None:
-            await send_ephemeral(interaction, "This command can only be used in a server.")
+            await errors.send_custom_error(interaction, "Server Only", "This command can only be used in a server.")
             return
         chosen_action = action.value
         bucket = await system.get_user_preset_bucket(interaction.guild.id, interaction.user.id)
@@ -283,14 +285,14 @@ def setup(bot, has_required_role, config):
         if chosen_action == "edit":
             if not preset_name:
                 if not presets:
-                    await send_ephemeral(
+                    await errors.NO_DATA_AVAILABLE.send(
                         interaction,
-                        "You have no saved presets yet. Use **Create preset** first.",
+                        reason="You have no saved presets yet. Use **Create preset** first.",
                     )
                 else:
-                    await send_ephemeral(
+                    await errors.INVALID_INPUT.send(
                         interaction,
-                        "Provide `preset_name` to edit an existing preset.",
+                        reason="Provide `preset_name` to edit an existing preset.",
                     )
                 return
 
@@ -300,7 +302,7 @@ def setup(bot, has_required_role, config):
                 preset_name,
             )
             if not matched_name or not matched_settings:
-                await send_ephemeral(interaction, f"Preset **{preset_name}** was not found.")
+                await errors.NOT_FOUND.send(interaction, reason=f"Preset **{preset_name}** was not found.")
                 return
 
             view = PresetBuilderView(
@@ -364,7 +366,7 @@ def setup(bot, has_required_role, config):
 
         if chosen_action == "list":
             if not presets:
-                await send_ephemeral(interaction, "You have no saved presets yet. Use **Save Preset** in `/vc_manage`.")
+                await errors.NO_DATA_AVAILABLE.send(interaction, reason="You have no saved presets yet. Use **Save Preset** in `/vc_manage`.")
                 return
 
             lines = []
@@ -394,18 +396,18 @@ def setup(bot, has_required_role, config):
 
         if chosen_action == "delete":
             if not preset_name:
-                await send_ephemeral(interaction, "Provide `preset_name` to delete a preset.")
+                await errors.INVALID_INPUT.send(interaction, reason="Provide `preset_name` to delete a preset.")
                 return
             deleted_name = await system.delete_user_preset(interaction.guild.id, interaction.user.id, preset_name)
             if not deleted_name:
-                await send_ephemeral(interaction, f"Preset **{preset_name}** was not found.")
+                await errors.NOT_FOUND.send(interaction, reason=f"Preset **{preset_name}** was not found.")
                 return
             await send_ephemeral(interaction, f"Deleted preset **{deleted_name}**.")
             return
 
         if chosen_action == "set_default":
             if not preset_name:
-                await send_ephemeral(interaction, "Provide `preset_name` to set a default preset.")
+                await errors.INVALID_INPUT.send(interaction, reason="Provide `preset_name` to set a default preset.")
                 return
             try:
                 default_name = await system.set_user_default_preset(
@@ -414,7 +416,7 @@ def setup(bot, has_required_role, config):
                     preset_name,
                 )
             except ValueError:
-                await send_ephemeral(interaction, f"Preset **{preset_name}** was not found.")
+                await errors.NOT_FOUND.send(interaction, reason=f"Preset **{preset_name}** was not found.")
                 return
             await send_ephemeral(interaction, f"⭐ Default preset set to **{default_name}**.")
             return
@@ -424,7 +426,7 @@ def setup(bot, has_required_role, config):
             await send_ephemeral(interaction, "Default preset cleared. New temp VCs will use normal defaults/templates.")
             return
 
-        await send_ephemeral(interaction, "Unknown preset action.")
+        await errors.send_custom_error(interaction, "Unknown Action", "Unknown preset action.")
 
     @bot.tree.command(name="vc_manage", description="Open the temporary VC management panel")
     @app_commands.describe(channel="Optional target temporary VC you own/manage")
@@ -437,12 +439,12 @@ def setup(bot, has_required_role, config):
         if requested_channel:
             entry = await system.get_entry(requested_channel.id)
             if not entry:
-                await send_ephemeral(interaction, "That channel is not a managed temporary VC.")
+                await errors.NOT_FOUND.send(interaction, reason="That channel is not a managed temporary VC.")
                 return
             if not system.can_manage(interaction.user, entry):
-                await send_ephemeral(
+                await errors.NO_PERMISSION.send(
                     interaction,
-                    "You can only use `/vc_manage` on channels you own (or if you are Parliament/admin). Use `/vc_knock` to request access.",
+                    footer="You can only use /vc_manage on channels you own. Use /vc_knock to request access.",
                 )
                 return
             panel = VCPanelView(
@@ -458,9 +460,9 @@ def setup(bot, has_required_role, config):
 
         entries = await system.list_guild_entries(interaction.guild.id)
         if not entries:
-            await send_ephemeral(
+            await errors.NO_DATA_AVAILABLE.send(
                 interaction,
-                "No active temporary VCs found.",
+                reason="No active temporary VCs found.",
             )
             return
 
@@ -471,9 +473,11 @@ def setup(bot, has_required_role, config):
                 manageable_channels.append(found)
 
         if not manageable_channels:
-            await send_ephemeral(
+            await errors.send_custom_error(
                 interaction,
-                "You do not currently own a temporary VC. Use `/vc_knock` to request entry to locked/hidden channels.",
+                "No Manageable VCs",
+                "You do not currently own a temporary VC.",
+                steps=["Use `/vc_knock` to request entry to locked/hidden channels."],
             )
             return
 
@@ -490,29 +494,45 @@ def setup(bot, has_required_role, config):
     @app_commands.describe(channel="Optional target temporary VC to knock on")
     async def vc_knock(interaction: discord.Interaction, channel: Optional[discord.VoiceChannel] = None):
         if system.is_admin_member(interaction.user):
-            await send_ephemeral(interaction, "Parliament/admin users should use `/vc_manage`.")
+            await errors.send_custom_error(
+                interaction,
+                "Use /vc_manage",
+                "Parliament/admin users should use `/vc_manage`.",
+            )
             return
 
         async def knock_on_channel(target_channel: discord.VoiceChannel) -> None:
             entry = await system.get_entry(target_channel.id)
             if not entry:
-                await send_ephemeral(interaction, "That channel is not a managed temporary VC.")
+                await errors.NOT_FOUND.send(interaction, reason="That channel is not a managed temporary VC.")
                 return
             if system.can_manage(interaction.user, entry):
-                await send_ephemeral(interaction, "Use `/vc_manage` for channels you can manage.")
+                await errors.send_custom_error(
+                    interaction,
+                    "Use /vc_manage",
+                    "Use `/vc_manage` for channels you can manage.",
+                )
                 return
             if interaction.user.voice and interaction.user.voice.channel and interaction.user.voice.channel.id == target_channel.id:
-                await send_ephemeral(interaction, "You're already in this VC.")
+                await errors.send_custom_error(
+                    interaction,
+                    "Already Joined",
+                    "You're already in this VC.",
+                )
                 return
             if not entry.get("locked") and not entry.get("hidden"):
-                await send_ephemeral(interaction, "This VC is open right now; you can join directly.")
+                await errors.send_custom_error(
+                    interaction,
+                    "VC Is Open",
+                    "This VC is open right now; you can join directly.",
+                )
                 return
             result = await system.send_knock_notification(interaction.user, target_channel, entry)
             await send_ephemeral(interaction, f"{result}")
 
         if channel is not None:
             if not isinstance(channel, discord.VoiceChannel):
-                await send_ephemeral(interaction, "Please choose a valid voice channel.")
+                await errors.INVALID_INPUT.send(interaction, reason="Please choose a valid voice channel.")
                 return
             await knock_on_channel(channel)
             return
@@ -530,7 +550,7 @@ def setup(bot, has_required_role, config):
             knockable_channels.append(found)
 
         if not knockable_channels:
-            await send_ephemeral(interaction, "No locked/hidden temporary VCs are currently available to knock on.")
+            await errors.NO_DATA_AVAILABLE.send(interaction, reason="No locked/hidden temporary VCs are currently available to knock on.")
             return
 
         if len(knockable_channels) == 1:

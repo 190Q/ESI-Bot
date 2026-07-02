@@ -13,6 +13,7 @@ if _TICKETS_DIR not in sys.path:
     sys.path.insert(0, _TICKETS_DIR)
 
 from utils.permissions import has_roles
+from utils import errors
 from guild_queue import (
     load_queue, save_queue, add_to_queue, remove_from_queue,
     get_queue_position, move_in_queue, switch_queue_type,
@@ -303,7 +304,7 @@ class QueueMainView(View):
     async def remove_callback(self, interaction: discord.Interaction):
         options = _build_player_options()
         if not options:
-            await interaction.response.send_message("❌ Queue is empty.", ephemeral=True)
+            await errors.send_custom_error(interaction, "Queue Empty", "The queue is empty.")
             return
         embed = _build_queue_embed()
         embed.title = "➖ Remove Player"
@@ -314,7 +315,7 @@ class QueueMainView(View):
     async def move_callback(self, interaction: discord.Interaction):
         options = _build_player_options()
         if not options:
-            await interaction.response.send_message("❌ Queue is empty.", ephemeral=True)
+            await errors.send_custom_error(interaction, "Queue Empty", "The queue is empty.")
             return
         embed = _build_queue_embed()
         embed.title = "↕️ Move Player"
@@ -325,7 +326,7 @@ class QueueMainView(View):
     async def switch_callback(self, interaction: discord.Interaction):
         options = _build_player_options()
         if not options:
-            await interaction.response.send_message("❌ Queue is empty.", ephemeral=True)
+            await errors.send_custom_error(interaction, "Queue Empty", "The queue is empty.")
             return
         embed = _build_queue_embed()
         embed.title = "🔄 Switch Queue"
@@ -336,7 +337,7 @@ class QueueMainView(View):
     async def tickets_callback(self, interaction: discord.Interaction):
         ticket_options = _build_ticket_options()
         if not ticket_options:
-            await interaction.response.send_message("❌ No queued players have linked tickets.", ephemeral=True)
+            await errors.send_custom_error(interaction, "No Tickets", "No queued players have linked tickets.")
             return
         embed = _build_queue_embed()
         embed.title = "🎫 View Tickets"
@@ -454,7 +455,7 @@ class QueueTicketSelectView(View):
         apps = load_forwarded_apps()
         app_data = apps.get(msg_id)
         if not app_data:
-            await interaction.response.send_message("\u274c Ticket not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket not found.")
             return
 
         embed = _build_ticket_detail_embed(app_data, interaction.guild)
@@ -519,7 +520,7 @@ class QueueTicketDetailView(View):
         apps = load_forwarded_apps()
         app_data = apps.get(self.message_id)
         if not app_data:
-            await interaction.response.send_message("\u274c Ticket not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket not found.")
             return
 
         await interaction.response.defer()
@@ -529,7 +530,7 @@ class QueueTicketDetailView(View):
             if not channel:
                 channel = interaction.guild.get_thread(app_data['channel_id'])
             if not channel:
-                await interaction.followup.send("\u274c Channel not found!", ephemeral=True)
+                await errors.NOT_FOUND.send(interaction, reason="Channel not found.")
                 return
 
             message = await channel.fetch_message(app_data['message_id'])
@@ -578,7 +579,7 @@ class QueueTicketDetailView(View):
             await interaction.edit_original_response(embed=embed, view=view)
 
         except Exception as e:
-            await interaction.followup.send(f"\u274c Error toggling buttons: {e}", ephemeral=True)
+            await errors.UNEXPECTED_ERROR.send(interaction)
 
     async def reload_callback(self, interaction: discord.Interaction):
         from ticket_handler import load_forwarded_apps, save_forwarded_apps, calculate_threshold
@@ -587,7 +588,7 @@ class QueueTicketDetailView(View):
         apps = load_forwarded_apps()
         app_data = apps.get(self.message_id)
         if not app_data:
-            await interaction.response.send_message("\u274c Ticket not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket not found.")
             return
 
         await interaction.response.defer()
@@ -614,7 +615,7 @@ class QueueTicketDetailView(View):
             await interaction.edit_original_response(embed=embed, view=view)
 
         except Exception as e:
-            await interaction.followup.send(f"\u274c Error reloading: {e}", ephemeral=True)
+            await errors.UNEXPECTED_ERROR.send(interaction)
 
 
 # ---------------------------------------------------------------------------
@@ -657,7 +658,7 @@ class AddPlayerModal(Modal, title="Add Player to Queue"):
         try:
             discord_id = int(self.discord_id_input.value.strip())
         except ValueError:
-            await interaction.response.send_message("❌ Invalid Discord User ID.", ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="Invalid Discord User ID.")
             return
 
         username = self.username_input.value.strip()
@@ -669,9 +670,9 @@ class AddPlayerModal(Modal, title="Add Player to Queue"):
             from ticket_handler import load_forwarded_apps
             apps = load_forwarded_apps()
             if ticket_id not in apps:
-                await interaction.response.send_message(
-                    f"❌ Ticket with message ID `{ticket_id}` not found in forwarded applications.",
-                    ephemeral=True
+                await errors.NOT_FOUND.send(
+                    interaction,
+                    reason=f"Ticket with message ID `{ticket_id}` not found in forwarded applications.",
                 )
                 return
 
@@ -730,11 +731,11 @@ class MovePositionModal(Modal, title="Move Player"):
         try:
             new_pos = int(self.position_input.value.strip())
         except ValueError:
-            await interaction.response.send_message("❌ Position must be a number.", ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="Position must be a number.")
             return
 
         if new_pos < 1:
-            await interaction.response.send_message("❌ Position must be at least 1.", ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="Position must be at least 1.")
             return
 
         result = move_in_queue(self.discord_id, new_pos)
@@ -770,13 +771,7 @@ def setup(bot, has_required_role, config):
         """Manage queue command with interactive buttons"""
 
         if not has_roles(interaction.user, ALLOWED_ROLES):
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.now(timezone.utc),
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         restricted = is_restricted_user(interaction.user)

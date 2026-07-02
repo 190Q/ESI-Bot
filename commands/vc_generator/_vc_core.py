@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from time import monotonic
 from typing import Optional, Dict, Any, List
 from utils.paths import DATA_DIR, DB_DIR
+from utils import errors
 
 PARLIAMENT_ROLE_ID = 600185623474601995
 TTS_BOT_ROLE_ID = 1295411931338899632
@@ -123,12 +124,16 @@ class KnockResponseView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         channel, entry = await self._resolve_context(interaction)
         if not channel or not entry:
-            await send_ephemeral(interaction, "This temporary VC is no longer available.")
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return False
 
         owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
         if owner_id != interaction.user.id:
-            await send_ephemeral(interaction, "Only the VC owner can respond to this knock request.")
+            await errors.send_custom_error(
+                interaction,
+                "Not Your Panel",
+                "Only the VC owner can respond to this knock request.",
+            )
             return False
         return True
 
@@ -154,7 +159,7 @@ class KnockResponseView(discord.ui.View):
         await interaction.response.defer()
         channel, entry = await self._resolve_context(interaction)
         if not channel or not entry:
-            await interaction.followup.send("This temporary VC is no longer available.", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
 
         requester_id = int(self.requester_id)
@@ -180,9 +185,11 @@ class KnockResponseView(discord.ui.View):
                 f"Tried allowing banned requester {requester_id} ({block_reason})",
             )
             await self.system.upsert_entry(channel.id, entry)
-            await interaction.followup.send(
-                "That user is banned from this VC. Unban them from the Ban panel before allowing access.",
-                ephemeral=True,
+            await errors.send_custom_error(
+                interaction,
+                "User Banned",
+                "That user is banned from this VC.",
+                steps=["Unban them from the Ban panel before allowing access."],
             )
             return
         had_existing_permit = self._strip_existing_user_permit(entry, requester_id)
@@ -213,7 +220,7 @@ class KnockResponseView(discord.ui.View):
         await interaction.response.defer()
         channel, entry = await self._resolve_context(interaction)
         if not channel or not entry:
-            await interaction.followup.send("This temporary VC is no longer available.", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
 
         requester_id = int(self.requester_id)

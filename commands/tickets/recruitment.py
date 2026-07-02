@@ -13,6 +13,7 @@ import io
 import glob
 import sqlite3
 from pathlib import Path
+from utils import errors
 
 # Add player.py directory to path
 PLAYER_MODULE_PATH = '/home/ubuntu/DiscordBots/kira/python-commands/coj'
@@ -503,7 +504,7 @@ class RecruitmentModal(discord.ui.Modal, title="Player Recruitment"):
         username = str(self.username_input.value).strip()
         
         if not username or username == '{username}':
-            await interaction.response.send_message(content="Error: Please enter a valid username", ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="Please enter a valid username.")
             return
         
         await interaction.response.send_message(content="Creating recruitment vote...", ephemeral=True)
@@ -511,20 +512,19 @@ class RecruitmentModal(discord.ui.Modal, title="Player Recruitment"):
         try:
             recruitment_channel = interaction.client.get_channel(RECRUITMENT_CHANNEL_ID)
             if not recruitment_channel:
-                await interaction.followup.send(content=f"Error: Recruitment channel not found (ID: {RECRUITMENT_CHANNEL_ID})", ephemeral=True)
+                await errors.NOT_FOUND.send(interaction, reason="The recruitment channel could not be found.")
                 return
             
             # Fetch initial player data
             player_data = await RecruitmentAPI.fetch_player_data(username)
             
             if not player_data:
-                await interaction.followup.send(content=f"Error: Unable to find player '{username}'", ephemeral=True)
+                await errors.PLAYER_NOT_FOUND.send(interaction, username=username)
                 return
             
             # Handle API errors
             if player_data.get('error'):
-                error_msg = player_data.get('message', 'Unknown API error')
-                await interaction.followup.send(content=f"Error: {error_msg}", ephemeral=True)
+                await errors.API_RATE_LIMITED.send(interaction)
                 return
             
             # Handle multiple players - select the one with highest playtime
@@ -532,20 +532,20 @@ class RecruitmentModal(discord.ui.Modal, title="Player Recruitment"):
                 players_data = player_data.get('objects', {})
                 
                 if not players_data:
-                    await interaction.followup.send(content="Error: No player data found in multiple entries response.", ephemeral=True)
+                    await errors.API_ERROR.send(interaction)
                     return
                 
                 selected_uuid = await RecruitmentAPI.select_highest_playtime_player(players_data)
                 
                 if not selected_uuid:
-                    await interaction.followup.send(content="Error: Could not determine player from multiple entries.", ephemeral=True)
+                    await errors.API_ERROR.send(interaction)
                     return
                 
                 # Fetch the full data for the selected player
                 player_data = await RecruitmentAPI.fetch_player_data(selected_uuid)
                 
                 if not player_data or player_data.get('multiple'):
-                    await interaction.followup.send(content="Error: Failed to fetch selected player data.", ephemeral=True)
+                    await errors.API_ERROR.send(interaction)
                     return
             
             # Get UUID for single player or already resolved multiple
@@ -736,10 +736,7 @@ class RecruitmentModal(discord.ui.Modal, title="Player Recruitment"):
             print(f"Error: {e}")
             import traceback
             traceback.print_exc()
-            try:
-                await interaction.followup.send(content=f"Error: {str(e)}", ephemeral=True)
-            except:
-                pass
+            await errors.UNEXPECTED_ERROR.send(interaction)
 
 # ============================================================================
 # PERMISSION CHECKER
@@ -774,10 +771,7 @@ def setup(bot, has_required_role=None, config=None):
     @bot.tree.context_menu(name="Recruitment Profile")
     async def recruitment(interaction: discord.Interaction, message: discord.Message):
         if not check_user_has_required_role(interaction):
-            await interaction.response.send_message(
-                "You don't have permission to use this app.",
-                ephemeral=True
-            )
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         modal = RecruitmentModal()

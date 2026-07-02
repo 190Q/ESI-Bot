@@ -7,6 +7,7 @@ from discord import app_commands
 from datetime import datetime
 from typing import Optional
 from utils.permissions import has_roles
+from utils import errors
 from utils.paths import DB_DIR
 from utils.esi_points import init_points_database, save_points
 from utils.parsers import (
@@ -231,13 +232,19 @@ class AddPlayerView(discord.ui.View):
     async def user_select(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
         member = select.values[0]
         if any(p["member"].id == member.id for p in self.parent_view.players):
-            await interaction.response.send_message(
-                f"{member.mention} is already in the player list.", ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "Already Added",
+                f"{member.mention} is already in the player list.",
+                include_support=False,
             )
             return
         if len(self.parent_view.players) >= 5:
-            await interaction.response.send_message(
-                "Maximum of 5 players reached.", ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "Player Limit Reached",
+                "Maximum of 5 players reached.",
+                include_support=False,
             )
             return
 
@@ -481,8 +488,11 @@ class ClaimSnipeView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.requester.id:
-            await interaction.response.send_message(
-                "Only the command user can manage this claim snipe.", ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "Not Allowed",
+                "Only the command user can manage this claim snipe.",
+                include_support=False,
             )
             return False
         return True
@@ -490,8 +500,11 @@ class ClaimSnipeView(discord.ui.View):
     @discord.ui.button(label="Add Player", style=discord.ButtonStyle.success, emoji="➕")
     async def add_player(self, interaction: discord.Interaction, button: discord.ui.Button):
         if len(self.players) >= 5:
-            await interaction.response.send_message(
-                "Maximum of 5 players reached.", ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "Player Limit Reached",
+                "Maximum of 5 players reached.",
+                include_support=False,
             )
             return
         view = AddPlayerView(self)
@@ -502,8 +515,11 @@ class ClaimSnipeView(discord.ui.View):
     @discord.ui.button(label="Remove Player", style=discord.ButtonStyle.danger, emoji="➖")
     async def remove_player(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.players:
-            await interaction.response.send_message(
-                "No players to remove.", ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "No Players",
+                "No players to remove.",
+                include_support=False,
             )
             return
         view = RemovePlayerView(self)
@@ -514,8 +530,11 @@ class ClaimSnipeView(discord.ui.View):
     @discord.ui.button(label="Edit Player", style=discord.ButtonStyle.primary, emoji="✏️")
     async def edit_player(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.players:
-            await interaction.response.send_message(
-                "No players to edit.", ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "No Players",
+                "No players to edit.",
+                include_support=False,
             )
             return
         view = EditPlayerView(self)
@@ -526,8 +545,11 @@ class ClaimSnipeView(discord.ui.View):
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="✅")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.players:
-            await interaction.response.send_message(
-                "Add at least one player before confirming.", ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "No Players",
+                "Add at least one player before confirming.",
+                include_support=False,
             )
             return
 
@@ -613,15 +635,7 @@ def setup(bot, has_required_role, config):
     ):
         # Check permissions if required
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow(),
-            )
-            await interaction.response.send_message(
-                embed=missing_roles_embed, ephemeral=True
-            )
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         # Parse the optional informational fields
@@ -630,15 +644,7 @@ def setup(bot, has_required_role, config):
             defense_val = parse_defense(defense) if defense is not None else None
             duration_val = parse_duration(duration) if duration is not None else None
         except ValueError as e:
-            error_embed = discord.Embed(
-                title="Invalid input",
-                description=str(e),
-                color=0xFF0000,
-                timestamp=datetime.utcnow(),
-            )
-            await interaction.response.send_message(
-                embed=error_embed, ephemeral=True
-            )
+            await errors.INVALID_INPUT.send(interaction, reason=str(e))
             return
 
         view = ClaimSnipeView(

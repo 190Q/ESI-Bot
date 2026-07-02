@@ -13,6 +13,7 @@ from io import BytesIO
 from pathlib import Path
 import statistics
 from utils.permissions import has_roles
+from utils import errors
 
 OWNER_ID = int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else 0
 WYNNCRAFT_KEY_11 = os.getenv('WYNNCRAFT_KEY_11')
@@ -340,28 +341,22 @@ def setup(bot, has_required_role, config):
         # Check permissions
         if interaction.guild:
             if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-                await interaction.response.send_message(
-                    "❌ You don't have permission to use this command!",
-                    ephemeral=True
-                )
+                await errors.NO_PERMISSION.send(interaction)
                 return
-        
-        await interaction.response.defer()
         
         # Validate delta
         if delta < 1 or delta > 30:
-            await interaction.followup.send(
-                "❌ Please select a valid number of days (1-30).",
-                ephemeral=True
+            await errors.INVALID_INPUT.send(
+                interaction, reason="Please select a valid number of days (1-30)."
             )
             return
         
         try:
             # Check if tracking folder exists
             if not PLAYTIME_TRACKING_FOLDER.exists():
-                await interaction.followup.send(
-                    "❌ No playtime data available. Playtime tracking has not started yet.",
-                    ephemeral=True
+                await errors.NO_DATA_AVAILABLE.send(
+                    interaction,
+                    reason="No playtime data available. Playtime tracking has not started yet.",
                 )
                 return
             
@@ -378,25 +373,10 @@ def setup(bot, has_required_role, config):
             if not user_found:
                 if not player_exists:
                     # Player doesn't exist on Wynncraft at all
-                    embed = discord.Embed(
-                        title="❌ Player Not Found",
-                        description=f"`{username}` is not a valid Wynncraft username.",
-                        color=0xFF0000
-                    )
-                    embed.add_field(
-                        name="What to do:",
-                        value=(
-                            f" - Check if you spelled the username correctly.\n"
-                            f" - Make sure the player has logged into Wynncraft at least once.\n"
-                            f"\n-# if you think this is a mistake, you can contact support using `/contact_support`."
-                        ),
-                        inline=False
-                    )
-                    embed.set_footer(text=f"Data from {start_date} to {end_date}")
-                    
-                    await interaction.followup.send(
-                        embed=embed,
-                        ephemeral=True
+                    await errors.PLAYER_NOT_FOUND.send(
+                        interaction,
+                        username=username,
+                        footer=f"Data from {start_date} to {end_date}",
                     )
                     return
                 # Player exists but not in database - continue with 0 playtime data
@@ -405,6 +385,8 @@ def setup(bot, has_required_role, config):
                 # Use the correct username from Wynncraft
                 if player_exists:
                     username = correct_username
+
+            await interaction.response.defer()
             
             # Calculate total playtime
             total_playtime = sum(d['playtime_seconds'] for d in daily_data)
@@ -458,12 +440,7 @@ def setup(bot, has_required_role, config):
             await interaction.followup.send(embed=embed, file=graph_file)
         
         except Exception as e:
-            error_embed = discord.Embed(
-                title="❌ Error",
-                description=f"An error occurred: {str(e)}",
-                color=0xFF0000
-            )
-            await interaction.followup.send(embed=error_embed)
+            await errors.UNEXPECTED_ERROR.send(interaction)
             print(f"[PLAYTIME] Error in playtime command: {e}")
             import traceback
             traceback.print_exc()

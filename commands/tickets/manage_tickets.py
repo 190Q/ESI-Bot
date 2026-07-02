@@ -33,6 +33,7 @@ from guild_queue import (
     VETERAN_ROLE_ID,
 )
 from utils.permissions import has_roles
+from utils import errors
 
 REQUIRED_ROLES = [
     int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else 0,
@@ -303,7 +304,7 @@ class VoteModificationView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -315,9 +316,10 @@ class VoteModificationView(View):
         
         # Check if either is already at threshold
         if approve_count >= threshold and deny_count >= threshold:
-            await interaction.response.send_message(
-                "⚠️ Both approve and deny votes are already at or above threshold!",
-                ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "Nothing to Fill",
+                "Both approve and deny votes are already at or above threshold.",
             )
             return
         
@@ -326,9 +328,10 @@ class VoteModificationView(View):
         deny_needed = max(0, threshold - deny_count)
         
         if approve_needed == 0 and deny_needed == 0:
-            await interaction.response.send_message(
-                "⚠️ Both vote types are already at threshold!",
-                ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "Nothing to Fill",
+                "Both vote types are already at threshold.",
             )
             return
         
@@ -353,7 +356,7 @@ class VoteModificationView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         approve_voters = app_data.get('approve_voters', [])
@@ -395,7 +398,7 @@ class VoteModificationView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         approve_voters = app_data.get('approve_voters', [])
@@ -437,16 +440,17 @@ class VoteModificationView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         approve_voters = app_data.get('approve_voters', [])
         deny_voters = app_data.get('deny_voters', [])
         
         if not approve_voters and not deny_voters:
-            await interaction.response.send_message(
-                "⚠️ No votes to remove!",
-                ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "No Votes to Remove",
+                "There are no votes to remove on this ticket.",
             )
             return
         
@@ -473,7 +477,7 @@ class VoteModificationView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -564,7 +568,7 @@ class TicketDetailView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         await interaction.response.defer(ephemeral=True)
@@ -576,7 +580,7 @@ class TicketDetailView(View):
                 channel = interaction.guild.get_thread(app_data['channel_id'])
             
             if not channel:
-                await interaction.followup.send("❌ Channel not found!", ephemeral=True)
+                await errors.NOT_FOUND.send(interaction, reason="Channel not found.")
                 return
             
             # If it's a thread, use the parent_message_id to get the message in the main channel
@@ -586,14 +590,14 @@ class TicketDetailView(View):
                 try:
                     message = await parent_channel.fetch_message(app_data['parent_message_id'])
                 except discord.NotFound:
-                    await interaction.followup.send("❌ Parent message not found!", ephemeral=True)
+                    await errors.NOT_FOUND.send(interaction, reason="Parent message not found.")
                     return
             else:
                 # Regular channel or no parent message ID
                 try:
                     message = await channel.fetch_message(app_data['message_id'])
                 except discord.NotFound:
-                    await interaction.followup.send("❌ Message not found!", ephemeral=True)
+                    await errors.NOT_FOUND.send(interaction, reason="Message not found.")
                     return
             
             # Calculate threshold and current votes
@@ -612,9 +616,9 @@ class TicketDetailView(View):
             await message.reply(reminder_text)
             
         except discord.NotFound:
-            await interaction.response.send_message("❌ Message not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Message not found.")
         except Exception as e:
-            await interaction.response.send_message(f"❌ Error sending reminder: {e}", ephemeral=True)
+            await errors.UNEXPECTED_ERROR.send(interaction)
     
     async def back_callback(self, interaction: discord.Interaction):
         """Go back to ticket list"""
@@ -640,10 +644,7 @@ class TicketDetailView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message(
-                "❌ Ticket data not found!",
-                ephemeral=True
-            )
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -669,14 +670,12 @@ class TicketDetailView(View):
     async def debug_callback(self, interaction: discord.Interaction):
         """Open the owner‑only debug panel for this ticket."""
         if not is_bot_owner(interaction.user):
-            await interaction.response.send_message(
-                "❌ Debug tools are restricted to the bot owner.", ephemeral=True
-            )
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         embed, _ = build_debug_embed(self.message_id, interaction.guild)
         if embed is None:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
 
         view = DebugTicketView(self.message_id, self.tickets_data, self.guild, interaction.user)
@@ -731,7 +730,7 @@ class TicketDetailViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         await interaction.response.defer(ephemeral=True)
@@ -743,7 +742,7 @@ class TicketDetailViewStandalone(View):
                 channel = interaction.guild.get_thread(app_data['channel_id'])
             
             if not channel:
-                await interaction.followup.send("❌ Channel not found!", ephemeral=True)
+                await errors.NOT_FOUND.send(interaction, reason="Channel not found.")
                 return
             
             # If it's a thread, use the parent_message_id to get the message in the main channel
@@ -753,14 +752,14 @@ class TicketDetailViewStandalone(View):
                 try:
                     message = await parent_channel.fetch_message(app_data['parent_message_id'])
                 except discord.NotFound:
-                    await interaction.followup.send("❌ Parent message not found!", ephemeral=True)
+                    await errors.NOT_FOUND.send(interaction, reason="Parent message not found.")
                     return
             else:
                 # Regular channel or no parent message ID
                 try:
                     message = await channel.fetch_message(app_data['message_id'])
                 except discord.NotFound:
-                    await interaction.followup.send("❌ Message not found!", ephemeral=True)
+                    await errors.NOT_FOUND.send(interaction, reason="Message not found.")
                     return
             
             # Calculate threshold and current votes
@@ -780,7 +779,7 @@ class TicketDetailViewStandalone(View):
             await interaction.followup.send("✅ Reminder sent!", ephemeral=True)
             
         except Exception as e:
-            await interaction.followup.send(f"❌ Error sending reminder: {e}", ephemeral=True)
+            await errors.UNEXPECTED_ERROR.send(interaction)
     
     async def manage_votes_callback(self, interaction: discord.Interaction):
         """Show vote management interface"""
@@ -788,10 +787,7 @@ class TicketDetailViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message(
-                "❌ Ticket data not found!",
-                ephemeral=True
-            )
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -864,7 +860,7 @@ class VoteManagementView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         await interaction.response.defer(ephemeral=True)
@@ -885,7 +881,7 @@ class VoteManagementView(View):
             # Update the message view using utility
             await VoteManager.update_message_view(interaction, app_data)
         except Exception as e:
-            await interaction.followup.send(f"❌ Error reloading application: {e}", ephemeral=True)
+            await errors.UNEXPECTED_ERROR.send(interaction)
     
     async def modify_votes_callback(self, interaction: discord.Interaction):
         """Show vote modification options"""
@@ -893,7 +889,7 @@ class VoteManagementView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -922,7 +918,7 @@ class VoteManagementView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         # Defer the interaction immediately
@@ -934,7 +930,7 @@ class VoteManagementView(View):
                 channel = interaction.guild.get_thread(app_data['channel_id'])
             
             if not channel:
-                await interaction.followup.send("❌ Channel not found!", ephemeral=True)
+                await errors.NOT_FOUND.send(interaction, reason="Channel not found.")
                 return
             
             message = await channel.fetch_message(app_data['message_id'])
@@ -987,7 +983,7 @@ class VoteManagementView(View):
             
         except Exception as e:
             print(f"Error toggling buttons: {e}")
-            await interaction.followup.send(f"❌ Error toggling buttons: {e}", ephemeral=True)
+            await errors.UNEXPECTED_ERROR.send(interaction)
     
     async def add_approve_callback(self, interaction: discord.Interaction):
         """Add admin approve vote"""
@@ -995,7 +991,7 @@ class VoteManagementView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         approve_voters = app_data.get('approve_voters', [])
@@ -1053,7 +1049,7 @@ class VoteManagementView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         approve_voters = app_data.get('approve_voters', [])
@@ -1105,16 +1101,17 @@ class VoteManagementView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         approve_voters = app_data.get('approve_voters', [])
         deny_voters = app_data.get('deny_voters', [])
         
         if not approve_voters and not deny_voters:
-            await interaction.response.send_message(
-                "⚠️ No votes to remove!",
-                ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "No Votes to Remove",
+                "There are no votes to remove on this ticket.",
             )
             return
         
@@ -1141,7 +1138,7 @@ class VoteManagementView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -1284,7 +1281,7 @@ class VoteManagementViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -1310,7 +1307,7 @@ class VoteManagementViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         await interaction.response.defer(ephemeral=True)
@@ -1332,7 +1329,7 @@ class VoteManagementViewStandalone(View):
             await VoteManager.update_message_view(interaction, app_data)
             await interaction.followup.send("✅ Application reloaded!", ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"❌ Error reloading application: {e}", ephemeral=True)
+            await errors.UNEXPECTED_ERROR.send(interaction)
     
     async def modify_votes_callback(self, interaction: discord.Interaction):
         """Show vote modification options"""
@@ -1340,7 +1337,7 @@ class VoteManagementViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -1369,7 +1366,7 @@ class VoteManagementViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         # Defer the interaction immediately
@@ -1381,7 +1378,7 @@ class VoteManagementViewStandalone(View):
                 channel = interaction.guild.get_thread(app_data['channel_id'])
             
             if not channel:
-                await interaction.followup.send("❌ Channel not found!", ephemeral=True)
+                await errors.NOT_FOUND.send(interaction, reason="Channel not found.")
                 return
             
             message = await channel.fetch_message(app_data['message_id'])
@@ -1435,7 +1432,7 @@ class VoteManagementViewStandalone(View):
             
         except Exception as e:
             print(f"Error toggling buttons: {e}")
-            await interaction.followup.send(f"❌ Error toggling buttons: {e}", ephemeral=True)
+            await errors.UNEXPECTED_ERROR.send(interaction)
 
 class VoteModificationViewStandalone(View):
     """Standalone view for modifying individual votes"""
@@ -1497,7 +1494,7 @@ class VoteModificationViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -1523,7 +1520,7 @@ class VoteModificationViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -1535,9 +1532,10 @@ class VoteModificationViewStandalone(View):
         
         # Check if either is already at threshold
         if approve_count >= threshold and deny_count >= threshold:
-            await interaction.response.send_message(
-                "⚠️ Both approve and deny votes are already at or above threshold!",
-                ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "Nothing to Fill",
+                "Both approve and deny votes are already at or above threshold.",
             )
             return
         
@@ -1546,9 +1544,10 @@ class VoteModificationViewStandalone(View):
         deny_needed = max(0, threshold - deny_count)
         
         if approve_needed == 0 and deny_needed == 0:
-            await interaction.response.send_message(
-                "⚠️ Both vote types are already at threshold!",
-                ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "Nothing to Fill",
+                "Both vote types are already at threshold.",
             )
             return
         
@@ -1573,7 +1572,7 @@ class VoteModificationViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         approve_voters = app_data.get('approve_voters', [])
@@ -1615,7 +1614,7 @@ class VoteModificationViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         approve_voters = app_data.get('approve_voters', [])
@@ -1657,16 +1656,17 @@ class VoteModificationViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         approve_voters = app_data.get('approve_voters', [])
         deny_voters = app_data.get('deny_voters', [])
         
         if not approve_voters and not deny_voters:
-            await interaction.response.send_message(
-                "⚠️ No votes to remove!",
-                ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "No Votes to Remove",
+                "There are no votes to remove on this ticket.",
             )
             return
         
@@ -1744,7 +1744,7 @@ class AutofillSelectionViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -1782,7 +1782,7 @@ class AutofillSelectionViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         await interaction.response.defer(ephemeral=True)
@@ -1916,7 +1916,7 @@ class RemoveVotesViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -1952,7 +1952,7 @@ class RemoveVotesViewStandalone(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         approve_voters = app_data.get('approve_voters', [])
@@ -2062,7 +2062,7 @@ class AutofillSelectionView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         await interaction.response.defer(ephemeral=True)
@@ -2130,7 +2130,7 @@ class AutofillSelectionView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -2249,7 +2249,7 @@ class RemoveVotesView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         approve_voters = app_data.get('approve_voters', [])
@@ -2307,7 +2307,7 @@ class RemoveVotesView(View):
         app_data = apps.get(self.message_id)
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -2500,10 +2500,7 @@ class TicketSelectorView(View):
             pending_data = pending_apps.get(pending_key)
             
             if not pending_data:
-                await interaction.response.send_message(
-                    "❌ Pending application data not found!",
-                    ephemeral=True
-                )
+                await errors.NOT_FOUND.send(interaction, reason="Pending application data not found.")
                 return
             
             # Create info embed for pending app
@@ -2583,10 +2580,7 @@ class TicketSelectorView(View):
         app_data = apps.get(selected_message_id)
         
         if not app_data:
-            await interaction.response.send_message(
-                "❌ Ticket data not found!",
-                ephemeral=True
-            )
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         # Create info embed
@@ -2976,19 +2970,12 @@ class DebugTicketView(View):
         return False
 
     async def _reject_non_owner(self, interaction):
-        await interaction.response.send_message(
-            "❌ Debug tools are restricted to the bot owner.", ephemeral=True
-        )
+        await errors.NO_PERMISSION.send(interaction)
 
     async def _refresh_panel(self, interaction, note: str | None = None):
         embed, _ = build_debug_embed(self.message_id, self.guild)
         if embed is None:
-            if interaction.response.is_done():
-                await interaction.followup.send("❌ Ticket data not found!", ephemeral=True)
-            else:
-                await interaction.response.send_message(
-                    "❌ Ticket data not found!", ephemeral=True
-                )
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         if note:
             embed.description = (embed.description or "") + f"\n\nℹ️ {note}"
@@ -3006,7 +2993,7 @@ class DebugTicketView(View):
         apps = load_forwarded_apps()
         app_data = apps.get(self.message_id)
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
 
         threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
@@ -3035,7 +3022,7 @@ class DebugTicketView(View):
         apps = load_forwarded_apps()
         app_data = apps.get(self.message_id)
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
 
         raw = json.dumps(app_data, indent=2, ensure_ascii=False)
@@ -3051,7 +3038,7 @@ class DebugTicketView(View):
         apps = load_forwarded_apps()
         app_data = apps.get(self.message_id)
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
 
         await interaction.response.defer()
@@ -3086,7 +3073,7 @@ class DebugTicketView(View):
         apps = load_forwarded_apps()
         app_data = apps.get(self.message_id)
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
 
         await interaction.response.defer()
@@ -3117,7 +3104,7 @@ class DebugTicketView(View):
         apps = load_forwarded_apps()
         app_data = apps.get(self.message_id)
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
 
         await interaction.response.defer()
@@ -3148,7 +3135,7 @@ class DebugTicketView(View):
         apps = load_forwarded_apps()
         app_data = apps.get(self.message_id)
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
 
         try:
@@ -3158,10 +3145,7 @@ class DebugTicketView(View):
             target_message = None
 
         if target_message is None:
-            await interaction.response.send_message(
-                "❌ Could not fetch the forwarded application message to replay the accept flow.",
-                ephemeral=True,
-            )
+            await errors.NOT_FOUND.send(interaction, reason="Could not fetch the forwarded application message to replay the accept flow.")
             return
 
         # Proxy the interaction so the callback sees the forwarded message as ``interaction.message``.
@@ -3178,7 +3162,7 @@ class DebugTicketView(View):
         apps = load_forwarded_apps()
         app_data = apps.get(self.message_id)
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
 
         try:
@@ -3188,10 +3172,7 @@ class DebugTicketView(View):
             target_message = None
 
         if target_message is None:
-            await interaction.response.send_message(
-                "❌ Could not fetch the forwarded application message to replay the deny flow.",
-                ephemeral=True,
-            )
+            await errors.NOT_FOUND.send(interaction, reason="Could not fetch the forwarded application message to replay the deny flow.")
             return
 
         modal = DenyReasonModal(app_data, target_message)
@@ -3211,7 +3192,7 @@ class DebugTicketView(View):
         apps = load_forwarded_apps()
         app_data = apps.get(self.message_id)
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
 
         await interaction.response.defer()
@@ -3270,7 +3251,7 @@ class DebugTicketView(View):
         apps = load_forwarded_apps()
         app_data = apps.get(self.message_id)
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
 
         await interaction.response.defer()
@@ -3420,18 +3401,14 @@ class CapacityOverrideModal(discord.ui.Modal, title="Simulate Guild Capacity"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if not is_bot_owner(interaction.user):
-            await interaction.response.send_message(
-                "❌ Debug tools are restricted to the bot owner.", ephemeral=True
-            )
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         raw = (self.open_slots_input.value or "").strip()
         try:
             open_slots = int(raw)
         except ValueError:
-            await interaction.response.send_message(
-                f"❌ `{raw}` is not a valid integer.", ephemeral=True
-            )
+            await errors.INVALID_INPUT.send(interaction, reason=f"`{raw}` is not a valid integer.")
             return
 
         # Determine how many slots just "opened" versus the previous override
@@ -3452,7 +3429,7 @@ class CapacityOverrideModal(discord.ui.Modal, title="Simulate Guild Capacity"):
 
         embed, _ = build_debug_embed(self.message_id, self.guild)
         if embed is None:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
 
         note = f"Capacity override set to `{stored['open_slots']}` open slot(s)."
@@ -3503,13 +3480,7 @@ def setup(bot, has_required_role, config):
 
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Load tickets and pending apps
@@ -3519,10 +3490,7 @@ def setup(bot, has_required_role, config):
         total_count = len(tickets) + len(pending_apps)
         
         if total_count == 0:
-            await interaction.response.send_message(
-                "❌ No tickets or pending applications found!",
-                ephemeral=True
-            )
+            await errors.NOT_FOUND.send(interaction, reason="No tickets or pending applications found.")
             return
         
         # Create embed

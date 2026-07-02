@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 import json
 from utils.permissions import has_roles
+from utils import errors
 
 GUILD_DB = "databases/guild_stats_data.db"
 RECRUITED_DB = "databases/recruited_data.db"
@@ -153,10 +154,7 @@ class BadgeUpdateView(View):
     
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.interaction.user.id:
-            await interaction.response.send_message(
-                "You cannot use this button - only the command author can.",
-                ephemeral=True
-            )
+            await errors.NO_PERMISSION.send(interaction)
             return False
         return True
 
@@ -698,13 +696,7 @@ def setup(bot, has_required_role, config):
             return
         
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         guild_members = interaction.guild.members
@@ -732,7 +724,10 @@ def setup(bot, has_required_role, config):
         # Load UUID to username mapping from latest database
         db_files = get_latest_databases()
         if not db_files:
-            await interaction.followup.send("No database files found. Run /fetch_api first.")
+            await errors.NO_DATA_AVAILABLE.send(
+                interaction,
+                reason="No database files found. Run /fetch_api first.",
+            )
             return
         
         uuid_map = load_uuid_to_username_map(db_files[0])

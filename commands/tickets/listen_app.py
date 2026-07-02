@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import os
 from utils.paths import DATA_DIR
+from utils import errors
 
 NOTIFICATION_FILE = DATA_DIR / 'app_notifications.json'
 
@@ -44,10 +45,7 @@ def setup(bot):
 
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            await interaction.response.send_message(
-                "❌ You don't have permission to use this command!",
-                ephemeral=True
-            )
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         users = load_notification_users()

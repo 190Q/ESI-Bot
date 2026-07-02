@@ -2,6 +2,8 @@ import discord
 from discord.ui import View, Modal, TextInput
 from typing import Optional, Dict, Any, List
 
+from utils import errors
+
 from _vc_core import (
     TempVCSystem,
     send_ephemeral,
@@ -20,7 +22,11 @@ class UserBoundView(View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.requester_id:
-            await send_ephemeral(interaction, "This panel belongs to another user.")
+            await errors.send_custom_error(
+                interaction,
+                "Not Your Panel",
+                "This panel belongs to another user.",
+            )
             return False
         return True
 
@@ -113,18 +119,10 @@ class PermitSelectorView(UserBoundView):
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await interaction.response.edit_message(
-                content="This temporary VC is no longer available.",
-                embed=None,
-                view=None,
-            )
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
         if not self.system.can_manage(interaction.user, entry):
-            await interaction.response.edit_message(
-                content="You can only use Permit if you own the VC (or are Parliament/admin).",
-                embed=None,
-                view=None,
-            )
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         self.pending_user_ids, self.pending_role_ids, self.ignored_targets = self._collect_selected_ids(interaction.guild)
@@ -167,18 +165,10 @@ class PermitSelectorView(UserBoundView):
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await interaction.response.edit_message(
-                content="This temporary VC is no longer available.",
-                embed=None,
-                view=None,
-            )
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
         if not self.system.can_manage(interaction.user, entry):
-            await interaction.response.edit_message(
-                content="You can only use Permit if you own the VC (or are Parliament/admin).",
-                embed=None,
-                view=None,
-            )
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         previous_user_ids = set(int(uid) for uid in entry.get("permitted_users", []) if str(uid).isdigit())
@@ -342,18 +332,10 @@ class BanSelectorView(UserBoundView):
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await interaction.response.edit_message(
-                content="This temporary VC is no longer available.",
-                embed=None,
-                view=None,
-            )
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
         if not self.system.can_manage(interaction.user, entry):
-            await interaction.response.edit_message(
-                content="You can only use Ban if you own the VC (or are Parliament/admin).",
-                embed=None,
-                view=None,
-            )
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         self.pending_user_ids, self.pending_role_ids, self.ignored_targets = self._collect_selected_ids(interaction.guild)
@@ -395,18 +377,10 @@ class BanSelectorView(UserBoundView):
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await interaction.response.edit_message(
-                content="This temporary VC is no longer available.",
-                embed=None,
-                view=None,
-            )
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
         if not self.system.can_manage(interaction.user, entry):
-            await interaction.response.edit_message(
-                content="You can only use Ban if you own the VC (or are Parliament/admin).",
-                embed=None,
-                view=None,
-            )
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         previous_user_ids = set(
@@ -526,16 +500,20 @@ class RenameModal(Modal, title="Rename Temporary VC"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await send_ephemeral(interaction, "This modal is not for you.")
+            await errors.send_custom_error(
+                interaction,
+                "Not Your Panel",
+                "This modal is not for you.",
+            )
             return
 
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await send_ephemeral(interaction, "This temporary VC is no longer available.")
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
         if not self.system.can_manage(interaction.user, entry):
-            await send_ephemeral(interaction, "You can only rename your own VC (or be Parliament/admin).")
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         from _vc_core import clean_channel_name
@@ -569,23 +547,23 @@ class SetLimitModal(Modal, title="Set User Limit"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await send_ephemeral(interaction, "This modal is not for you.")
+            await errors.send_custom_error(interaction, "Not Your Panel", "This modal is not for you.")
             return
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await send_ephemeral(interaction, "This temporary VC is no longer available.")
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
         if not self.system.can_manage(interaction.user, entry):
-            await send_ephemeral(interaction, "You can only set limit on your own VC (or be Parliament/admin).")
+            await errors.NO_PERMISSION.send(interaction)
             return
         try:
             new_limit = int(self.user_limit.value.strip())
         except ValueError:
-            await send_ephemeral(interaction, "Please provide a valid number between 0 and 99.")
+            await errors.INVALID_INPUT.send(interaction, reason="Please provide a valid number between 0 and 99.")
             return
         if new_limit < 0 or new_limit > 99:
-            await send_ephemeral(interaction, "Limit must be between 0 and 99.")
+            await errors.INVALID_INPUT.send(interaction, reason="Limit must be between 0 and 99.")
             return
         entry["user_limit"] = new_limit
         self.system.add_log(entry, interaction.user.id, "limit_set", f"Set user limit to {new_limit}")
@@ -617,29 +595,29 @@ class SetBitrateModal(Modal, title="Set Channel Bitrate"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await send_ephemeral(interaction, "This modal is not for you.")
+            await errors.send_custom_error(interaction, "Not Your Panel", "This modal is not for you.")
             return
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await send_ephemeral(interaction, "This temporary VC is no longer available.")
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
         if not self.system.can_manage(interaction.user, entry):
-            await send_ephemeral(interaction, "You can only set bitrate on your own VC (or be Parliament/admin).")
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         try:
             raw_value = int(self.bitrate_input.value.strip())
         except ValueError:
-            await send_ephemeral(interaction, "Bitrate must be a number.")
+            await errors.INVALID_INPUT.send(interaction, reason="Bitrate must be a number.")
             return
 
         bitrate = raw_value * 1000 if raw_value < 1000 else raw_value
         max_bitrate = int(channel.guild.bitrate_limit)
         if bitrate < 8000 or bitrate > max_bitrate:
-            await send_ephemeral(
+            await errors.INVALID_INPUT.send(
                 interaction,
-                f"Bitrate must be between **8 kbps** and **{max_bitrate // 1000} kbps** for this guild.",
+                reason=f"Bitrate must be between **8 kbps** and **{max_bitrate // 1000} kbps** for this guild.",
             )
             return
 
@@ -682,26 +660,26 @@ class KickMemberView(UserBoundView):
 
     async def _kick_callback(self, interaction: discord.Interaction):
         if self.member_select.values[0] == "0":
-            await send_ephemeral(interaction, "No members available to kick.")
+            await errors.NO_DATA_AVAILABLE.send(interaction, reason="No members available to kick.")
             return
         target_id = int(self.member_select.values[0])
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await send_ephemeral(interaction, "This temporary VC is no longer available.")
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
         if not self.system.can_manage(interaction.user, entry):
-            await send_ephemeral(interaction, "You can only kick users from your own VC (or be Parliament/admin).")
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         target_member = interaction.guild.get_member(target_id)
         if not target_member or not target_member.voice or target_member.voice.channel.id != channel.id:
-            await send_ephemeral(interaction, "That user is no longer in this voice channel.")
+            await errors.NOT_FOUND.send(interaction, reason="That user is no longer in this voice channel.")
             return
         try:
             await target_member.move_to(None, reason=f"Kicked from temp VC by {interaction.user}")
         except Exception as exc:
-            await send_ephemeral(interaction, f"Failed to kick user: {exc}")
+            await errors.UNEXPECTED_ERROR.send(interaction)
             return
 
         self.system.add_log(entry, interaction.user.id, "kick", f"Kicked {target_member.id}")
@@ -741,20 +719,20 @@ class TransferOwnerView(UserBoundView):
 
     async def _transfer_callback(self, interaction: discord.Interaction):
         if self.member_select.values[0] == "0":
-            await send_ephemeral(interaction, "No members available for transfer.")
+            await errors.NO_DATA_AVAILABLE.send(interaction, reason="No members available for transfer.")
             return
         target_id = int(self.member_select.values[0])
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await send_ephemeral(interaction, "This temporary VC is no longer available.")
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
         if not self.system.can_manage(interaction.user, entry):
-            await send_ephemeral(interaction, "You can only transfer ownership of your own VC (or be Parliament/admin).")
+            await errors.NO_PERMISSION.send(interaction)
             return
         target_member = interaction.guild.get_member(target_id)
         if not target_member:
-            await send_ephemeral(interaction, "Target member not found.")
+            await errors.NOT_FOUND.send(interaction, reason="Target member not found.")
             return
 
         entry["owner_id"] = target_member.id
@@ -783,10 +761,10 @@ class RegionSelectView(UserBoundView):
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await send_ephemeral(interaction, "This temporary VC is no longer available.")
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
         if not self.system.can_manage(interaction.user, entry):
-            await send_ephemeral(interaction, "You can only change region on your own VC (or be Parliament/admin).")
+            await errors.NO_PERMISSION.send(interaction)
             return
         entry["region"] = chosen
         self.system.add_log(entry, interaction.user.id, "region", f"Region changed to {chosen}")
@@ -825,10 +803,10 @@ class TemplateSelectView(UserBoundView):
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await send_ephemeral(interaction, "This temporary VC is no longer available.")
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
         if not self.system.can_manage(interaction.user, entry):
-            await send_ephemeral(interaction, "You can only apply templates on your own VC (or be Parliament/admin).")
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         config = await self.system.get_guild_config(interaction.guild.id)
@@ -932,7 +910,7 @@ class PresetPermitSelectorView(UserBoundView):
 
     async def _permit_callback(self, interaction: discord.Interaction):
         if interaction.guild is None:
-            await interaction.response.edit_message(content="Guild context is unavailable.", embed=None, view=None)
+            await errors.send_custom_error(interaction, "Server Only", "This command can only be used in a server.")
             return
         self.pending_user_ids, self.pending_role_ids, self.ignored_targets = self._collect_selected_ids(interaction.guild)
         await interaction.response.defer()
@@ -957,7 +935,7 @@ class PresetPermitSelectorView(UserBoundView):
     @discord.ui.button(label="Save", style=discord.ButtonStyle.success, row=1)
     async def save_changes(self, interaction: discord.Interaction, _: discord.ui.Button):
         if interaction.guild is None:
-            await interaction.response.edit_message(content="Guild context is unavailable.", embed=None, view=None)
+            await errors.send_custom_error(interaction, "Server Only", "This command can only be used in a server.")
             return
 
         draft = self.builder_view.draft_settings
@@ -1104,7 +1082,7 @@ class PresetBanSelectorView(UserBoundView):
 
     async def _ban_callback(self, interaction: discord.Interaction):
         if interaction.guild is None:
-            await interaction.response.edit_message(content="Guild context is unavailable.", embed=None, view=None)
+            await errors.send_custom_error(interaction, "Server Only", "This command can only be used in a server.")
             return
         self.pending_user_ids, self.pending_role_ids, self.ignored_targets = self._collect_selected_ids(interaction.guild)
         await interaction.response.defer()
@@ -1133,7 +1111,7 @@ class PresetBanSelectorView(UserBoundView):
     @discord.ui.button(label="Save", style=discord.ButtonStyle.success, row=1)
     async def save_changes(self, interaction: discord.Interaction, _: discord.ui.Button):
         if interaction.guild is None:
-            await interaction.response.edit_message(content="Guild context is unavailable.", embed=None, view=None)
+            await errors.send_custom_error(interaction, "Server Only", "This command can only be used in a server.")
             return
 
         draft = self.builder_view.draft_settings
@@ -1242,15 +1220,15 @@ class PresetLimitModal(Modal, title="Set Preset User Limit"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.builder_view.requester_id:
-            await send_ephemeral(interaction, "This preset panel belongs to another user.")
+            await errors.send_custom_error(interaction, "Not Your Panel", "This preset panel belongs to another user.")
             return
         try:
             new_limit = int(self.user_limit.value.strip())
         except ValueError:
-            await send_ephemeral(interaction, "Please provide a valid number between 0 and 99.")
+            await errors.INVALID_INPUT.send(interaction, reason="Please provide a valid number between 0 and 99.")
             return
         if new_limit < 0 or new_limit > 99:
-            await send_ephemeral(interaction, "Limit must be between 0 and 99.")
+            await errors.INVALID_INPUT.send(interaction, reason="Limit must be between 0 and 99.")
             return
         self.builder_view.draft_settings["user_limit"] = clamp(new_limit, 0, 99)
         self.builder_view._normalize_draft_settings()
@@ -1281,23 +1259,23 @@ class PresetBitrateModal(Modal, title="Set Preset Bitrate"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.builder_view.requester_id:
-            await send_ephemeral(interaction, "This preset panel belongs to another user.")
+            await errors.send_custom_error(interaction, "Not Your Panel", "This preset panel belongs to another user.")
             return
         if interaction.guild is None:
-            await send_ephemeral(interaction, "Guild context is unavailable.")
+            await errors.send_custom_error(interaction, "Server Only", "This command can only be used in a server.")
             return
         try:
             raw_value = int(self.bitrate_input.value.strip())
         except ValueError:
-            await send_ephemeral(interaction, "Bitrate must be a number.")
+            await errors.INVALID_INPUT.send(interaction, reason="Bitrate must be a number.")
             return
 
         bitrate = raw_value * 1000 if raw_value < 1000 else raw_value
         max_bitrate = int(interaction.guild.bitrate_limit)
         if bitrate < 8000 or bitrate > max_bitrate:
-            await send_ephemeral(
+            await errors.INVALID_INPUT.send(
                 interaction,
-                f"Bitrate must be between **8 kbps** and **{max_bitrate // 1000} kbps** for this guild.",
+                reason=f"Bitrate must be between **8 kbps** and **{max_bitrate // 1000} kbps** for this guild.",
             )
             return
 
@@ -1370,7 +1348,7 @@ class PresetTemplateSelectView(UserBoundView):
 
     async def _template_callback(self, interaction: discord.Interaction):
         if interaction.guild is None:
-            await interaction.response.edit_message(content="Guild context is unavailable.", embed=None, view=None)
+            await errors.send_custom_error(interaction, "Server Only", "This command can only be used in a server.")
             return
         template_name = self.select.values[0]
         config = await self.builder_view.system.get_guild_config(interaction.guild.id)
@@ -1407,15 +1385,15 @@ class PresetDraftSaveModal(Modal, title="Save Draft Preset"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.builder_view.requester_id:
-            await send_ephemeral(interaction, "This preset panel belongs to another user.")
+            await errors.send_custom_error(interaction, "Not Your Panel", "This preset panel belongs to another user.")
             return
         if interaction.guild is None:
-            await send_ephemeral(interaction, "Guild context is unavailable.")
+            await errors.send_custom_error(interaction, "Server Only", "This command can only be used in a server.")
             return
 
         preset_name = self.builder_view.system.normalize_user_preset_name(self.preset_name.value)
         if not preset_name:
-            await send_ephemeral(interaction, "Preset name cannot be empty.")
+            await errors.INVALID_INPUT.send(interaction, reason="Preset name cannot be empty.")
             return
 
         self.builder_view._normalize_draft_settings()
@@ -1427,7 +1405,7 @@ class PresetDraftSaveModal(Modal, title="Save Draft Preset"):
                 self.builder_view.draft_settings,
             )
         except ValueError as exc:
-            await send_ephemeral(interaction, str(exc))
+            await errors.INVALID_INPUT.send(interaction, reason=str(exc))
             return
 
         saved_name = str(result.get("name", preset_name))
@@ -1461,7 +1439,7 @@ class PresetRenameModal(Modal, title="Set Preset Channel Name"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.builder_view.requester_id:
-            await send_ephemeral(interaction, "This preset panel belongs to another user.")
+            await errors.send_custom_error(interaction, "Not Your Panel", "This preset panel belongs to another user.")
             return
         from _vc_core import clean_channel_name
         raw = self.channel_name.value.strip()
@@ -1541,7 +1519,7 @@ class PresetBuilderView(UserBoundView):
     async def send_updated_panel(self, interaction: discord.Interaction, status: str = ""):
         guild = interaction.guild
         if guild is None:
-            await send_ephemeral(interaction, "Guild context is unavailable.")
+            await errors.send_custom_error(interaction, "Server Only", "This command can only be used in a server.")
             return
         embed = self.build_panel_embed(guild, status=status)
         await send_ephemeral(interaction, embed=embed, view=self)
@@ -1629,7 +1607,7 @@ class PresetBuilderView(UserBoundView):
 
     async def _refresh_with_status(self, interaction: discord.Interaction, status: str = ""):
         if interaction.guild is None:
-            await send_ephemeral(interaction, "Guild context is unavailable.")
+            await errors.send_custom_error(interaction, "Server Only", "This command can only be used in a server.")
             return
         embed = self.build_panel_embed(interaction.guild, status=status)
         if interaction.response.is_done():
@@ -1665,7 +1643,7 @@ class PresetBuilderView(UserBoundView):
 
     async def permit_targets(self, interaction: discord.Interaction):
         if interaction.guild is None:
-            await send_ephemeral(interaction, "Guild context is unavailable.")
+            await errors.send_custom_error(interaction, "Server Only", "This command can only be used in a server.")
             return
 
         owner_id = int(self.requester_id or 0)
@@ -1724,7 +1702,7 @@ class PresetBuilderView(UserBoundView):
 
     async def ban_targets(self, interaction: discord.Interaction):
         if interaction.guild is None:
-            await send_ephemeral(interaction, "Guild context is unavailable.")
+            await errors.send_custom_error(interaction, "Server Only", "This command can only be used in a server.")
             return
 
         owner_id = int(self.requester_id or 0)
@@ -1824,12 +1802,12 @@ class PresetBuilderView(UserBoundView):
 
     async def apply_template(self, interaction: discord.Interaction):
         if interaction.guild is None:
-            await send_ephemeral(interaction, "Guild context is unavailable.")
+            await errors.send_custom_error(interaction, "Server Only", "This command can only be used in a server.")
             return
         config = await self.system.get_guild_config(interaction.guild.id)
         templates = config.get("templates", {})
         if not templates:
-            await send_ephemeral(interaction, "No templates are configured for this server.")
+            await errors.NO_DATA_AVAILABLE.send(interaction, reason="No templates are configured for this server.")
             return
         await send_ephemeral(
             interaction,
@@ -1875,20 +1853,20 @@ class PresetSaveModal(Modal, title="Save Temp VC Preset"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
-            await send_ephemeral(interaction, "This modal is not for you.")
+            await errors.send_custom_error(interaction, "Not Your Panel", "This modal is not for you.")
             return
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await send_ephemeral(interaction, "This temporary VC is no longer available.")
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
         if not self.system.can_manage(interaction.user, entry):
-            await send_ephemeral(interaction, "You can only save presets from your own VC (or be Parliament/admin).")
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         preset_name = self.system.normalize_user_preset_name(self.preset_name.value)
         if not preset_name:
-            await send_ephemeral(interaction, "Preset name cannot be empty.")
+            await errors.INVALID_INPUT.send(interaction, reason="Preset name cannot be empty.")
             return
 
         preset_payload = self.system.build_user_preset_from_entry(entry)
@@ -1900,7 +1878,7 @@ class PresetSaveModal(Modal, title="Save Temp VC Preset"):
                 preset_payload,
             )
         except ValueError as exc:
-            await send_ephemeral(interaction, str(exc))
+            await errors.INVALID_INPUT.send(interaction, reason=str(exc))
             return
 
         saved_name = str(result.get("name", preset_name))
@@ -1992,18 +1970,10 @@ class PresetLoadSelectView(UserBoundView):
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await interaction.response.edit_message(
-                content="This temporary VC is no longer available.",
-                embed=None,
-                view=None,
-            )
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
             return
         if not self.system.can_manage(interaction.user, entry):
-            await interaction.response.edit_message(
-                content="You can only load presets into your own VC (or be Parliament/admin).",
-                embed=None,
-                view=None,
-            )
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         matched_name, preset_settings = await self.system.get_user_preset(
@@ -2012,11 +1982,7 @@ class PresetLoadSelectView(UserBoundView):
             selected_name,
         )
         if not matched_name or not preset_settings:
-            await interaction.response.edit_message(
-                content="That preset no longer exists. Open Load Preset again.",
-                embed=None,
-                view=None,
-            )
+            await errors.NOT_FOUND.send(interaction, reason="That preset no longer exists. Open Load Preset again.")
             return
 
         before_snapshot = self.system.build_user_preset_from_entry(entry)
@@ -2083,14 +2049,10 @@ class ChannelPickerView(UserBoundView):
         channel = interaction.guild.get_channel(channel_id)
         entry = await self.system.get_entry(channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await send_ephemeral(interaction, "Selected VC is no longer active.")
+            await errors.NOT_FOUND.send(interaction, reason="Selected VC is no longer active.")
             return
         if not self.system.can_manage(interaction.user, entry):
-            await interaction.response.edit_message(
-                content="You can only manage your own temporary VC.",
-                embed=None,
-                view=None,
-            )
+            await errors.NO_PERMISSION.send(interaction)
             return
         panel = VCPanelView(
             self.system,
@@ -2130,16 +2092,16 @@ class KnockChannelPickerView(UserBoundView):
         channel = interaction.guild.get_channel(channel_id)
         entry = await self.system.get_entry(channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await interaction.response.edit_message(content="Selected VC is no longer active.", embed=None, view=None)
+            await errors.NOT_FOUND.send(interaction, reason="Selected VC is no longer active.")
             return
         if self.system.can_manage(interaction.user, entry):
-            await interaction.response.edit_message(content="Use `/vc_manage` for channels you can manage.", embed=None, view=None)
+            await errors.send_custom_error(interaction, "Use /vc_manage", "Use `/vc_manage` for channels you can manage.")
             return
         if interaction.user.voice and interaction.user.voice.channel and interaction.user.voice.channel.id == channel.id:
-            await interaction.response.edit_message(content="You're already in this VC.", embed=None, view=None)
+            await errors.send_custom_error(interaction, "Already Joined", "You're already in this VC.")
             return
         if not entry.get("locked") and not entry.get("hidden"):
-            await interaction.response.edit_message(content="This VC is open right now; you can join directly.", embed=None, view=None)
+            await errors.send_custom_error(interaction, "VC Is Open", "This VC is open right now; you can join directly.")
             return
         result = await self.system.send_knock_notification(interaction.user, channel, entry)
         await interaction.response.edit_message(content=f"🚪 {result}", embed=None, view=None)
@@ -2209,14 +2171,14 @@ class VCPanelView(UserBoundView):
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await send_ephemeral(interaction, "This temporary VC is no longer active.")
+            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer active.")
             return None, None
         return channel, entry
 
     async def _require_manage(self, interaction: discord.Interaction, entry: Dict[str, Any]) -> bool:
         if self.system.can_manage(interaction.user, entry):
             return True
-        await send_ephemeral(interaction, "You can only manage your own temporary VC (or be Parliament/admin).")
+        await errors.NO_PERMISSION.send(interaction)
         return False
 
     async def _refresh_with_status(self, interaction: discord.Interaction, status: str = ""):
@@ -2420,7 +2382,7 @@ class VCPanelView(UserBoundView):
         if not await self._require_manage(interaction, entry):
             return
         if not channel.members:
-            await send_ephemeral(interaction, "No members are currently in this voice channel.")
+            await errors.NO_DATA_AVAILABLE.send(interaction, reason="No members are currently in this voice channel.")
             return
         view = KickMemberView(self.system, channel.id, self.requester_id)
         await view.setup_options(interaction.guild)
@@ -2441,7 +2403,7 @@ class VCPanelView(UserBoundView):
         if not await self._require_manage(interaction, entry):
             return
         if not self.system.is_admin_member(interaction.user):
-            await send_ephemeral(interaction, "Only Parliament/admin can claim ownership.")
+            await errors.NO_PERMISSION.send(interaction)
             return
         entry["owner_id"] = interaction.user.id
         entry.pop("owner_absent_since", None)
@@ -2456,7 +2418,7 @@ class VCPanelView(UserBoundView):
         if not await self._require_manage(interaction, entry):
             return
         if not channel.members:
-            await send_ephemeral(interaction, "No members are currently in this voice channel.")
+            await errors.NO_DATA_AVAILABLE.send(interaction, reason="No members are currently in this voice channel.")
             return
         view = TransferOwnerView(self.system, channel.id, self.requester_id)
         await view.setup_options(interaction.guild)
@@ -2510,9 +2472,9 @@ class VCPanelView(UserBoundView):
         presets = bucket.get("presets", {})
         default_preset = bucket.get("default_preset")
         if not presets:
-            await send_ephemeral(
+            await errors.NO_DATA_AVAILABLE.send(
                 interaction,
-                "You have no saved presets yet. Use **Save Preset** first, then load it from another temp VC.",
+                reason="You have no saved presets yet. Use **Save Preset** first, then load it from another temp VC.",
             )
             return
 
@@ -2538,10 +2500,10 @@ class VCPanelView(UserBoundView):
         if not channel:
             return
         if interaction.user.voice and interaction.user.voice.channel and interaction.user.voice.channel.id == channel.id:
-            await send_ephemeral(interaction, "You're already in this VC.")
+            await errors.send_custom_error(interaction, "Already Joined", "You're already in this VC.")
             return
         if not entry.get("locked") and not entry.get("hidden"):
-            await send_ephemeral(interaction, "This VC is open right now; you can join directly.")
+            await errors.send_custom_error(interaction, "VC Is Open", "This VC is open right now; you can join directly.")
             return
         result = await self.system.send_knock_notification(interaction.user, channel, entry)
         await send_ephemeral(interaction, f"{result}")
@@ -2661,7 +2623,7 @@ class VCPanelView(UserBoundView):
                 reason=f"Temporary VC invite created by {interaction.user}",
             )
         except Exception as exc:
-            await send_ephemeral(interaction, f"Failed to create invite: {exc}")
+            await errors.UNEXPECTED_ERROR.send(interaction)
             return
         self.system.add_log(entry, interaction.user.id, "invite", "Generated VC invite")
         await self.system.upsert_entry(channel.id, entry)
@@ -2692,7 +2654,7 @@ class VCPanelView(UserBoundView):
         try:
             await channel.delete(reason=f"Temporary VC deleted by {interaction.user}")
         except Exception as exc:
-            await send_ephemeral(interaction, f"Failed to delete VC: {exc}")
+            await errors.UNEXPECTED_ERROR.send(interaction)
             return
 
         await self.system.remove_entry(channel.id)

@@ -13,6 +13,7 @@ from utils.esi_points import (
     _player_points_table,
     is_dirty_reason,
 )
+from utils import errors
 
 # Paths - mirror what api_tracker.py uses
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -366,14 +367,7 @@ def setup(bot, has_required_role, config):
             conn.close()
 
             if not row:
-                await interaction.followup.send(
-                    embed=discord.Embed(
-                        title="Player Not Found",
-                        description=f"No points records found for **{username}**.",
-                        color=0xFF4444,
-                    ),
-                    ephemeral=True,
-                )
+                await errors.NO_RECORDS_FOUND.send(interaction, username=username)
                 return
 
             uuid, resolved_name = row
@@ -476,13 +470,9 @@ def setup(bot, has_required_role, config):
         players = _get_points_for_cycles(cycle_ids)
 
         if not players:
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="No Data",
-                    description=f"No points records found for {cycle_title}.",
-                    color=0xFF4444,
-                ),
-                ephemeral=True,
+            await errors.NO_DATA_AVAILABLE.send(
+                interaction,
+                reason=f"No points records found for {cycle_title}.",
             )
             return
 

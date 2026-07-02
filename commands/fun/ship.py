@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime
 import random
 from utils.permissions import has_roles
+from utils import errors
 
 REQUIRED_ROLES = [
     int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else 0
@@ -254,12 +255,7 @@ def setup(bot, has_required_role, config):
         # Check permissions if required
         if interaction.guild:
             if not has_roles(interaction.user, SHIP_REQUIRED_ROLES) and SHIP_REQUIRED_ROLES:
-                missing_roles_embed = discord.Embed(
-                    title="Permission Denied",
-                    description="You don't have permission to use this command!",
-                    color=0xFF0000
-                )
-                await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+                await errors.NO_PERMISSION.send(interaction)
                 return
         
         # Defer response since this might take a moment
@@ -278,7 +274,7 @@ def setup(bot, has_required_role, config):
             img2_bytes = await download_image(other_user.avatar.url if other_user.avatar else other_user.display_avatar.url)
             
             if not img1_bytes or not img2_bytes:
-                await interaction.followup.send("Failed to download profile pictures!", ephemeral=True)
+                await errors.IMAGE_GENERATION_FAILED.send(interaction, reason="Failed to download profile pictures.")
                 return
             
             # Create combined image with heart
@@ -296,7 +292,7 @@ def setup(bot, has_required_role, config):
             
         except Exception as e:
             print(f"Error in ship command: {e}")
-            await interaction.followup.send("An error occurred while creating the ship!", ephemeral=True)
+            await errors.IMAGE_GENERATION_FAILED.send(interaction, reason="An error occurred while creating the ship.")
     
     @bot.tree.command(
         name="ship_force",
@@ -319,12 +315,7 @@ def setup(bot, has_required_role, config):
 
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Defer response since this might take a moment
@@ -346,7 +337,7 @@ def setup(bot, has_required_role, config):
             
         except Exception as e:
             print(f"Error in forceship command: {e}")
-            await interaction.followup.send("An error occurred while creating the ship!", ephemeral=True)
+            await errors.UNEXPECTED_ERROR.send(interaction)
 
     @bot.tree.command(
         name="ship_remove",
@@ -367,12 +358,7 @@ def setup(bot, has_required_role, config):
 
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Defer response (ephemeral)
@@ -401,7 +387,7 @@ def setup(bot, has_required_role, config):
             
         except Exception as e:
             print(f"Error in removeship command: {e}")
-            await interaction.followup.send("An error occurred while removing the ship!", ephemeral=True)
+            await errors.UNEXPECTED_ERROR.send(interaction)
 
     @bot.tree.command(
         name="ship_list",
@@ -416,12 +402,7 @@ def setup(bot, has_required_role, config):
 
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Defer response (ephemeral)
@@ -471,6 +452,6 @@ def setup(bot, has_required_role, config):
             
         except Exception as e:
             print(f"Error in listships command: {e}")
-            await interaction.followup.send("An error occurred while listing ships!", ephemeral=True)
+            await errors.UNEXPECTED_ERROR.send(interaction)
 
     print("[OK] Loaded ship command")

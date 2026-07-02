@@ -13,6 +13,7 @@ import tempfile
 import statistics
 from utils.permissions import has_roles
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
+from utils import errors
 
 OWNER_ID = int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else 0
 REQUIRED_ROLES = [
@@ -259,16 +260,14 @@ def setup(bot, has_required_role, config):
         # Check permissions
         if interaction.guild:
             if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-                await interaction.response.send_message(
-                    "❌ You don't have permission to use this command!",
-                    ephemeral=True
-                )
+                await errors.NO_PERMISSION.send(interaction)
                 return
         
-        await interaction.response.defer()
 
         if delta < 1 or delta > 60:
-            await interaction.followup.send("❌ Please select a valid number of days (1-60).", ephemeral=True)
+            await errors.INVALID_INPUT.send(
+                interaction, reason="Please select a valid number of days (1-60)."
+            )
             return
         
         show_all = username.lower() == "%all%"
@@ -277,17 +276,19 @@ def setup(bot, has_required_role, config):
             databases, error = get_api_databases_in_timeframe(delta)
             
             if not databases:
-                error_embed = discord.Embed(
-                    title="⚠️ Insufficient Data",
-                    description=(
+                await errors.send_custom_error(
+                    interaction,
+                    "Insufficient Data",
+                    (
                         f"Not enough historical data available for a {delta}-day comparison.\n\n"
-                        f"**Why?** {error}\n\n"
-                        f"💡 **Tip:** Guild raid data is saved every 30 minutes by the API tracker. "
-                        f"Wait for more data to be collected, then try again!"
+                        f"**Why?** {error}"
                     ),
-                    color=0xFFA500
+                    steps=[
+                        "Guild raid data is saved every 30 minutes by the API tracker. "
+                        "Wait for more data to be collected, then try again!"
+                    ],
+                    include_support=False,
                 )
-                await interaction.followup.send(embed=error_embed)
                 return
             
             oldest_db, oldest_time = databases[0]
@@ -301,13 +302,16 @@ def setup(bot, has_required_role, config):
                     cursor_latest.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='guild_raid_stats'")
                     if not cursor_latest.fetchone():
                         conn_latest.close()
-                        await interaction.followup.send("❌ No guild raid data found in latest database.")
+                        await errors.NO_DATA_AVAILABLE.send(
+                            interaction,
+                            reason="No guild raid data found in the latest database.",
+                        )
                         return
                     cursor_latest.execute("SELECT username FROM guild_raid_stats WHERE username IS NOT NULL")
                     all_players = [row[0] for row in cursor_latest.fetchall()]
                     conn_latest.close()
                 except Exception:
-                    await interaction.followup.send("❌ Failed to read guild raid data.")
+                    await errors.DATABASE_ERROR.send(interaction)
                     return
                 
                 player_deltas = []
@@ -328,8 +332,13 @@ def setup(bot, has_required_role, config):
                 player_deltas.sort(key=lambda x: x['delta'], reverse=True)
                 
                 if not player_deltas:
-                    await interaction.followup.send("❌ No guild raid data found for any player in the timeframe.")
+                    await errors.NO_DATA_AVAILABLE.send(
+                        interaction,
+                        reason="No guild raid data found for any player in the timeframe.",
+                    )
                     return
+
+                await interaction.response.defer()
                 
                 actual_days = (latest_time - oldest_time).total_seconds() / 86400
                 
@@ -418,11 +427,13 @@ def setup(bot, has_required_role, config):
             # Single player logic
             # Validate username exists in the guild (latest database)
             if get_player_graidcount(latest_db, username) is None:
-                await interaction.followup.send(
-                    f"❌ Player **{username}** was not found in the guild.",
-                    ephemeral=True
+                await errors.PLAYER_NOT_IN_GUILD.send(
+                    interaction,
+                    username=username,
                 )
                 return
+
+            await interaction.response.defer()
 
             # Calculate daily deltas and fill missing days with 0
             daily_deltas = get_daily_graidcount_deltas(databases, username)
@@ -474,12 +485,7 @@ def setup(bot, has_required_role, config):
             await interaction.followup.send(embed=embed, file=graph_file)
         
         except Exception as e:
-            error_embed = discord.Embed(
-                title="❌ Error",
-                description=f"An error occurred: {str(e)}",
-                color=0xFF0000
-            )
-            await interaction.followup.send(embed=error_embed)
+            await errors.UNEXPECTED_ERROR.send(interaction)
             print(f"Error in graidcount command: {e}")
             import traceback
             traceback.print_exc()

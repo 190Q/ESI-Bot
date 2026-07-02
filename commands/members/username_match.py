@@ -6,6 +6,7 @@ import json
 from typing import Optional, List, Tuple
 import re
 from utils.permissions import has_roles
+from utils import errors
 
 REQUIRED_ROLES = [
     int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else 0,
@@ -110,8 +111,10 @@ class UsernameMatchesView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Only allow the original invoker to use the paginator controls."""
         if self.author_id is not None and interaction.user.id != self.author_id:
-            await interaction.response.send_message(
-                "You cannot control this paginator.", ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "Not Allowed",
+                "You cannot control this paginator.",
             )
             return False
         return True
@@ -142,15 +145,7 @@ def setup(bot, has_required_role, config):
         # Permission check (reuse same gate as username_match)
         if isinstance(interaction.user, discord.Member):
             if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-                missing_roles_embed = discord.Embed(
-                    title="Permission Denied",
-                    description="You don't have permission to use this command!",
-                    color=0xFF0000,
-                    timestamp=datetime.utcnow(),
-                )
-                await interaction.response.send_message(
-                    embed=missing_roles_embed, ephemeral=True
-                )
+                await errors.NO_PERMISSION.send(interaction)
                 return
 
         db = _load_username_match_db()

@@ -18,6 +18,7 @@ from suscard import calculate_suspiciousness, SusCardImageGenerator, WynncraftAP
 from blacklist import is_blacklisted
 from guild_queue import get_guild_capacity, add_to_queue, get_queue_position, remove_from_queue, extract_username_from_embeds, VETERAN_ROLE_ID
 from utils.permissions import has_roles
+from utils import errors
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 NOTIFICATION_FILE = _ROOT / 'data' / 'app_notifications.json'
@@ -821,7 +822,7 @@ class ApplicationVoteView(View):
         app_data = apps.get(str(self.app_data['message_id']))
 
         if not app_data:
-            await interaction.response.send_message("❌ Application data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Application data not found.")
             return
 
         _record_vote(app_data, interaction.user.id, vote_type)
@@ -914,7 +915,7 @@ class ApplicationVoteView(View):
         app_data = apps.get(str(self.app_data['message_id']))
         
         if not app_data:
-            await interaction.followup.send("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calc_threshold(interaction.guild))
@@ -1155,7 +1156,7 @@ class ApplicationMixedView(View):
         app_data = apps.get(str(self.app_data['message_id']))
         
         if not app_data:
-            await interaction.response.send_message("❌ Ticket data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket data not found.")
             return
         
         threshold = app_data.get('threshold', calc_threshold(interaction.guild))
@@ -1183,7 +1184,7 @@ class ApplicationMixedView(View):
         app_data = apps.get(str(self.app_data['message_id']))
 
         if not app_data:
-            await interaction.response.send_message("❌ Application data not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Application data not found.")
             return
 
         _record_vote(app_data, interaction.user.id, vote_type)
@@ -1272,7 +1273,11 @@ class ApplicationMixedView(View):
     async def accept_callback(self, interaction: discord.Interaction):
         user = interaction.guild.get_member(self.app_data['user_id'])
         if not user:
-            await interaction.response.send_message("❌ User not found in this server!", ephemeral=True)
+            await errors.send_custom_error(
+                interaction,
+                "User Not Found",
+                "That user is no longer in this server.",
+            )
             return
 
         username, detected_pronoun = _extract_username_and_pronoun(interaction.message)
@@ -1315,7 +1320,11 @@ class ApplicationActionView(View):
     async def accept_callback(self, interaction: discord.Interaction):
         user = interaction.guild.get_member(self.app_data['user_id'])
         if not user:
-            await interaction.response.send_message("❌ User not found in this server!", ephemeral=True)
+            await errors.send_custom_error(
+                interaction,
+                "User Not Found",
+                "That user is no longer in this server.",
+            )
             return
 
         username, detected_pronoun = _extract_username_and_pronoun(interaction.message)
@@ -2433,14 +2442,8 @@ class ApplicationFormModal(Modal):
                                         self.all_questions
                                     )
                                     
-                                    error_embed = discord.Embed(
-                                        title="❌ Invalid Username",
-                                        description=f"The username `{username}` was not found on Wynncraft.\n\nPlease correct your username and try again. If you think this is a mistake, please contact support using `/contact_support`.",
-                                        color=0xFF0000,
-                                        timestamp=datetime.utcnow()
-                                    )
+                                    await errors.PLAYER_NOT_FOUND.send(interaction, username=username)
                                     
-                                    await interaction.followup.send(embed=error_embed, ephemeral=True)
                                     
                                     # THEN show navigation view with error message
                                     nav_view = ApplicationNavigationView(
@@ -2497,14 +2500,13 @@ class ApplicationFormModal(Modal):
                                         self.all_questions
                                     )
                                     
-                                    error_embed = discord.Embed(
-                                        title="❌ Invalid Username",
-                                        description=f"Could not determine the correct player for username `{username}`.\n\nPlease correct your username and try again. If you think this is a mistake, please contact support using `/contact_support`.",
-                                        color=0xFF0000,
-                                        timestamp=datetime.utcnow()
+                                    await errors.send_custom_error(
+                                        interaction,
+                                        "Invalid Username",
+                                        f"Could not determine the correct player for username `{username}`.",
+                                        steps=["Please correct your username and try again."],
                                     )
                                     
-                                    await interaction.followup.send(embed=error_embed, ephemeral=True)
                                     
                                     nav_view = ApplicationNavigationView(
                                         self.application_name,
@@ -2538,14 +2540,8 @@ class ApplicationFormModal(Modal):
                                 )
                                 
                                 # Username invalid - send error message FIRST
-                                error_embed = discord.Embed(
-                                    title="❌ Invalid Username",
-                                    description=f"The username `{username}` was not found on Wynncraft.\n\nPlease correct your username and try again. If you think this is a mistake, please contact support using `/contact_support`.",
-                                    color=0xFF0000,
-                                    timestamp=datetime.utcnow()
-                                )
+                                await errors.PLAYER_NOT_FOUND.send(interaction, username=username)
                                 
-                                await interaction.followup.send(embed=error_embed, ephemeral=True)
                                 
                                 # THEN show navigation view with error message
                                 nav_view = ApplicationNavigationView(
@@ -2802,9 +2798,10 @@ class ApplicationControlView(View):
         # Check if the user is the ticket opener (unless they're the owner)
         print(f"Opener ID: {self.opener_id}, User ID: {interaction.user.id}, Is Owner: {is_owner}")
         if not is_owner and self.opener_id and interaction.user.id != self.opener_id:
-            await interaction.response.send_message(
-                "❌ Only the ticket opener can fill out the application!",
-                ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "Permission Denied",
+                "Only the ticket opener can fill out the application.",
             )
             return
 
@@ -2820,9 +2817,10 @@ class ApplicationControlView(View):
                 break
         
         if submitted:
-            await interaction.response.send_message(
-                "❌ An application has already been submitted in this channel!",
-                ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "Already Submitted",
+                "An application has already been submitted in this channel.",
             )
             return
         
@@ -2831,10 +2829,7 @@ class ApplicationControlView(View):
         panel_id, panel_data = get_panel_data_from_channel(interaction.channel)
         
         if not panel_data:
-            await interaction.response.send_message(
-                "❌ Could not find panel data for this channel!",
-                ephemeral=True
-            )
+            await errors.NOT_FOUND.send(interaction, reason="Could not find panel data for this channel.")
             return
         
         # Determine application type from channel
@@ -2865,9 +2860,9 @@ class ApplicationControlView(View):
         questions = panel_data.get('questions', {}).get(application_name, [])
         
         if not questions:
-            await interaction.response.send_message(
-                "❌ No questions have been configured for this application type!",
-                ephemeral=True
+            await errors.NO_DATA_AVAILABLE.send(
+                interaction,
+                reason="No questions have been configured for this application type.",
             )
             return
         
@@ -2890,10 +2885,7 @@ class ApplicationControlView(View):
         panel_id, panel_data = get_panel_data_from_channel(interaction.channel)
         
         if not panel_data:
-            await interaction.response.send_message(
-                "❌ Could not find panel data for this channel!",
-                ephemeral=True
-            )
+            await errors.NOT_FOUND.send(interaction, reason="Could not find panel data for this channel.")
             return
         
         # Determine application type from channel
@@ -2910,10 +2902,7 @@ class ApplicationControlView(View):
             
         # Check permissions to close this application
         if not check_close_permissions(interaction.user, panel_data, application_name):
-            await interaction.response.send_message(
-                "❌ You do not have permission to close this application!",
-                ephemeral=True
-            )
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         settings = panel_data.get('settings', {}).get(application_name, {})
@@ -2938,10 +2927,7 @@ class ApplicationControlView(View):
         panel_id, panel_data = get_panel_data_from_channel(interaction.channel)
         
         if not panel_data:
-            await interaction.response.send_message(
-                "❌ Could not find panel data for this channel!",
-                ephemeral=True
-            )
+            await errors.NOT_FOUND.send(interaction, reason="Could not find panel data for this channel.")
             return
         
         # Determine application type from channel
@@ -2956,10 +2942,7 @@ class ApplicationControlView(View):
         
         # Check permissions to close this application
         if not check_close_permissions(interaction.user, panel_data, application_name):
-            await interaction.response.send_message(
-                "❌ You do not have permission to close this application!",
-                ephemeral=True
-            )
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Show modal for reason
@@ -2973,7 +2956,7 @@ async def create_application_channel(interaction: discord.Interaction, applicati
         # Get the category
         category = interaction.guild.get_channel(panel_data['ticket_category_id'])
         if not category:
-            await interaction.response.send_message("❌ Ticket category not found!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="Ticket category not found.")
             return
         
         # Get settings for this application
@@ -3097,29 +3080,13 @@ async def create_application_channel(interaction: discord.Interaction, applicati
                         print(f"Error sending log message: {e}")
         
     except discord.Forbidden:
-        # Check if already responded
-        if interaction.response.is_done():
-            await interaction.followup.send(
-                "❌ I don't have permission to create channels in that category!",
-                ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(
-                "❌ I don't have permission to create channels in that category!",
-                ephemeral=True
-            )
+        await errors.send_custom_error(
+            interaction,
+            "Missing Permissions",
+            "I don't have permission to create channels in that category.",
+        )
     except Exception as e:
-        # Check if already responded
-        if interaction.response.is_done():
-            await interaction.followup.send(
-                f"❌ An error occurred while creating the application: {str(e)}",
-                ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(
-                f"❌ An error occurred while creating the application: {str(e)}",
-                ephemeral=True
-            )
+        await errors.UNEXPECTED_ERROR.send(interaction)
 
 def setup(bot, has_required_role, config):
     """Setup function for bot integration"""
@@ -3209,13 +3176,7 @@ def setup(bot, has_required_role, config):
         """Refresh ticket control buttons in one or all ticket channels"""
         
         if not has_roles(interaction.user, PANEL_REQUIRED_ROLES) and PANEL_REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         await interaction.response.defer(ephemeral=True)
@@ -3230,7 +3191,7 @@ def setup(bot, has_required_role, config):
             if str(channel.id) in channel_openers:
                 channels_to_reload.append(channel)
             else:
-                await interaction.followup.send(f"❌ {channel.mention} is not a tracked ticket channel!", ephemeral=True)
+                await errors.NOT_FOUND.send(interaction, reason=f"{channel.mention} is not a tracked ticket channel.")
                 return
         else:
             # Reload all ticket channels
@@ -3240,7 +3201,7 @@ def setup(bot, has_required_role, config):
                     channels_to_reload.append(ch)
         
         if not channels_to_reload:
-            await interaction.followup.send("❌ No ticket channels found to reload!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="No ticket channels found to reload.")
             return
         
         reloaded_count = 0
@@ -3304,13 +3265,7 @@ def setup(bot, has_required_role, config):
         """Refresh vote buttons on one or all forwarded applications"""
         
         if not has_roles(interaction.user, PANEL_REQUIRED_ROLES) and PANEL_REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         await interaction.response.defer(ephemeral=True)
@@ -3324,14 +3279,14 @@ def setup(bot, has_required_role, config):
             if message_id in apps:
                 apps_to_reload.append((message_id, apps[message_id]))
             else:
-                await interaction.followup.send(f"❌ Application with message ID `{message_id}` not found!", ephemeral=True)
+                await errors.NOT_FOUND.send(interaction, reason=f"Application with message ID `{message_id}` not found.")
                 return
         else:
             # Reload all applications
             apps_to_reload = list(apps.items())
         
         if not apps_to_reload:
-            await interaction.followup.send("❌ No forwarded applications found to reload!", ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason="No forwarded applications found to reload.")
             return
         
         reloaded_count = 0

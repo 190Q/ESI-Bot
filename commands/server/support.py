@@ -5,6 +5,7 @@ import os
 import json
 import asyncio
 from utils.permissions import has_roles
+from utils import errors
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
 
 REQUIRED_ROLES = []
@@ -136,12 +137,11 @@ def setup(bot, has_required_role, config):
                 # Get or create the pending tickets category
                 category = await get_or_create_category(guild, pending_category_name)
                 if not category:
-                    error_embed = discord.Embed(
-                        title="Configuration Error",
-                        description="Could not create or find ticket category. Please contact the bot administrator.",
-                        color=0xFF0000
+                    await errors.send_custom_error(
+                        interaction,
+                        "Configuration Error",
+                        "Could not create or find ticket category. Please contact the bot administrator.",
                     )
-                    await interaction.followup.send(embed=error_embed, ephemeral=True)
                     return
                 
                 # Create ticket channel
@@ -248,20 +248,14 @@ def setup(bot, has_required_role, config):
                 print(f"Support ticket created: {channel_name} from {interaction.user} ({interaction.user.id}): {self.subject.value}")
                 
             except discord.Forbidden:
-                error_embed = discord.Embed(
-                    title="Error",
-                    description="I don't have permission to create channels in the ticket category.",
-                    color=0xFF0000
+                await errors.send_custom_error(
+                    interaction,
+                    "Ticket Creation Failed",
+                    "I don't have permission to create channels in the ticket category.",
                 )
-                await interaction.followup.send(embed=error_embed, ephemeral=True)
             except Exception as e:
                 print(f"Error creating ticket: {e}")
-                error_embed = discord.Embed(
-                    title="Error",
-                    description="An error occurred while creating your ticket. Please try again later.",
-                    color=0xFF0000
-                )
-                await interaction.followup.send(embed=error_embed, ephemeral=True)
+                await errors.UNEXPECTED_ERROR.send(interaction)
     
     class AcknowledgmentView(discord.ui.View):
         def __init__(self, bot, user, ticket_channel_id):
@@ -275,7 +269,7 @@ def setup(bot, has_required_role, config):
             owner_id = int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else None
             
             if interaction.user.id != owner_id:
-                await interaction.response.send_message("Only the bot owner can use this button!", ephemeral=True)
+                await errors.NO_PERMISSION.send(interaction)
                 return
             
             try:
@@ -353,26 +347,20 @@ def setup(bot, has_required_role, config):
                 await interaction.message.edit(view=self)
                 
             except discord.Forbidden:
-                error_embed = discord.Embed(
-                    title="Error",
-                    description="Could not send acknowledgment to the user. Their DMs might be closed.",
-                    color=0xFF0000
+                await errors.send_custom_error(
+                    interaction,
+                    "Acknowledgment Failed",
+                    "Could not send acknowledgment to the user. Their DMs might be closed.",
                 )
-                await interaction.response.send_message(embed=error_embed, ephemeral=True)
             except Exception as e:
                 print(f"Error acknowledging ticket: {e}")
-                error_embed = discord.Embed(
-                    title="Error",
-                    description="An error occurred while acknowledging the ticket.",
-                    color=0xFF0000
-                )
-                await interaction.response.send_message(embed=error_embed, ephemeral=True)
+                await errors.UNEXPECTED_ERROR.send(interaction)
 
         async def close_ticket_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
             owner_id = int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else None
             
             if interaction.user.id != owner_id:
-                await interaction.response.send_message("Only the bot owner can use this button!", ephemeral=True)
+                await errors.NO_PERMISSION.send(interaction)
                 return
             
             try:
@@ -470,12 +458,7 @@ def setup(bot, has_required_role, config):
                 
             except Exception as e:
                 print(f"Error closing ticket: {e}")
-                error_embed = discord.Embed(
-                    title="Error",
-                    description="An error occurred while closing the ticket.",
-                    color=0xFF0000
-                )
-                await interaction.response.send_message(embed=error_embed, ephemeral=True)
+                await errors.UNEXPECTED_ERROR.send(interaction)
     
     async def restore_ticket_views(bot):
         """Restore views for all open tickets - same logic as ticket_handler refresh"""
@@ -618,12 +601,7 @@ def setup(bot, has_required_role, config):
         """Command to contact the bot owner"""
 
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         await interaction.response.send_modal(SupportModal(category=category.value))
@@ -637,7 +615,7 @@ def setup(bot, has_required_role, config):
         owner_id = int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else None
         
         if interaction.user.id != owner_id:
-            await interaction.response.send_message("❌ Only the bot owner can use this command!", ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         await interaction.response.defer(ephemeral=True)
@@ -648,7 +626,11 @@ def setup(bot, has_required_role, config):
             with open(tickets_file, "r") as f:
                 data = json.load(f)
         except:
-            await interaction.followup.send("❌ Could not load support tickets file.", ephemeral=True)
+            await errors.send_custom_error(
+                interaction,
+                "Load Failed",
+                "Could not load support tickets file.",
+            )
             return
         
         if "tickets" not in data or len(data["tickets"]) == 0:

@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 import io
 from utils.permissions import has_roles
+from utils import errors
 
 REQUIRED_ROLES = [
     int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else 0,
@@ -235,21 +236,13 @@ class ConfirmDemotionView(discord.ui.View):
             await interaction.followup.edit_message(message_id=interaction.message.id, embed=success_embed, view=None)
             
         except discord.Forbidden:
-            error_embed = discord.Embed(
-                title="❌ Permission Error",
-                description="I don't have permission to modify this user's roles or nickname.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
+            await errors.send_custom_error(
+                interaction,
+                "Permission Error",
+                "I don't have permission to modify this user's roles or nickname.",
             )
-            await interaction.followup.edit_message(message_id=interaction.message.id, embed=error_embed, view=None)
         except Exception as e:
-            error_embed = discord.Embed(
-                title="❌ Error",
-                description=f"An error occurred: {str(e)}",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.edit_message(message_id=interaction.message.id, embed=error_embed, view=None)
+            await errors.UNEXPECTED_ERROR.send(interaction)
     
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
     async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -349,13 +342,10 @@ class RankSelect(discord.ui.Select):
         
         # Check if this is a promotion (not allowed)
         if target_rank_value > current_rank_value:
-            error_embed = discord.Embed(
-                title="Invalid Demotion",
-                description=f"You cannot promote {self.member.mention} from **{self.current_rank}** to **{target_rank.title()}**. You can only demote users.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
+            await errors.INVALID_INPUT.send(
+                interaction,
+                reason=f"You cannot promote {self.member.mention} from **{self.current_rank}** to **{target_rank.title()}**. You can only demote users.",
             )
-            await interaction.response.edit_message(embed=error_embed, view=None)
             return
         
         # Get all badge roles
@@ -548,13 +538,7 @@ def setup(bot, has_required_role, config):
         
         # Check permissions if required
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         user_role_ids = [role.id for role in member.roles]
@@ -562,13 +546,11 @@ def setup(bot, has_required_role, config):
         # Check if user has Sindrian Citizen role
         print(f"User {member.id} has Sindrian Citizen role: {SINDRIAN_CITIZEN_ID in [role.id for role in member.roles]}")
         if SINDRIAN_CITIZEN_ID not in user_role_ids:
-            error_embed = discord.Embed(
-                title="❌ Cannot Demote",
-                description=f"Cannot demote {member.mention} - they don't have the **Sindrian Citizen** role.\n\nUsers without this role cannot be demoted.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
+            await errors.send_custom_error(
+                interaction,
+                "Cannot Demote",
+                f"Cannot demote {member.mention} - they don't have the **Sindrian Citizen** role.\n\nUsers without this role cannot be demoted.",
             )
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
             return
         
         # Get current rank
@@ -595,13 +577,11 @@ def setup(bot, has_required_role, config):
         # Check if user is above Duke
         current_rank_value = rank_order.get(current_rank.lower(), 0)
         if current_rank_value > 5:  # Above Duke (Grand Duke, Archduke, Emperor)
-            error_embed = discord.Embed(
-                title="❌ Cannot Demote",
-                description=f"Cannot demote {member.mention} - they are **{current_rank}** which is above Duke rank.\n\nOnly users with rank Duke or below can be demoted using this command.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
+            await errors.send_custom_error(
+                interaction,
+                "Cannot Demote",
+                f"Cannot demote {member.mention} - they are **{current_rank}** which is above Duke rank.\n\nOnly users with rank Duke or below can be demoted using this command.",
             )
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
             return
         
         # Create and send view with select menu
@@ -622,13 +602,7 @@ def setup(bot, has_required_role, config):
         
         # Check permissions if required
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         user_role_ids = [role.id for role in member.roles]
@@ -636,13 +610,11 @@ def setup(bot, has_required_role, config):
         # Check if user has Sindrian Citizen role
         print(f"User {member.id} has Sindrian Citizen role: {SINDRIAN_CITIZEN_ID in [role.id for role in member.roles]}")
         if SINDRIAN_CITIZEN_ID not in user_role_ids:
-            error_embed = discord.Embed(
-                title="❌ Cannot Demote",
-                description=f"Cannot demote {member.mention} - they don't have the **Sindrian Citizen** role.\n\nUsers without this role cannot be demoted.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
+            await errors.send_custom_error(
+                interaction,
+                "Cannot Demote",
+                f"Cannot demote {member.mention} - they don't have the **Sindrian Citizen** role.\n\nUsers without this role cannot be demoted.",
             )
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
             return
         
         # Get current rank
@@ -669,13 +641,11 @@ def setup(bot, has_required_role, config):
         # Check if user is above Duke
         current_rank_value = rank_order.get(current_rank.lower(), 0)
         if current_rank_value > 5:  # Above Duke (Grand Duke, Archduke, Emperor)
-            error_embed = discord.Embed(
-                title="❌ Cannot Demote",
-                description=f"Cannot demote {member.mention} - they are **{current_rank}** which is above Duke rank.\n\nOnly users with rank Duke or below can be demoted using this command.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
+            await errors.send_custom_error(
+                interaction,
+                "Cannot Demote",
+                f"Cannot demote {member.mention} - they are **{current_rank}** which is above Duke rank.\n\nOnly users with rank Duke or below can be demoted using this command.",
             )
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
             return
         
         # Create and send view with select menu

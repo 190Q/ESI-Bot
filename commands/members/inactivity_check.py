@@ -8,6 +8,7 @@ import tempfile
 import json
 from pathlib import Path
 from utils.permissions import has_roles
+from utils import errors
 
 # Database paths
 USERNAME_MATCHES_PATH = os.path.join(
@@ -650,9 +651,10 @@ class ExemptWeekSelectView(discord.ui.View):
     
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
-            await interaction.response.send_message(
-                "❌ Only the person who used the command can interact with this.",
-                ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "Not Allowed",
+                "Only the person who used the command can interact with this.",
             )
             return False
         return True
@@ -835,15 +837,13 @@ class ExemptWeekSelectView(discord.ui.View):
                 changes.append(f"Removed: {len(removed)}")
             if changes:
                 embed.set_footer(text=" | ".join(changes))
+            await interaction.response.edit_message(embed=embed, view=None)
         else:
-            embed = discord.Embed(
-                title="❌ Error",
-                description="Failed to save exemptions.",
-                color=0xFF0000,
-                timestamp=datetime.now(timezone.utc)
+            await errors.send_custom_error(
+                interaction,
+                "Save Failed",
+                "Failed to save exemptions.",
             )
-        
-        await interaction.response.edit_message(embed=embed, view=None)
 
 
 class SetupView(discord.ui.View):
@@ -885,9 +885,10 @@ class SetupView(discord.ui.View):
     
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
-            await interaction.response.send_message(
-                "❌ Only the person who used the command can interact with this.",
-                ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "Not Allowed",
+                "Only the person who used the command can interact with this.",
             )
             return False
         return True
@@ -1014,9 +1015,10 @@ class WeekSelectView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """Only allow the original author to interact"""
         if interaction.user.id != self.author_id:
-            await interaction.response.send_message(
-                "❌ Only the person who used the command can interact with this.",
-                ephemeral=True
+            await errors.send_custom_error(
+                interaction,
+                "Not Allowed",
+                "Only the person who used the command can interact with this.",
             )
             return False
         return True
@@ -1111,26 +1113,20 @@ async def run_inactivity_check(interaction: discord.Interaction, start_date, end
     print(f"[INAC_CHECK] End guild db: {end_guild_db}, Start guild db: {start_guild_db}")
     
     if not end_guild_db or not start_guild_db:
-        error_embed = discord.Embed(
-            title="❌ Error",
-            description="No guild database found for the selected period.",
-            color=0xFF0000,
-            timestamp=datetime.now(timezone.utc)
+        await errors.NO_DATA_AVAILABLE.send(
+            interaction,
+            reason="No guild database found for the selected period.",
         )
-        await interaction.edit_original_response(embed=error_embed)
         return
     
     end_players = set(get_players_from_guild_db(end_guild_db))
     start_players = set(get_players_from_guild_db(start_guild_db))
     
     if not end_players and not start_players:
-        error_embed = discord.Embed(
-            title="❌ Error",
-            description="No players found in the guild databases.",
-            color=0xFF0000,
-            timestamp=datetime.now(timezone.utc)
+        await errors.NO_DATA_AVAILABLE.send(
+            interaction,
+            reason="No players found in the guild databases.",
         )
-        await interaction.edit_original_response(embed=error_embed)
         return
     
     players_in_both = end_players & start_players
@@ -1141,20 +1137,14 @@ async def run_inactivity_check(interaction: discord.Interaction, start_date, end
     print(f"[INAC_CHECK] Days with data: {days_with_data}, Total days: {total_days}, Missing dates: {missing_dates}")
     
     if days_with_data == 0 and SKIP_IF_NO_DATA:
-        error_embed = discord.Embed(
-            title="❌ No Playtime Data",
-            description=f"No playtime tracking data found for the selected period.\n\n**Expected folders:**\n" + 
-                       "\n".join([f"• `playtime_{d}`" for d in missing_dates[:5]]) +
-                       (f"\n• ...and {len(missing_dates) - 5} more" if len(missing_dates) > 5 else ""),
-            color=0xFF0000,
-            timestamp=datetime.now(timezone.utc)
+        await errors.NO_DATA_AVAILABLE.send(
+            interaction,
+            reason=(
+                "No playtime tracking data found for the selected period.\n\n**Expected folders:**\n"
+                + "\n".join([f"• `playtime_{d}`" for d in missing_dates[:5]])
+                + (f"\n• ...and {len(missing_dates) - 5} more" if len(missing_dates) > 5 else "")
+            ),
         )
-        error_embed.add_field(
-            name="Playtime Folder Path",
-            value=f"`{PLAYTIME_TRACKING_FOLDER}`",
-            inline=False
-        )
-        await interaction.edit_original_response(embed=error_embed)
         return
     
     player_playtimes = []
@@ -1425,13 +1415,7 @@ def setup(bot, has_required_role, config):
         
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.now(timezone.utc)
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Create embed with week selector (default to First Check mode)
@@ -1469,13 +1453,7 @@ def setup(bot, has_required_role, config):
         
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.now(timezone.utc)
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Check if user is restricted (Juror) - show read-only view

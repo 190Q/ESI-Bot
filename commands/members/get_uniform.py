@@ -10,6 +10,7 @@ from io import BytesIO
 import sqlite3
 from utils.permissions import has_roles
 from utils.paths import DATA_DIR
+from utils import errors
 
 USERNAME_MATCHES_PATH = DATA_DIR / "username_matches.json"
 WYNNCRAFT_KEY_11 = os.getenv('WYNNCRAFT_KEY_11')
@@ -219,13 +220,7 @@ def setup(bot, has_required_role, config):
         
         # Check permissions if required
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         await interaction.response.defer()
@@ -237,13 +232,7 @@ def setup(bot, has_required_role, config):
             minecraft_username = get_minecraft_username_from_discord(interaction.user.id)
             
             if not minecraft_username:
-                error_embed = discord.Embed(
-                    title="Error",
-                    description="No Minecraft account linked to your Discord account. Please provide a username.",
-                    color=0xFF0000,
-                    timestamp=datetime.utcnow()
-                )
-                await interaction.followup.send(embed=error_embed, ephemeral=True)
+                await errors.NO_LINKED_ACCOUNT.send(interaction)
                 return
         else:
             # Username was provided, try to find the linked Discord user
@@ -252,23 +241,15 @@ def setup(bot, has_required_role, config):
                 target_user = interaction.guild.get_member(discord_id)
                 if not target_user:
                     # User not in server
-                    error_embed = discord.Embed(
-                        title="Error",
-                        description=f"The Discord user linked to `{minecraft_username}` is not in the server.",
-                        color=0xFF0000,
-                        timestamp=datetime.utcnow()
-                    )
-                    await interaction.followup.send(embed=error_embed, ephemeral=True)
+                    await errors.USER_NOT_IN_SERVER.send(interaction, username=minecraft_username)
                     return
             else:
                 # No linked Discord account found - show error instead of falling back
-                error_embed = discord.Embed(
-                    title="Error",
-                    description=f"No Discord account is linked to the Minecraft username `{minecraft_username}`.\nContact a <@&{PARLIAMENT_ROLE_ID}> member to link your Discord account to your Minecarft username first!",
-                    color=0xFF0000,
-                    timestamp=datetime.utcnow()
+                await errors.send_custom_error(
+                    interaction,
+                    "No Linked Account",
+                    f"No Discord account is linked to the Minecraft username `{minecraft_username}`.\nContact a <@&{PARLIAMENT_ROLE_ID}> member to link your Discord account to your Minecarft username first!",
                 )
-                await interaction.followup.send(embed=error_embed, ephemeral=True)
                 return
         
         # Check if target user has Sindrian Citizen, Veteran, or Ex-Citizen role
@@ -280,13 +261,10 @@ def setup(bot, has_required_role, config):
         )
         
         if not has_valid_role:
-            error_embed = discord.Embed(
-                title="Error",
-                description=f"The user linked to `{minecraft_username}` does not have a Sindrian Citizen, Veteran, or Ex-Citizen role.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
+            await errors.MISSING_ROLE.send(
+                interaction,
+                reason=f"The user linked to `{minecraft_username}` does not have a Sindrian Citizen, Veteran, or Ex-Citizen role.",
             )
-            await interaction.followup.send(embed=error_embed, ephemeral=True)
             return
         
         user_rank = None
@@ -297,13 +275,10 @@ def setup(bot, has_required_role, config):
             user_rank = get_user_rank(target_user)
         
             if not user_rank:
-                error_embed = discord.Embed(
-                    title="Error",
-                    description=f"The user linked to `{minecraft_username}` does not have a valid rank role.",
-                    color=0xFF0000,
-                    timestamp=datetime.utcnow()
+                await errors.MISSING_ROLE.send(
+                    interaction,
+                    reason=f"The user linked to `{minecraft_username}` does not have a valid rank role.",
                 )
-                await interaction.followup.send(embed=error_embed, ephemeral=True)
                 return
             
         user_role_ids = [role.id for role in target_user.roles]
@@ -324,13 +299,7 @@ def setup(bot, has_required_role, config):
         uuid, current_name = get_uuid_from_username(minecraft_username)
         
         if not uuid:
-            error_embed = discord.Embed(
-                title="Error",
-                description=f"Minecraft player '{minecraft_username}' not found.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=error_embed, ephemeral=True)
+            await errors.PLAYER_NOT_FOUND.send(interaction, username=minecraft_username)
             return
         
         profile = get_player_profile(uuid)
@@ -360,13 +329,10 @@ def setup(bot, has_required_role, config):
         player_skin = download_skin(skin_url)
         
         if not player_skin:
-            error_embed = discord.Embed(
-                title="Error",
-                description="Failed to download player skin.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
+            await errors.IMAGE_GENERATION_FAILED.send(
+                interaction,
+                reason="Failed to download player skin.",
             )
-            await interaction.followup.send(embed=error_embed, ephemeral=True)
             return
         
         player_skin = convert_skin_to_64x64(player_skin)
@@ -391,13 +357,10 @@ def setup(bot, has_required_role, config):
         result_skin = apply_uniform(player_skin, uniform_path)
         
         if not result_skin:
-            error_embed = discord.Embed(
-                title="Error",
-                description=f"Failed to apply uniform. Uniform file not found at: {uniform_path}",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
+            await errors.IMAGE_GENERATION_FAILED.send(
+                interaction,
+                reason="Failed to apply the uniform to the player skin.",
             )
-            await interaction.followup.send(embed=error_embed, ephemeral=True)
             return
                 
         uniform_type_short = "parliament" if is_parliament else "normal"

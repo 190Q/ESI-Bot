@@ -19,6 +19,7 @@ from guild_queue import (
     extract_username_from_embeds, add_pending_invite,
 )
 from utils.permissions import has_roles
+from utils import errors
 
 # Path to the username â†” user_id match database
 USERNAME_MATCH_DB_PATH = os.path.join(
@@ -265,7 +266,7 @@ class MainUsernameModal(discord.ui.Modal, title="Enter Main Account Username"):
         # Validate main username on Wynncraft
         is_valid, error_msg, uuid = await validate_wynncraft_username(main_username)
         if not is_valid:
-            await interaction.response.send_message(error_msg, ephemeral=True)
+            await errors.PLAYER_NOT_FOUND.send(interaction, username=main_username)
             return
         
         # Go directly to confirmation with alt info
@@ -303,7 +304,7 @@ class UsernameEditModal(discord.ui.Modal, title="Confirm Username"):
             if self.rank_key != "envoy":
                 is_valid, error_msg, uuid = await validate_wynncraft_username(username)
                 if not is_valid:
-                    await interaction.response.send_message(error_msg, ephemeral=True)
+                    await errors.PLAYER_NOT_FOUND.send(interaction, username=username)
                     return
     
         # Build message based on whether pronouns were detected
@@ -440,7 +441,7 @@ class AutoAcceptView(discord.ui.View):
             if self.rank_key in ("squire", "knight", "viscount"):
                 is_valid, error_msg, uuid = await validate_wynncraft_username(self.username)
                 if not is_valid:
-                    await modal_interaction.response.send_message(error_msg, ephemeral=True)
+                    await errors.PLAYER_NOT_FOUND.send(modal_interaction, username=self.username)
                     return
                 self.uuid = uuid
             
@@ -469,7 +470,7 @@ class AutoAcceptView(discord.ui.View):
         """Proceed to show confirmation embed using existing logic"""
         
         if self.needs_pronoun and not self.selected_pronoun:
-            await interaction.response.send_message("Please select pronouns first!", ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="Please select pronouns first.")
             return
         
         await show_confirmation_embed(
@@ -550,7 +551,7 @@ class RankSelectView(discord.ui.View):
         if rank_key != "envoy":
             is_valid, error_msg, uuid = await validate_wynncraft_username(self.username)
             if not is_valid:
-                await interaction.response.send_message(error_msg, ephemeral=True)
+                await errors.PLAYER_NOT_FOUND.send(interaction, username=self.username)
                 return
             # Store UUID for later use
             self.uuid = uuid
@@ -602,7 +603,7 @@ class PronounSelectView(discord.ui.View):
         if not self.uuid and self.rank_key != "envoy":
             is_valid, error_msg, uuid = await validate_wynncraft_username(self.username)
             if not is_valid:
-                await interaction.response.send_message(error_msg, ephemeral=True)
+                await errors.PLAYER_NOT_FOUND.send(interaction, username=self.username)
                 return
             self.uuid = uuid
         
@@ -669,12 +670,11 @@ class AcceptConfirmView(discord.ui.View):
         # Check if user is the one who initiated the accept command
         if interaction.user.id != self.executor_id:
             await interaction.response.defer(ephemeral=True)
-            error_embed = discord.Embed(
-                title="Permission Denied",
-                description="Only the user who used the `/accept` command can confirm this action.",
-                color=0xFF0000
+            await errors.send_custom_error(
+                interaction,
+                "Permission Denied",
+                "Only the user who used the `/accept` command can confirm this action.",
             )
-            await interaction.edit_original_response(embed=error_embed)
             return
         
         # If blacklisted, require double confirmation
@@ -967,36 +967,28 @@ class AcceptConfirmView(discord.ui.View):
                 print(f"[DEBUG] No source_message_id provided, skipping forwarded app cleanup")
                 
         except discord.Forbidden as e:
-            error_embed = discord.Embed(
-                title="Permission Error",
-                description=f"Bot lacks permission to **{failed_action}**\n\n"
-                        f"Please check:\n"
-                        f"â€¢ Bot has **Manage Roles** permission\n"
-                        f"â€¢ Bot has **Manage Nicknames** permission\n"
-                        f"â€¢ Bot's role is higher than the roles being assigned\n\n"
-                        f"Error details: {str(e)}",
-                color=0xFF0000
+            await errors.send_custom_error(
+                interaction,
+                "Permission Error",
+                f"The bot lacks permission to **{failed_action}**.",
+                steps=[
+                    "Ensure the bot has the **Manage Roles** and **Manage Nicknames** permissions.",
+                    "Make sure the bot's role is higher than the roles being assigned.",
+                ],
             )
-            await interaction.edit_original_response(embed=error_embed, view=None)
         except Exception as e:
-            error_embed = discord.Embed(
-                title="Error",
-                description=f"An unexpected error occurred: {str(e)}",
-                color=0xFF0000
-            )
-            await interaction.edit_original_response(embed=error_embed, view=None)
+            await errors.UNEXPECTED_ERROR.send(interaction)
     
     async def cancel_callback(self, interaction: discord.Interaction):
         """Handle cancellation of the accept action"""
         # Check if user is the one who initiated the accept command
         if interaction.user.id != self.executor_id:
             await interaction.response.defer(ephemeral=True)
-            error_embed = discord.Embed(
-                title="Permission Denied",
-                description="Only the user who used the `/accept` command can cancel this action.",
-                color=0xFF0000
+            await errors.send_custom_error(
+                interaction,
+                "Permission Denied",
+                "Only the user who used the `/accept` command can cancel this action.",
             )
-            await interaction.edit_original_response(embed=error_embed)
             return
         
         embed = discord.Embed(
@@ -1145,15 +1137,13 @@ async def show_confirmation_embed(interaction: discord.Interaction, user: discor
     # Check for demotion
     current_rank = get_user_highest_rank(user_role_ids)
     if is_demotion(current_rank, rank_config["main_role"]):
-        demotion_embed = discord.Embed(
-            title="âŒ Demotion Not Allowed",
-            description=f"{user.mention} currently has the **{current_rank[1]}** rank.\n\n"
-                    f"Cannot assign **{rank_config['display_name']}** as it would be a demotion.",
-            color=0xFF0000,
-            timestamp=datetime.utcnow()
+        await errors.send_custom_error(
+            interaction,
+            "Demotion Not Allowed",
+            f"{user.mention} currently has the **{current_rank[1]}** rank. "
+            f"Cannot assign **{rank_config['display_name']}** as it would be a demotion.",
+            footer=f"Requested by {interaction.user.name}",
         )
-        demotion_embed.set_footer(text=f"Requested by {interaction.user.name}")
-        await interaction.response.edit_message(content=None, embed=demotion_embed, view=None)
         return
     
     # Determine which roles they need and which should be removed
@@ -1314,13 +1304,7 @@ def setup(bot, has_required_role, config):
 
         # Check permissions if required
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Create modal for username input
@@ -1333,13 +1317,7 @@ def setup(bot, has_required_role, config):
         
         # Check permissions if required
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Create modal for username input

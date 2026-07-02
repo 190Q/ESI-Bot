@@ -7,6 +7,7 @@ import asyncio
 from PIL import Image, ImageDraw, ImageFont
 import io
 from dotenv import load_dotenv
+from utils import errors
 
 # ============================================================================
 # CONFIGURATION
@@ -617,10 +618,7 @@ class PlayerStatsCog(commands.Cog):
         try:
             # Validate username
             if not user or not user.strip():
-                await interaction.followup.send(
-                    "❌ Please provide a valid username.",
-                    ephemeral=True
-                )
+                await errors.INVALID_INPUT.send(interaction, reason="Please provide a valid username.")
                 return
             
             # Fetch player data from Wynncraft API
@@ -628,33 +626,25 @@ class PlayerStatsCog(commands.Cog):
             
             # Check if data was received
             if player_data is None:
-                await interaction.followup.send(
-                    f"❌ Could not find player `{user}` on Wynncraft.",
-                    ephemeral=True
-                )
+                await errors.PLAYER_NOT_FOUND.send(interaction, username=user)
                 return
             
             # Check for multiple players
             if isinstance(player_data, dict) and player_data.get('multiple'):
-                await interaction.followup.send(
-                    f"❌ Multiple players found for `{user}`. Please be more specific.",
-                    ephemeral=True
+                await errors.send_custom_error(
+                    interaction,
+                    "Multiple Players Found",
+                    f"Multiple players were found for `{user}`. Please be more specific.",
                 )
                 return
             
             # Verify we have valid player data structure
             if not isinstance(player_data, dict):
-                await interaction.followup.send(
-                    f"❌ Invalid data format received for `{user}`.",
-                    ephemeral=True
-                )
+                await errors.API_ERROR.send(interaction)
                 return
             
             if 'username' not in player_data:
-                await interaction.followup.send(
-                    f"❌ Invalid player data received for `{user}`. Missing username field.",
-                    ephemeral=True
-                )
+                await errors.API_ERROR.send(interaction)
                 return
             
             # Get player info
@@ -670,10 +660,7 @@ class PlayerStatsCog(commands.Cog):
             img_bytes = await PlayerStatsImageGenerator.generate(player_data, skin_bytes)
             
             if img_bytes is None:
-                await interaction.followup.send(
-                    f"❌ Failed to generate player card for `{player_name}`.",
-                    ephemeral=True
-                )
+                await errors.IMAGE_GENERATION_FAILED.send(interaction, reason=f"Failed to generate the player card for `{player_name}`.")
                 return
             
             # Send the image file
@@ -681,17 +668,11 @@ class PlayerStatsCog(commands.Cog):
             await interaction.followup.send(file=file)
             
         except ValueError as ve:
-            await interaction.followup.send(
-                content=f"❌ Invalid data: {str(ve)}",
-                ephemeral=True
-            )
+            await errors.IMAGE_GENERATION_FAILED.send(interaction, reason="The player data could not be processed.")
             print(f"[ERROR] Validation error: {ve}")
             
         except Exception as e:
-            await interaction.followup.send(
-                content=f"❌ Error generating player card: {str(e)}",
-                ephemeral=True
-            )
+            await errors.UNEXPECTED_ERROR.send(interaction)
             print(f"[ERROR] Player stats command failed: {e}")
             import traceback
             traceback.print_exc()

@@ -8,6 +8,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from utils.permissions import has_roles
+from utils import errors
 
 # Configuration
 OWNER_ID_RAW = os.getenv('OWNER_ID')
@@ -442,13 +443,7 @@ def setup(bot, has_required_role, config):
         
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.now(timezone.utc)
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         await interaction.response.defer(ephemeral=False)
@@ -480,22 +475,10 @@ def setup(bot, has_required_role, config):
                 
                 await interaction.followup.send(embed=embed)
             else:
-                embed = discord.Embed(
-                    title="❌ Fetch Failed",
-                    description="Failed to fetch playtime data from Wynncraft API.",
-                    color=0xFF0000,
-                    timestamp=datetime.now(timezone.utc)
-                )
-                await interaction.followup.send(embed=embed)
+                await errors.API_ERROR.send(interaction)
         
         except Exception as e:
-            error_embed = discord.Embed(
-                title="Error",
-                description=f"An unexpected error occurred: {str(e)}",
-                color=0xFF0000,
-                timestamp=datetime.now(timezone.utc)
-            )
-            await interaction.followup.send(embed=error_embed)
+            await errors.UNEXPECTED_ERROR.send(interaction)
             print(f"[PLAYTIME] Error in force_fetch_playtime: {e}")
     
     print("[OK] Loaded fetch_playtime command (tracking via standalone tracker)")

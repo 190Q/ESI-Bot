@@ -11,6 +11,7 @@ from typing import Optional
 from pathlib import Path
 import sys
 from utils.permissions import has_roles
+from utils import errors
 
 # Add tickets directory to path for guild_queue imports
 _TICKETS_DIR = str(Path(__file__).parent.parent / "tickets")
@@ -923,13 +924,7 @@ def setup(bot_instance, has_required_role, config):
         global tracked_guild, previous_guild_data, member_history, notification_channel_id, notification_thread_id, is_prefix_tracked, notifications_enabled
 
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.now(timezone.utc)
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Toggle notifications

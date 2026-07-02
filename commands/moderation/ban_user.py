@@ -9,6 +9,7 @@ import importlib.util
 import re
 from utils.permissions import has_roles
 from utils.bans import load_bans, save_bans, is_user_banned, remove_ban
+from utils import errors
 
 OWNER_ID = int(os.getenv('OWNER_ID', 0))
 
@@ -294,7 +295,7 @@ class CommandSelector(discord.ui.View):
     async def confirm_callback(self, interaction: discord.Interaction):
         """Apply permanent ban directly"""
         if not self.selected_commands:
-            await interaction.response.send_message("Please select at least one command!", ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="Please select at least one command.")
             return
         
         # Apply permanent ban directly (no duration selection)
@@ -356,18 +357,12 @@ class CustomDurationModal(ui.Modal, title="Custom Ban Duration"):
         
         if result[0] is None and result[1].startswith("Invalid") or result[1].startswith("Unknown"):
             # Error occurred
-            error_embed = discord.Embed(
-                title="❌ Invalid Duration",
-                description=result[1],
-                color=discord.Color.red(),
-                timestamp=datetime.now(timezone.utc)
+            await errors.send_custom_error(
+                interaction,
+                "Invalid Duration",
+                result[1],
+                steps=["Examples: 5m, 1 hour, 30 days, 2 weeks, 3 months, 1 year, forever"],
             )
-            error_embed.add_field(
-                name="Examples",
-                value="5m, 1 hour, 30 days, 2 weeks, 3 months, 1 year, forever",
-                inline=False
-            )
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
             return
         
         # Valid duration
@@ -513,47 +508,23 @@ def setup(bot, has_required_role, config):
         
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.now(timezone.utc)
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         if user.id == interaction.user.id:
-            error_embed = discord.Embed(
-                title="❌ Cannot Ban Self",
-                description=f"You cannot ban yourself.",
-                color=discord.Color.red(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+            await errors.send_custom_error(interaction, "Cannot Ban Self", "You cannot ban yourself.")
             return
         
         # Cannot ban the bot owner
         if user.id == OWNER_ID:
-            error_embed = discord.Embed(
-                title="❌ Cannot Ban Owner",
-                description="You cannot ban the bot owner.",
-                color=discord.Color.red(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+            await errors.send_custom_error(interaction, "Cannot Ban Owner", "You cannot ban the bot owner.")
             return
         
         # Admin cannot ban another admin
         if isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.administrator:
             target_member = interaction.guild.get_member(user.id) if interaction.guild else None
             if target_member and target_member.guild_permissions.administrator:
-                error_embed = discord.Embed(
-                    title="❌ Cannot Ban Admin",
-                    description="An admin cannot ban another admin.",
-                    color=discord.Color.red(),
-                    timestamp=datetime.now(timezone.utc)
-                )
-                await interaction.response.send_message(embed=error_embed, ephemeral=True)
+                await errors.send_custom_error(interaction, "Cannot Ban Admin", "An admin cannot ban another admin.")
                 return
         
         # Create command selector view
@@ -583,13 +554,7 @@ def setup(bot, has_required_role, config):
         
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.now(timezone.utc)
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Check if user is banned
@@ -597,13 +562,7 @@ def setup(bot, has_required_role, config):
         user_id_str = str(user.id)
         
         if user_id_str not in bans:
-            embed = discord.Embed(
-                title="❌ Not Banned",
-                description=f"{user.mention} is not currently banned.",
-                color=discord.Color.red(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await errors.send_custom_error(interaction, "Not Banned", f"{user.mention} is not currently banned.")
             return
         
         # Remove the ban

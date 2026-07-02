@@ -6,6 +6,7 @@ import os
 import json
 from utils.permissions import has_roles
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
+from utils import errors
 
 DB_FILE = os.path.join(str(PROJECT_ROOT), "databases", "recruited_data.db")
 
@@ -56,16 +57,9 @@ def setup(bot, has_required_role, config):
     async def recruit(interaction: discord.Interaction, action: str, recruiter: discord.User, recruited: discord.User):
         """Handle recruitment tracking"""
         
-        await interaction.response.defer()
 
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=missing_roles_embed)
+            await errors.NO_PERMISSION.send(interaction)
             return
 
         action = action.lower()
@@ -82,23 +76,11 @@ def setup(bot, has_required_role, config):
         recruited_data = username_db.get(str(recruited.id))
 
         if not recruiter_data:
-            missing_embed = discord.Embed(
-                title="Username Not Found",
-                description=f"No minecraft username found for {recruiter.mention}. Their discord user ID must be linked to a minecraft username using `/link_user` or `/accept`.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=missing_embed)
+            await errors.USERNAME_NOT_FOUND.send(interaction, user=recruiter.mention)
             return
 
         if not recruited_data:
-            missing_embed = discord.Embed(
-                title="Username Not Found",
-                description=f"No minecraft username found for {recruited.mention}. Their discord user ID must be linked to a minecraft username using `/link_user` or `/accept`.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=missing_embed)
+            await errors.USERNAME_NOT_FOUND.send(interaction, user=recruited.mention)
             return
         
         # Extract UUID and username
@@ -108,24 +90,16 @@ def setup(bot, has_required_role, config):
         recruited_username = recruited_data.get('username') if isinstance(recruited_data, dict) else recruited_data
         
         if not recruiter_uuid or not recruited_uuid:
-            missing_embed = discord.Embed(
-                title="UUID Not Found",
-                description=f"UUID not found for one or both users. Please ensure accounts are properly linked.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
+            await errors.UUID_NOT_FOUND.send(
+                interaction, user="one or both of those users"
             )
-            await interaction.followup.send(embed=missing_embed)
             return
         
         # Prevent self-recruitment
         if recruiter_uuid == recruited_uuid:
-            invalid_embed = discord.Embed(
-                title="Invalid Input",
-                description="A user cannot recruit themselves.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
+            await errors.INVALID_INPUT.send(
+                interaction, reason="A user cannot recruit themselves."
             )
-            await interaction.followup.send(embed=invalid_embed)
             return
         
         conn = sqlite3.connect(DB_FILE)
@@ -139,13 +113,12 @@ def setup(bot, has_required_role, config):
                     (recruited_uuid, recruiter_uuid)
                 )
                 if c.fetchone():
-                    mutual_embed = discord.Embed(
-                        title="Mutual Recruitment Blocked",
-                        description=f"{recruiter_username} and {recruited_username} cannot recruit each other.",
-                        color=0xFF0000,
-                        timestamp=datetime.utcnow()
+                    await errors.send_custom_error(
+                        interaction,
+                        "Mutual Recruitment Blocked",
+                        f"{recruiter_username} and {recruited_username} cannot recruit each other.",
+                        include_support=False,
                     )
-                    await interaction.followup.send(embed=mutual_embed)
                     return
 
                 # Add record
@@ -155,13 +128,12 @@ def setup(bot, has_required_role, config):
                 )
                 
                 if c.rowcount == 0:
-                    duplicate_embed = discord.Embed(
-                        title="Already Recorded",
-                        description=f"{recruiter_username} has already recruited {recruited_username}.",
-                        color=0xFFA500,
-                        timestamp=datetime.utcnow()
+                    await errors.send_custom_error(
+                        interaction,
+                        "Already Recorded",
+                        f"{recruiter_username} has already recruited {recruited_username}.",
+                        include_support=False,
                     )
-                    await interaction.followup.send(embed=duplicate_embed)
                 else:
                     conn.commit()
                     success_embed = discord.Embed(
@@ -170,7 +142,7 @@ def setup(bot, has_required_role, config):
                         color=0x00FF00,
                         timestamp=datetime.utcnow()
                     )
-                    await interaction.followup.send(embed=success_embed)
+                    await interaction.response.send_message(embed=success_embed)
             
             elif action == "delete":
                 # Delete records by UUID
@@ -180,13 +152,10 @@ def setup(bot, has_required_role, config):
                 )
                 
                 if c.rowcount == 0:
-                    not_found_embed = discord.Embed(
-                        title="Record Not Found",
-                        description=f"No recruitment record found for {recruiter_username} → {recruited_username}.",
-                        color=0xFF0000,
-                        timestamp=datetime.utcnow()
+                    await errors.NOT_FOUND.send(
+                        interaction,
+                        reason=f"No recruitment record found for {recruiter_username} → {recruited_username}.",
                     )
-                    await interaction.followup.send(embed=not_found_embed)
                 else:
                     conn.commit()
                     delete_embed = discord.Embed(
@@ -195,16 +164,11 @@ def setup(bot, has_required_role, config):
                         color=0x00FFFF,
                         timestamp=datetime.utcnow()
                     )
-                    await interaction.followup.send(embed=delete_embed)
+                    await interaction.response.send_message(embed=delete_embed)
 
         except Exception as e:
-            error_embed = discord.Embed(
-                title="Database Error",
-                description=f"An error occurred: `{str(e)}`",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=error_embed)
+            print(f"[recruit] Database error: {e}")
+            await errors.DATABASE_ERROR.send(interaction)
         
         finally:
             conn.close()

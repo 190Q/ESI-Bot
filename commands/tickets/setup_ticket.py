@@ -46,6 +46,7 @@ def get_panel_choices():
 # Add this autocomplete function
 from typing import List
 from utils.permissions import has_roles
+from utils import errors
 async def panel_autocomplete(
     interaction: discord.Interaction,
     current: str,
@@ -466,10 +467,7 @@ class AddQuestionModal(Modal, title="Add Question"):
         
         # Validate style
         if style not in ['short', 'paragraph']:
-            await interaction.response.send_message(
-                "❌ Style must be either 'short' or 'paragraph'!",
-                ephemeral=True
-            )
+            await errors.INVALID_INPUT.send(interaction, reason="Style must be either 'short' or 'paragraph'.")
             return
         
         # Parse max length
@@ -478,16 +476,10 @@ class AddQuestionModal(Modal, title="Add Question"):
             try:
                 max_length = int(self.max_length_input.value.strip())
                 if max_length < 1 or max_length > 4000:
-                    await interaction.response.send_message(
-                        "❌ Max length must be between 1 and 4000!",
-                        ephemeral=True
-                    )
+                    await errors.INVALID_INPUT.send(interaction, reason="Max length must be between 1 and 4000.")
                     return
             except ValueError:
-                await interaction.response.send_message(
-                    "❌ Max length must be a number!",
-                    ephemeral=True
-                )
+                await errors.INVALID_INPUT.send(interaction, reason="Max length must be a number.")
                 return
         
         # Initialize questions if not exists
@@ -529,7 +521,7 @@ class AddRoleModal(Modal, title="Add Role"):
             role = interaction.guild.get_role(role_id)
             
             if role is None:
-                await interaction.response.send_message("❌ Role not found! Make sure the ID is correct.", ephemeral=True)
+                await errors.INVALID_INPUT.send(interaction, reason="No role was found for that ID.")
                 return
             
             if role_id not in self.permission_view.panel_data['permissions'][self.permission_view.application_name]['roles']:
@@ -538,7 +530,7 @@ class AddRoleModal(Modal, title="Add Role"):
             await self.permission_view.refresh_view(interaction)
             
         except ValueError:
-            await interaction.response.send_message("❌ Invalid role ID! Please enter numbers only.", ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="Role ID must be a number.")
 
 # Modal for adding user
 class AddUserModal(Modal, title="Add User"):
@@ -559,7 +551,7 @@ class AddUserModal(Modal, title="Add User"):
             user = interaction.guild.get_member(user_id)
             
             if user is None:
-                await interaction.response.send_message("❌ User not found! Make sure the ID is correct.", ephemeral=True)
+                await errors.INVALID_INPUT.send(interaction, reason="No user was found for that ID.")
                 return
             
             if user_id not in self.permission_view.panel_data['permissions'][self.permission_view.application_name]['users']:
@@ -568,7 +560,7 @@ class AddUserModal(Modal, title="Add User"):
             await self.permission_view.refresh_view(interaction)
             
         except ValueError:
-            await interaction.response.send_message("❌ Invalid user ID! Please enter numbers only.", ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="User ID must be a number.")
 
 # Modal for setting application channel name
 class ApplicationSettingsModal(Modal, title="Application Settings"):
@@ -650,10 +642,12 @@ class ApplicationSettingsModal(Modal, title="Application Settings"):
         # Check for invalid characters in non-variable parts
         for char in invalid_chars:
             if char in temp_name:
-                await interaction.response.send_message(
-                    f"❌ Invalid character '{char}' found in channel name! "
-                    f"Allowed: letters, numbers, hyphens, underscores, and variables (%user%, %id%, etc.)",
-                    ephemeral=True
+                await errors.INVALID_INPUT.send(
+                    interaction,
+                    reason=(
+                        f"Invalid character '{char}' found in the channel name. "
+                        f"Allowed: letters, numbers, hyphens, underscores, and variables (%user%, %id%, etc.)."
+                    ),
                 )
                 return
         
@@ -697,23 +691,14 @@ def setup(bot, has_required_role, config):
 
         # Check permissions if required
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Load panels and verify the panel exists
         panels = load_panels()
         
         if panel_id not in panels:
-            await interaction.response.send_message(
-                "❌ Panel not found! Please select a valid panel from the list.",
-                ephemeral=True
-            )
+            await errors.NOT_FOUND.send(interaction, reason="That panel could not be found. Please select a valid panel from the list.")
             return
         
         panel_data = panels[panel_id]

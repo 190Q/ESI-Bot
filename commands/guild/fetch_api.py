@@ -7,6 +7,7 @@ from typing import Optional, Dict, List
 from datetime import datetime, timezone
 import sqlite3
 from utils.permissions import has_roles
+from utils import errors
 from utils.paths import DATA_DIR, DB_DIR
 from utils.esi_points import save_points, init_points_database
 from utils.api_fetcher import (
@@ -507,13 +508,7 @@ def setup(bot, has_required_role, config):
 
         # Check permissions if required
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Defer the response since this will take time
@@ -530,13 +525,7 @@ def setup(bot, has_required_role, config):
                 results = await fetcher.analyze_guild_stats(guild_name)
                 
                 if "error" in results:
-                    error_embed = discord.Embed(
-                        title="Error Fetching Guild Data",
-                        description=f"Failed to fetch data for guild '{guild_name}': {results['error']}",
-                        color=0xFF0000,
-                        timestamp=datetime.utcnow()
-                    )
-                    await interaction.followup.send(embed=error_embed)
+                    await errors.API_ERROR.send(interaction)
                     return
                 
                 # Calculate additional statistics
@@ -732,13 +721,7 @@ def setup(bot, has_required_role, config):
                 await interaction.followup.send(embed=summary_embed)
                 
         except Exception as e:
-            error_embed = discord.Embed(
-                title="Error",
-                description=f"An unexpected error occurred: {str(e)}",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.followup.send(embed=error_embed)
+            await errors.UNEXPECTED_ERROR.send(interaction)
             print(f"Error in fetch_api command: {e}")
     
     print("[OK] Loaded fetch_api command")

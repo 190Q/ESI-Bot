@@ -8,6 +8,7 @@ from typing import Optional, Dict
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 import io
+from utils import errors
 
 # Load environment variables
 load_dotenv()
@@ -553,16 +554,13 @@ def setup(bot, has_required_role, config):
             player_data = await fetch_player_data(username)
             
             if not player_data:
-                await interaction.followup.send(
-                    f"❌ Could not find player `{username}`",
-                    ephemeral=True
-                )
+                await errors.PLAYER_NOT_FOUND.send(interaction, username=username)
                 return
             
             if player_data.get('multiple'):
-                await interaction.followup.send(
-                    f"❌ Multiple players found for `{username}`. Please be more specific.",
-                    ephemeral=True
+                await errors.INVALID_INPUT.send(
+                    interaction,
+                    reason=f"Multiple players found for `{username}`. Please be more specific.",
                 )
                 return
             
@@ -570,9 +568,9 @@ def setup(bot, has_required_role, config):
             sus_data = calculate_suspiciousness(player_data)
             
             if not sus_data:
-                await interaction.followup.send(
-                    "❌ Could not calculate suspiciousness",
-                    ephemeral=True
+                await errors.IMAGE_GENERATION_FAILED.send(
+                    interaction,
+                    reason="Could not calculate suspiciousness for this player.",
                 )
                 return
             
@@ -589,9 +587,9 @@ def setup(bot, has_required_role, config):
             await interaction.followup.send(file=file)
             
         except Exception as e:
-            await interaction.followup.send(
-                f"❌ Error generating sus card: {str(e)}",
-                ephemeral=True
+            await errors.IMAGE_GENERATION_FAILED.send(
+                interaction,
+                reason="Something went wrong while generating the sus card.",
             )
             print(f"[ERROR] Sus card command failed: {e}")
             import traceback

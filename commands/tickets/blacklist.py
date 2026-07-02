@@ -6,6 +6,7 @@ import os
 import aiohttp
 from utils.permissions import has_roles
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
+from utils import errors
 
 _BLACKLIST_DB = os.path.join(str(PROJECT_ROOT), 'databases', 'blacklist.db')
 
@@ -127,13 +128,7 @@ def setup(bot, has_required_role, config):
 
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Add to blacklist
@@ -178,13 +173,7 @@ def setup(bot, has_required_role, config):
 
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Remove from blacklist
@@ -197,15 +186,9 @@ def setup(bot, has_required_role, config):
                 color=0x00FF00,
                 timestamp=datetime.utcnow()
             )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
-            embed = discord.Embed(
-                title="❌ User Not Found",
-                description=f"**{username}** was not in the blacklist.",
-                color=0xFF0000,
-                timestamp=datetime.utcnow()
-            )
-        
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+            await errors.NOT_FOUND.send(interaction, reason=f"**{username}** was not in the blacklist.")
         
         print(f"Unblacklist command used: {username} - Deleted: {deleted}")
     

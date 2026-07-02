@@ -7,6 +7,7 @@ from discord.ext import tasks
 import random
 from utils.permissions import has_roles
 from utils.paths import DATA_DIR
+from utils import errors
 
 # Store task reference for teardown
 _birthday_task = None
@@ -133,12 +134,7 @@ def setup(bot, has_required_role, config):
         """Set the birthday announcement channel"""
         
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         data_file = load_birthdays()
@@ -175,12 +171,7 @@ def setup(bot, has_required_role, config):
         
         # Check permissions
         if not has_roles(interaction.user, BIRTH_REQUIRED_ROLES) and BIRTH_REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Validate date format
@@ -188,12 +179,7 @@ def setup(bot, has_required_role, config):
             parsed_date = datetime.strptime(date, "%d/%m")
             formatted_date = parsed_date.strftime("%d/%m")
         except ValueError:
-            error_embed = discord.Embed(
-                title="Invalid Date Format",
-                description="Please use DD/MM format (e.g., 15/03)",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="Please use DD/MM format (e.g., 15/03).")
             return
         
         # Create the timezone selector view
@@ -300,23 +286,13 @@ def setup(bot, has_required_role, config):
         
         # Check permissions
         if not has_roles(interaction.user, BIRTH_REQUIRED_ROLES) and BIRTH_REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Parse user ID from mention format <@123456> or raw ID
         user_id = user.strip().strip('<@!>')
         if not user_id.isdigit():
-            error_embed = discord.Embed(
-                title="Invalid User",
-                description="Please provide a valid user mention or user ID.",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+            await errors.INVALID_INPUT.send(interaction, reason="Please provide a valid user mention or user ID.")
             return
         
         # Load data
@@ -325,12 +301,7 @@ def setup(bot, has_required_role, config):
 
         # Check if birthday exists
         if user_id not in birthdays:
-            error_embed = discord.Embed(
-                title="Birthday Not Found",
-                description=f"No birthday found for <@{user_id}>",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+            await errors.send_custom_error(interaction, "Birthday Not Found", f"No birthday found for <@{user_id}>.")
             return
 
         # Remove birthday
@@ -490,12 +461,7 @@ def setup(bot, has_required_role, config):
         
         # Check permissions
         if not has_roles(interaction.user, REQUIRED_ROLES) and REQUIRED_ROLES:
-            missing_roles_embed = discord.Embed(
-                title="Permission Denied",
-                description="You don't have permission to use this command!",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=missing_roles_embed, ephemeral=True)
+            await errors.NO_PERMISSION.send(interaction)
             return
         
         # Load data
@@ -504,22 +470,12 @@ def setup(bot, has_required_role, config):
         # Get birthday channel
         birthday_channel_id = data_file['config'].get('birthday_channel_id', None)
         if not birthday_channel_id:
-            error_embed = discord.Embed(
-                title="No Birthday Channel Set",
-                description="Please set a birthday channel first with `/birthday_channel`.",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+            await errors.send_custom_error(interaction, "No Birthday Channel Set", "Please set a birthday channel first with `/birthday_channel`.")
             return
         
         channel = interaction.guild.get_channel(birthday_channel_id)
         if not channel:
-            error_embed = discord.Embed(
-                title="Channel Not Found",
-                description="The configured birthday channel no longer exists.",
-                color=0xFF0000
-            )
-            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+            await errors.send_custom_error(interaction, "Channel Not Found", "The configured birthday channel no longer exists.")
             return
         
         # Add birthday role

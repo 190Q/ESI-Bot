@@ -15,6 +15,13 @@ MAX_NEW_WARS_PER_CYCLE = 20
 MAX_NEW_GRAIDS_PER_CYCLE = 5
 STALE_OFFSET_REBASE_THRESHOLD = 50
 
+# If the tracker has not run for longer than this, the next award cycle is
+# treated as a cold start after downtime: dropped counters are silently
+# re-baselined to the current values instead of emitting "counter dropped"
+# warnings and holding a stale-high baseline (which would otherwise repeat
+# every cycle until each player climbed back over the old value).
+DOWNTIME_REBASE_THRESHOLD_SECONDS = 30 * 60  # 30 minutes
+
 # Guild-wide graid fault detection thresholds
 GRAID_FAULT_MIN_AFFECTED_PCT = 0.5
 GRAID_FAULT_MIN_MEMBERS = 10
@@ -390,8 +397,40 @@ def init_points_baseline(points_baseline_db: PathLike) -> None:
         )
         """
     )
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tracker_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
     conn.commit()
     conn.close()
+
+
+def _read_last_award_run(conn) -> Optional[datetime]:
+    """Return the UTC time of the last award cycle, or None if unknown."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM tracker_meta WHERE key = 'last_award_run_utc'"
+        ).fetchone()
+    except Exception:
+        return None
+    if not row or not row[0]:
+        return None
+    try:
+        return datetime.fromisoformat(row[0])
+    except ValueError:
+        return None
+
+
+def _write_last_award_run(conn, when: datetime) -> None:
+    """Persist the timestamp of the current award cycle."""
+    conn.execute(
+        "INSERT OR REPLACE INTO tracker_meta (key, value) VALUES ('last_award_run_utc', ?)",
+        (when.isoformat(),),
+    )
 
 
 def award_points_from_diff(
@@ -403,6 +442,7 @@ def award_points_from_diff(
     max_new_wars_per_cycle: int = MAX_NEW_WARS_PER_CYCLE,
     max_new_graids_per_cycle: int = MAX_NEW_GRAIDS_PER_CYCLE,
     stale_offset_rebase_threshold: int = STALE_OFFSET_REBASE_THRESHOLD,
+    downtime_rebase_threshold_seconds: int = DOWNTIME_REBASE_THRESHOLD_SECONDS,
     log_prefix: str = "[POINTS]",
 ) -> None:
     init_points_baseline(points_baseline_db)
@@ -437,6 +477,30 @@ def award_points_from_diff(
 
     conn = sqlite3.connect(str(_as_path(points_baseline_db)))
     c = conn.cursor()
+
+    # Detect a cold start after the tracker was stopped for a while. On the
+    # first cycle back, counters legitimately look "dropped" (a graid season
+    # reset, fault offsets carried forward, etc.), so we silently re-baseline
+    # instead of warning and holding a stale-high baseline. A missing record
+    # (first run ever / pre-existing baseline) is also treated as a cold start.
+    now = datetime.now(timezone.utc)
+    last_run = _read_last_award_run(conn)
+    if last_run is None:
+        cold_start_after_downtime = True
+        print(
+            f"{log_prefix} No previous run recorded; re-baselining any dropped "
+            f"counters silently for this cycle."
+        )
+    elif (now - last_run).total_seconds() > downtime_rebase_threshold_seconds:
+        cold_start_after_downtime = True
+        gap_minutes = (now - last_run).total_seconds() / 60
+        print(
+            f"{log_prefix} Detected tracker downtime (~{gap_minutes:.0f} min since last run); "
+            f"re-baselining dropped counters silently for this cycle."
+        )
+    else:
+        cold_start_after_downtime = False
+
     awarded_war_ep = 0
     awarded_graid_ep = 0
     awarded_players = set()
@@ -466,21 +530,33 @@ def award_points_from_diff(
         baseline_graids = prev_graids
 
         if current_wars < prev_wars:
-            print(
-                f"{log_prefix}[WARN] {username}: wars counter dropped "
-                f"({prev_wars} -> {current_wars}); keeping previous baseline."
-            )
-            new_wars = 0
+            if cold_start_after_downtime:
+                # Restart after downtime: accept the current value as the new
+                # baseline without warning or awarding retroactively.
+                new_wars = 0
+                baseline_wars = current_wars
+            else:
+                print(
+                    f"{log_prefix}[WARN] {username}: wars counter dropped "
+                    f"({prev_wars} -> {current_wars}); keeping previous baseline."
+                )
+                new_wars = 0
         else:
             new_wars = current_wars - prev_wars
             baseline_wars = current_wars
 
         if current_graids < prev_graids:
-            print(
-                f"{log_prefix}[WARN] {username}: guild-raid counter dropped "
-                f"({prev_graids} -> {current_graids}); keeping previous baseline."
-            )
-            new_graids = 0
+            if cold_start_after_downtime:
+                # Restart after downtime: accept the current value as the new
+                # baseline without warning or awarding retroactively.
+                new_graids = 0
+                baseline_graids = current_graids
+            else:
+                print(
+                    f"{log_prefix}[WARN] {username}: guild-raid counter dropped "
+                    f"({prev_graids} -> {current_graids}); keeping previous baseline."
+                )
+                new_graids = 0
         else:
             new_graids = current_graids - prev_graids
             baseline_graids = current_graids
@@ -528,6 +604,7 @@ def award_points_from_diff(
             (username, baseline_wars, baseline_graids, uuid),
         )
 
+    _write_last_award_run(conn, now)
     conn.commit()
     conn.close()
     print(

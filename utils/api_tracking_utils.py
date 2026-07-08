@@ -3,7 +3,7 @@ import os
 import shutil
 import sqlite3
 import statistics
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Callable, Dict, Optional, Union
 
@@ -405,6 +405,39 @@ def init_points_baseline(points_baseline_db: PathLike) -> None:
         )
         """
     )
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recovered_graid_allocations (
+            uuid TEXT,
+            username TEXT NOT NULL,
+            start_day TEXT NOT NULL,
+            end_day TEXT NOT NULL,
+            span_days INTEGER NOT NULL,
+            total_graids INTEGER NOT NULL,
+            source TEXT,
+            snapshot_path TEXT,
+            snapshot_time_utc TEXT,
+            generated_at_utc TEXT
+        )
+        """
+    )
+    recovered_cols = {
+        row[1]
+        for row in c.execute("PRAGMA table_info(recovered_graid_allocations)").fetchall()
+        if len(row) > 1
+    }
+    if "source" not in recovered_cols:
+        c.execute("ALTER TABLE recovered_graid_allocations ADD COLUMN source TEXT")
+    if "snapshot_path" not in recovered_cols:
+        c.execute("ALTER TABLE recovered_graid_allocations ADD COLUMN snapshot_path TEXT")
+    if "snapshot_time_utc" not in recovered_cols:
+        c.execute("ALTER TABLE recovered_graid_allocations ADD COLUMN snapshot_time_utc TEXT")
+    if "generated_at_utc" not in recovered_cols:
+        c.execute("ALTER TABLE recovered_graid_allocations ADD COLUMN generated_at_utc TEXT")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recovered_graid_allocations_username "
+        "ON recovered_graid_allocations(username)"
+    )
     conn.commit()
     conn.close()
 
@@ -500,6 +533,15 @@ def award_points_from_diff(
         )
     else:
         cold_start_after_downtime = False
+    recovery_start_day = now.date()
+    recovery_end_day = now.date()
+    recovery_span_days = 1
+    if cold_start_after_downtime and isinstance(last_run, datetime):
+        recovery_start_day = last_run.astimezone(timezone.utc).date() + timedelta(days=1)
+        if recovery_start_day > recovery_end_day:
+            recovery_start_day = recovery_end_day
+        recovery_span_days = max(1, (recovery_end_day - recovery_start_day).days + 1)
+    recovered_graid_markers = {}
 
     awarded_war_ep = 0
     awarded_graid_ep = 0
@@ -598,11 +640,57 @@ def award_points_from_diff(
             print(f"{log_prefix} {username}: +{graid_ep} guild raid point(s) ({new_graids} new raid(s))")
             awarded_graid_ep += graid_ep
             awarded_players.add(uuid)
+        if cold_start_after_downtime and new_graids > max_new_graids_per_cycle:
+            marker_key = username.lower().strip()
+            if marker_key:
+                marker = recovered_graid_markers.get(marker_key)
+                if marker is None:
+                    recovered_graid_markers[marker_key] = {
+                        "uuid": uuid,
+                        "username": username,
+                        "total_graids": int(new_graids),
+                    }
+                else:
+                    marker["total_graids"] += int(new_graids)
 
         c.execute(
             "UPDATE baseline SET username = ?, wars = ?, total_graids = ? WHERE uuid = ?",
             (username, baseline_wars, baseline_graids, uuid),
         )
+    if cold_start_after_downtime:
+        start_day_iso = recovery_start_day.isoformat()
+        end_day_iso = recovery_end_day.isoformat()
+        c.execute(
+            "DELETE FROM recovered_graid_allocations WHERE start_day = ? AND end_day = ?",
+            (start_day_iso, end_day_iso),
+        )
+        inserted_markers = 0
+        for marker in recovered_graid_markers.values():
+            total_graids = int(marker.get("total_graids", 0) or 0)
+            if total_graids <= 0:
+                continue
+            c.execute(
+                """
+                INSERT INTO recovered_graid_allocations
+                    (uuid, username, start_day, end_day, span_days, total_graids, generated_at_utc)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    marker.get("uuid"),
+                    marker.get("username"),
+                    start_day_iso,
+                    end_day_iso,
+                    recovery_span_days,
+                    total_graids,
+                    now.isoformat(),
+                ),
+            )
+            inserted_markers += 1
+        if inserted_markers > 0:
+            print(
+                f"{log_prefix} Recorded {inserted_markers} recovered guild-raid marker(s) "
+                f"for {start_day_iso} -> {end_day_iso}."
+            )
 
     _write_last_award_run(conn, now)
     conn.commit()

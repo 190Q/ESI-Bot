@@ -1,0 +1,14 @@
+{
+    "bypass_user_ids": [
+        967867229410574340
+    ],
+    "bypass_role_ids": [],
+    "global_blocked_roles": [
+        554889169705500672
+    ],
+    "application_blocked_roles": {
+        "envoy": [
+            554896955638153216
+        ]
+    }
+}

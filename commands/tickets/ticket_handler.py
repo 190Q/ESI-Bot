@@ -25,6 +25,7 @@ NOTIFICATION_FILE = _ROOT / 'data' / 'app_notifications.json'
 FORWARDED_APPS_FILE = _ROOT / 'data' / 'forwarded_applications.json'
 CHANNEL_OPENERS_FILE = _ROOT / 'data' / 'channel_openers.json'
 PENDING_APPS_FILE = _ROOT / 'data' / 'pending_applications.json'
+TICKET_RESTRICTIONS_FILE = _ROOT / 'data' / 'ticket_restrictions.json'
 
 # Load 7th Wynncraft API key for username verification
 WYNNCRAFT_VERIFICATION_KEY = os.getenv('WYNNCRAFT_KEY_7')
@@ -173,6 +174,81 @@ def save_channel_openers(openers):
     """Save channel opener mappings"""
     with open(CHANNEL_OPENERS_FILE, 'w') as f:
         json.dump(openers, f, indent=4)
+
+def load_ticket_restrictions():
+    """Load role-based ticket restrictions from JSON file"""
+    defaults = {
+        'bypass_user_ids': [],
+        'bypass_role_ids': [],
+        'global_blocked_roles': [],
+        'application_blocked_roles': {}
+    }
+    if TICKET_RESTRICTIONS_FILE.exists():
+        try:
+            with open(TICKET_RESTRICTIONS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    merged = defaults.copy()
+                    merged.update(data)
+                    if not isinstance(merged.get('application_blocked_roles'), dict):
+                        merged['application_blocked_roles'] = {}
+                    return merged
+        except Exception as e:
+            print(f"[TICKETS] Failed to load ticket restrictions: {e}")
+    return defaults
+
+def _parse_role_ids(raw_roles):
+    role_ids = set()
+    if not isinstance(raw_roles, list):
+        return role_ids
+    for role_id in raw_roles:
+        try:
+            role_ids.add(int(role_id))
+        except (TypeError, ValueError):
+            continue
+    return role_ids
+
+def get_ticket_restriction(user, application_name: str):
+    """Return restriction details if a user is blocked from opening a ticket"""
+    restrictions = load_ticket_restrictions()
+    user_role_ids = {role.id for role in getattr(user, 'roles', [])}
+    user_id = getattr(user, 'id', None)
+
+    # Bypass list: users/roles in this list ignore all ticket restrictions.
+    bypass_user_ids = _parse_role_ids(restrictions.get('bypass_user_ids', []))
+    if user_id in bypass_user_ids:
+        return None
+
+    bypass_role_ids = _parse_role_ids(restrictions.get('bypass_role_ids', []))
+    if user_role_ids.intersection(bypass_role_ids):
+        return None
+
+    global_blocked_roles = _parse_role_ids(restrictions.get('global_blocked_roles', []))
+    matched_global_roles = user_role_ids.intersection(global_blocked_roles)
+    if matched_global_roles:
+        return {
+            'type': 'global',
+            'role_id': next(iter(matched_global_roles))
+        }
+
+    application_blocked_roles = restrictions.get('application_blocked_roles', {})
+    if not isinstance(application_blocked_roles, dict):
+        return None
+
+    application_name_normalized = str(application_name).strip().lower()
+    for restricted_ticket_type, restricted_roles in application_blocked_roles.items():
+        if str(restricted_ticket_type).strip().lower() != application_name_normalized:
+            continue
+        ticket_blocked_roles = _parse_role_ids(restricted_roles)
+        matched_ticket_roles = user_role_ids.intersection(ticket_blocked_roles)
+        if matched_ticket_roles:
+            return {
+                'type': 'application',
+                'role_id': next(iter(matched_ticket_roles))
+            }
+        break
+
+    return None
 
 def load_notification_users():
     """Load users who want app notifications"""
@@ -2957,6 +3033,34 @@ async def create_application_channel(interaction: discord.Interaction, applicati
         category = interaction.guild.get_channel(panel_data['ticket_category_id'])
         if not category:
             await errors.NOT_FOUND.send(interaction, reason="Ticket category not found.")
+            return
+
+        # Block restricted roles from opening tickets
+        ticket_restriction = get_ticket_restriction(interaction.user, application_name)
+        if ticket_restriction:
+            blocked_role_id = ticket_restriction['role_id']
+            blocked_role = interaction.guild.get_role(blocked_role_id)
+            blocked_role_text = blocked_role.mention if blocked_role else f"`{blocked_role_id}`"
+
+            if ticket_restriction['type'] == 'global':
+                restriction_message = (
+                    f"You cannot open ticket applications because your role "
+                    f"{blocked_role_text} is restricted from opening tickets."
+                )
+            else:
+                restriction_message = (
+                    f"You cannot open a **{application_name}** application because your role "
+                    f"{blocked_role_text} is restricted for this ticket type."
+                )
+
+            await errors.send_custom_error(
+                interaction,
+                "Ticket Opening Restricted",
+                restriction_message,
+                steps=[
+                    "Contact staff if you believe this restriction is incorrect."
+                ],
+            )
             return
         
         # Get settings for this application

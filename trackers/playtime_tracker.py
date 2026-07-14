@@ -8,9 +8,12 @@ import asyncio
 import aiohttp
 import sqlite3
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from utils.coverage_utils import record_daily_coverage
 
 # Load environment variables
 load_dotenv()
@@ -23,6 +26,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DB_FOLDER = BASE_DIR / "databases"
 PLAYTIME_DB_PATH = DB_FOLDER / "playtime_tracking.db"
 PLAYTIME_TRACKING_FOLDER = DB_FOLDER / "playtime_tracking"
+COVERAGE_DB_PATH = PLAYTIME_TRACKING_FOLDER / "coverage.db"
 
 # Constants
 FETCH_INTERVAL_SECONDS = 300  # 5 minutes
@@ -231,11 +235,19 @@ def cleanup_old_day_folders():
             date_str = folder.name.replace("playtime_", "")
             folder_date = datetime.strptime(date_str, "%d-%m-%Y").date()
             days_old = (today - folder_date).days
+            db_files = sorted(folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
+            should_record_coverage = 1 <= days_old < 7
+            if should_record_coverage:
+                record_daily_coverage(
+                    COVERAGE_DB_PATH,
+                    date_str,
+                    folder.name,
+                    db_files,
+                    log_prefix="[PLAYTIME][COVERAGE]",
+                )
             
             # Collapse any folder older than 7 days down to the latest snapshot
             if days_old >= 7:
-                db_files = sorted(folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
-                
                 if len(db_files) <= 1:
                     continue
                 

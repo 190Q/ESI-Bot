@@ -6,6 +6,7 @@ import statistics
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Callable, Dict, Optional, Union
+from utils.coverage_utils import record_daily_coverage
 
 
 PathLike = Union[str, Path]
@@ -162,13 +163,21 @@ def cleanup_old_day_folders(
             days_old = (today - folder_date).days
         except ValueError:
             continue
+        db_files = sorted(folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
+        should_record_coverage = 1 <= days_old < min_days_old
+        if should_record_coverage:
+            record_daily_coverage(
+                api_tracking / "coverage.db",
+                date_str,
+                folder.name,
+                db_files,
+                log_prefix=f"{log_prefix}[COVERAGE]",
+            )
 
         if days_old < min_days_old:
             continue
         if max_days_old is not None and days_old > max_days_old:
             continue
-
-        db_files = sorted(folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
         if len(db_files) <= 1:
             continue
 

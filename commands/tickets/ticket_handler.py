@@ -2962,6 +2962,32 @@ async def create_application_channel(interaction: discord.Interaction, applicati
         # Get settings for this application
         settings = panel_data.get('settings', {}).get(application_name, {})
         channel_name_template = settings.get('channel_name', 'application-%user%')
+
+        # Prevent users from opening multiple applications at the same time
+        channel_openers = load_channel_openers()
+        existing_application_channel = None
+        for channel_id, opener_id in channel_openers.items():
+            if str(opener_id) != str(interaction.user.id):
+                continue
+            try:
+                existing_channel = interaction.guild.get_channel(int(channel_id))
+            except (TypeError, ValueError):
+                continue
+            if existing_channel:
+                existing_application_channel = existing_channel
+                break
+
+        if existing_application_channel:
+            await errors.send_custom_error(
+                interaction,
+                "Application Already Open",
+                f"You already have an open application: {existing_application_channel.mention}.",
+                steps=[
+                    "Use your existing application channel instead of opening a new one.",
+                    "Ask a staff member to close it first if you need to start over.",
+                ],
+            )
+            return
         
         # Generate a temporary ID (we'll use timestamp for now)
         temp_id = int(datetime.now().timestamp())

@@ -3,6 +3,7 @@ from discord import app_commands
 from discord.ui import View, Button, Modal, TextInput, Select
 import os
 import json
+import re
 from pathlib import Path
 from datetime import datetime, timezone
 import asyncio
@@ -11,10 +12,103 @@ from utils import errors
 
 AUTO_REACT_DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "auto_reactions.json"
 ITEMS_PER_PAGE = 5
+CUSTOM_EMOJI_PATTERN = re.compile(r"^<a?:[A-Za-z0-9_]{2,32}:(\d{17,20})>$")
+EMOJI_ID_PATTERN = re.compile(r"^\d{17,20}$")
+EMOJI_NAME_PATTERN = re.compile(r"^:?[A-Za-z0-9_]{2,32}:?$")
 
 REQUIRED_ROLES = [
     int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else 0
 ]
+
+def normalize_emoji_input(emoji: str) -> str:
+    """Normalize emoji input so raw IDs and custom emoji mentions are stored consistently."""
+    emoji = emoji.strip()
+    if not emoji:
+        return emoji
+    
+    # Already a custom emoji mention like <:name:id> or <a:name:id>
+    if CUSTOM_EMOJI_PATTERN.fullmatch(emoji):
+        return emoji
+    
+    # Raw custom emoji ID -> convert to mention format
+    if EMOJI_ID_PATTERN.fullmatch(emoji):
+        return str(discord.PartialEmoji(name="emoji", id=int(emoji)))
+    
+    # Unicode emoji or any other literal input
+    return emoji
+async def fetch_application_emoji_map(bot) -> dict:
+    """Fetch app emojis and return a {name: emoji, id_str: emoji} lookup map."""
+    emoji_map = {}
+    try:
+        app_emojis = await bot.fetch_application_emojis()
+    except Exception:
+        app_emojis = []
+    
+    for app_emoji in app_emojis:
+        emoji_map[app_emoji.name] = app_emoji
+        emoji_map[str(app_emoji.id)] = app_emoji
+    
+    return emoji_map
+
+async def normalize_emoji_with_app_lookup(emoji: str, app_emoji_map: dict) -> str:
+    """Normalize input including app-only emoji names like :scuba_car: or scuba_car."""
+    emoji = normalize_emoji_input(emoji)
+    if not emoji:
+        return emoji
+    
+    # Try to resolve :name: or name to an application emoji mention
+    if EMOJI_NAME_PATTERN.fullmatch(emoji) and not CUSTOM_EMOJI_PATTERN.fullmatch(emoji):
+        normalized_name = emoji.strip(":")
+        app_emoji = app_emoji_map.get(normalized_name)
+        if app_emoji:
+            prefix = "a" if getattr(app_emoji, "animated", False) else ""
+            return f"<{prefix}:{app_emoji.name}:{app_emoji.id}>"
+    
+    # If it was an ID and we can resolve exact app emoji, store with real name
+    if EMOJI_ID_PATTERN.fullmatch(emoji):
+        app_emoji = app_emoji_map.get(emoji)
+        if app_emoji:
+            prefix = "a" if getattr(app_emoji, "animated", False) else ""
+            return f"<{prefix}:{app_emoji.name}:{app_emoji.id}>"
+    
+    return emoji
+
+async def resolve_emoji_for_reaction(emoji: str, app_emoji_map: dict):
+    """Resolve legacy/plain emoji tokens to a reaction-safe object/string."""
+    reaction_emoji = build_reaction_emoji(emoji)
+    if reaction_emoji is None:
+        return None
+    
+    # If already parsed as custom mention/ID/unicode, use it
+    if isinstance(reaction_emoji, discord.PartialEmoji):
+        return reaction_emoji
+    if isinstance(reaction_emoji, str) and (CUSTOM_EMOJI_PATTERN.fullmatch(reaction_emoji) or not EMOJI_NAME_PATTERN.fullmatch(reaction_emoji)):
+        return reaction_emoji
+    
+    # Legacy formats like :name: or name
+    normalized_name = reaction_emoji.strip(":")
+    app_emoji = app_emoji_map.get(normalized_name)
+    if app_emoji:
+        return discord.PartialEmoji(name=app_emoji.name, id=app_emoji.id, animated=getattr(app_emoji, "animated", False))
+    
+    return reaction_emoji
+
+def build_reaction_emoji(emoji: str):
+    """Build a reaction-safe emoji object/string for message.add_reaction."""
+    emoji = emoji.strip()
+    if not emoji:
+        return None
+    
+    # Backward compatibility in case plain IDs were already saved
+    if EMOJI_ID_PATTERN.fullmatch(emoji):
+        return discord.PartialEmoji(name="emoji", id=int(emoji))
+    
+    # Custom mention format -> parse into PartialEmoji
+    if CUSTOM_EMOJI_PATTERN.fullmatch(emoji):
+        return discord.PartialEmoji.from_str(emoji)
+    
+    # Unicode emoji
+    return emoji
 
 def load_auto_reactions() -> dict:
     """Load auto-reactions database from JSON file."""
@@ -47,7 +141,7 @@ def setup(bot, has_required_role, config):
         )
         emoji_input = TextInput(
             label="Emoji(s)",
-            placeholder="Enter emoji(s) separated by spaces (e.g., 👍 🎉 ❤️)",
+            placeholder="Separate with spaces (e.g., 👍 <:wave:123...> 1528536164816912506)",
             required=True,
             max_length=100
         )
@@ -72,6 +166,8 @@ def setup(bot, has_required_role, config):
             
             # Parse emojis (split by spaces)
             emojis = self.emoji_input.value.strip().split()
+            app_emoji_map = await fetch_application_emoji_map(bot)
+            self.manage_view.app_emoji_map = app_emoji_map
             
             # Load and update database
             auto_reactions = load_auto_reactions()
@@ -86,6 +182,7 @@ def setup(bot, has_required_role, config):
             
             added_emojis = []
             for emoji in emojis:
+                emoji = await normalize_emoji_with_app_lookup(emoji, app_emoji_map)
                 if emoji and emoji not in auto_reactions[user_id_str]["emojis"]:
                     auto_reactions[user_id_str]["emojis"].append(emoji)
                     added_emojis.append(emoji)
@@ -116,7 +213,8 @@ def setup(bot, has_required_role, config):
             options = []
             
             for user_id, data in list(view.auto_reactions.items())[:25]:  # Discord limit: 25 options
-                emojis_preview = " ".join(data.get("emojis", []))[:50]
+                resolved_preview = [view.resolve_emoji_for_display(e) for e in data.get("emojis", [])]
+                emojis_preview = " ".join(resolved_preview)[:50]
                 options.append(discord.SelectOption(
                     label=f"{data.get('target_username', 'Unknown')}"[:100],
                     description=f"Emojis: {emojis_preview}"[:100] if emojis_preview else "No emojis",
@@ -139,13 +237,14 @@ def setup(bot, has_required_role, config):
             
             user_id = self.values[0]
             data = self.manage_view.auto_reactions.get(user_id, {})
+            resolved_emojis = [self.manage_view.resolve_emoji_for_display(e) for e in data.get("emojis", [])]
             
             # Create a view with emoji removal options
             remove_view = RemoveEmojiView(self.manage_view, user_id, data)
             
             embed = discord.Embed(
                 title=f"Manage Reactions for {data.get('target_username', 'Unknown')}",
-                description=f"**User ID:** {user_id}\n**Current Emojis:** {' '.join(data.get('emojis', []))}",
+                description=f"**User ID:** {user_id}\n**Current Emojis:** {' '.join(resolved_emojis)}",
                 color=0x3498DB,
                 timestamp=datetime.now(timezone.utc)
             )
@@ -221,10 +320,11 @@ def setup(bot, has_required_role, config):
     
     class AutoReactManageView(View):
         """Main view for managing auto-reactions with pagination"""
-        def __init__(self, user_id: int):
+        def __init__(self, user_id: int, app_emoji_map: dict | None = None):
             super().__init__(timeout=300)
             self.user_id = user_id
             self.page = 0
+            self.app_emoji_map = app_emoji_map or {}
             self.auto_reactions = load_auto_reactions()
             self.update_buttons()
         
@@ -238,6 +338,25 @@ def setup(bot, has_required_role, config):
             start = self.page * ITEMS_PER_PAGE
             end = start + ITEMS_PER_PAGE
             return items[start:end]
+        
+        def resolve_emoji_for_display(self, emoji: str) -> str:
+            emoji = (emoji or "").strip()
+            if not emoji:
+                return emoji
+            if CUSTOM_EMOJI_PATTERN.fullmatch(emoji):
+                return emoji
+            if EMOJI_ID_PATTERN.fullmatch(emoji):
+                app_emoji = self.app_emoji_map.get(emoji)
+                if app_emoji:
+                    prefix = "a" if getattr(app_emoji, "animated", False) else ""
+                    return f"<{prefix}:{app_emoji.name}:{app_emoji.id}>"
+                return emoji
+            if EMOJI_NAME_PATTERN.fullmatch(emoji):
+                app_emoji = self.app_emoji_map.get(emoji.strip(":"))
+                if app_emoji:
+                    prefix = "a" if getattr(app_emoji, "animated", False) else ""
+                    return f"<{prefix}:{app_emoji.name}:{app_emoji.id}>"
+            return emoji
         
         def build_embed(self) -> discord.Embed:
             embed = discord.Embed(
@@ -253,7 +372,8 @@ def setup(bot, has_required_role, config):
             embed.description = f"**{len(self.auto_reactions)}** user(s) with auto-reactions\nPage {self.page + 1}/{self.total_pages}"
             
             for user_id, data in self.get_page_items():
-                emojis_str = " ".join(data.get("emojis", []))
+                resolved_emojis = [self.resolve_emoji_for_display(e) for e in data.get("emojis", [])]
+                emojis_str = " ".join(resolved_emojis)
                 embed.add_field(
                     name=f"{data.get('target_username', 'Unknown')}",
                     value=f"**ID:** `{user_id}`\n**Emojis:** {emojis_str}",
@@ -306,6 +426,7 @@ def setup(bot, has_required_role, config):
                 await errors.send_custom_error(interaction, "Not Your Menu", "This is not your menu!")
                 return
             self.auto_reactions = load_auto_reactions()
+            self.app_emoji_map = await fetch_application_emoji_map(bot)
             self.page = min(self.page, self.total_pages - 1)
             self.update_buttons()
             await interaction.response.edit_message(embed=self.build_embed(), view=self)
@@ -322,7 +443,8 @@ def setup(bot, has_required_role, config):
             await errors.NO_PERMISSION.send(interaction)
             return
         
-        view = AutoReactManageView(interaction.user.id)
+        app_emoji_map = await fetch_application_emoji_map(bot)
+        view = AutoReactManageView(interaction.user.id, app_emoji_map)
         embed = view.build_embed()
         
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
@@ -342,11 +464,15 @@ def setup(bot, has_required_role, config):
         user_id_str = str(message.author.id)
         if user_id_str in auto_reactions:
             emojis = auto_reactions[user_id_str].get("emojis", [])
+            app_emoji_map = await fetch_application_emoji_map(bot)
             
             # React with each emoji, with a small delay between reactions to avoid API rate limiting
             for emoji in emojis:
                 try:
-                    await message.add_reaction(emoji)
+                    reaction_emoji = await resolve_emoji_for_reaction(emoji, app_emoji_map)
+                    if reaction_emoji is None:
+                        continue
+                    await message.add_reaction(reaction_emoji)
                     # Add a small delay between reactions to avoid hitting Discord API limits
                     await asyncio.sleep(0.2)
                 except discord.HTTPException as e:

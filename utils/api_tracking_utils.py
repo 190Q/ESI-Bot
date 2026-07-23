@@ -165,7 +165,12 @@ def cleanup_old_day_folders(
             continue
         db_files = sorted(folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
         should_record_coverage = 1 <= days_old < min_days_old
-        if should_record_coverage:
+        within_collapse_window = (
+            days_old >= min_days_old
+            and (max_days_old is None or days_old <= max_days_old)
+        )
+        should_record_before_collapse = within_collapse_window and len(db_files) > 1
+        if should_record_coverage or should_record_before_collapse:
             record_daily_coverage(
                 api_tracking / "coverage.db",
                 date_str,
@@ -173,10 +178,7 @@ def cleanup_old_day_folders(
                 db_files,
                 log_prefix=f"{log_prefix}[COVERAGE]",
             )
-
-        if days_old < min_days_old:
-            continue
-        if max_days_old is not None and days_old > max_days_old:
+        if not within_collapse_window:
             continue
         if len(db_files) <= 1:
             continue

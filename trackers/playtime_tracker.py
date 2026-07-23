@@ -236,8 +236,10 @@ def cleanup_old_day_folders():
             folder_date = datetime.strptime(date_str, "%d-%m-%Y").date()
             days_old = (today - folder_date).days
             db_files = sorted(folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
+            db_files = [f for f in db_files if not (f.stat().st_size == 0 and f.unlink() is None)]
             should_record_coverage = 1 <= days_old < 7
-            if should_record_coverage:
+            should_record_before_collapse = days_old >= 7 and len(db_files) > 1
+            if should_record_coverage or should_record_before_collapse:
                 record_daily_coverage(
                     COVERAGE_DB_PATH,
                     date_str,
@@ -245,31 +247,24 @@ def cleanup_old_day_folders():
                     db_files,
                     log_prefix="[PLAYTIME][COVERAGE]",
                 )
-            
-            # Collapse any folder older than 7 days down to the latest snapshot
-            if days_old >= 7:
-                if len(db_files) <= 1:
-                    continue
-                
-                # Remove any 0-byte database files first
-                db_files = [f for f in db_files if not (f.stat().st_size == 0 and f.unlink() is None)]
-                
-                if len(db_files) <= 1:
-                    continue
-                
-                # Keep only the latest file
-                files_to_delete = db_files[:-1]  # All except the last (newest)
-                deleted_count = 0
-                
-                for db_file in files_to_delete:
-                    try:
-                        db_file.unlink()
-                        deleted_count += 1
-                    except Exception as e:
-                        print(f"[PLAYTIME] Failed to delete {db_file}: {e}")
-                
-                if deleted_count > 0:
-                    print(f"[PLAYTIME] Cleaned {deleted_count} files from {folder.name} ({days_old} days old, kept latest only)")
+            if days_old < 7:
+                continue
+            if len(db_files) <= 1:
+                continue
+
+            # Keep only the latest file
+            files_to_delete = db_files[:-1]  # All except the last (newest)
+            deleted_count = 0
+
+            for db_file in files_to_delete:
+                try:
+                    db_file.unlink()
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"[PLAYTIME] Failed to delete {db_file}: {e}")
+
+            if deleted_count > 0:
+                print(f"[PLAYTIME] Cleaned {deleted_count} files from {folder.name} ({days_old} days old, kept latest only)")
         
         except ValueError:
             continue

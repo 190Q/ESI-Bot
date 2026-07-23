@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from utils.permissions import has_roles
 from utils import errors
+from utils.coverage_utils import record_daily_coverage
 
 # Configuration
 OWNER_ID_RAW = os.getenv('OWNER_ID')
@@ -21,6 +22,7 @@ WYNNCRAFT_KEY_11 = os.getenv('WYNNCRAFT_KEY_11')
 DB_FOLDER = Path(__file__).resolve().parent.parent.parent / "databases"
 PLAYTIME_DB_PATH = DB_FOLDER / "playtime_tracking.db"
 PLAYTIME_TRACKING_FOLDER = DB_FOLDER / "playtime_tracking"
+COVERAGE_DB_PATH = PLAYTIME_TRACKING_FOLDER / "coverage.db"
 
 # Constants
 FETCH_INTERVAL_SECONDS = 300  # 5 minutes
@@ -220,6 +222,14 @@ def cleanup_old_day_folders():
                 
                 if len(db_files) <= 1:
                     continue
+
+                record_daily_coverage(
+                    COVERAGE_DB_PATH,
+                    date_str,
+                    folder.name,
+                    db_files,
+                    log_prefix="[PLAYTIME][COVERAGE]",
+                )
                 
                 # Keep only the latest file
                 files_to_delete = db_files[:-1]  # All except the last (newest)

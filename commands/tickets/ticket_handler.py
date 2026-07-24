@@ -1753,8 +1753,8 @@ class ApplicationNavigationView(View):
         # Add confirm button if all required questions are filled
         if all_required_answered:
             confirm_button = Button(
-                label="✅ Preview Application",
-                style=discord.ButtonStyle.success,
+                label="▶️ Next",
+                style=discord.ButtonStyle.primary,
                 custom_id="confirm_submit"
             )
             confirm_button.callback = self.preview_and_submit

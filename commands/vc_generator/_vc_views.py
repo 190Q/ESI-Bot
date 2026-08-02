@@ -1738,7 +1738,7 @@ class PresetBuilderView(UserBoundView):
                 title="Ban Users/Roles",
                 description=(
                     "Select users/roles that should be blocked by this draft preset.\n"
-                    "Banned targets cannot join and cannot knock when this preset is applied.\n"
+                    "Banned targets cannot see, join, or knock when this preset is applied.\n"
                     "Changes are only applied when you click Save; Cancel discards them.\n"
                     f"You can choose up to {editable_count} entries."
                 ),
@@ -2359,7 +2359,7 @@ class VCPanelView(UserBoundView):
                 title="Ban Users/Roles",
                 description=(
                     "Select users/roles that should be completely blocked from this VC.\n"
-                    "Banned targets cannot join and cannot knock.\n"
+                    "Banned targets cannot see, join, or knock on this channel.\n"
                     "Changes are only applied when you click Save; Cancel discards them.\n"
                     f"You can choose up to {editable_count} entries."
                 ),

@@ -1213,9 +1213,7 @@ class TempVCSystem:
                 continue
             seen.add(user_id)
             member = guild.get_member(user_id)
-            if member is None:
-                continue
-            if self._can_set_member_overwrite(guild, member):
+            if member is None or self._can_set_member_overwrite(guild, member):
                 manageable_ids.append(user_id)
             else:
                 skipped_labels.append(member.mention if getattr(member, "mention", None) else f"<@{user_id}>")
@@ -1271,8 +1269,9 @@ class TempVCSystem:
             )
 
     def _build_everyone_overwrite(self, entry: Dict[str, Any]) -> discord.PermissionOverwrite:
-        everyone_view = not entry.get("hidden", False)
-        everyone_connect = not entry.get("locked", False) and not entry.get("hidden", False)
+        access_restricted = bool(entry.get("locked", False) or entry.get("hidden", False))
+        everyone_view = not access_restricted
+        everyone_connect = not access_restricted
         return discord.PermissionOverwrite(
             view_channel=everyone_view,
             connect=everyone_connect,
@@ -1581,6 +1580,36 @@ class TempVCSystem:
             baseline_overwrites[target] = overwrite
         return baseline_overwrites
 
+    def _member_is_banned_from_entry(self, member: discord.Member, entry: Dict[str, Any]) -> bool:
+        banned_user_ids = {int(uid) for uid in entry.get("banned_users", []) if str(uid).isdigit()}
+        if int(member.id) in banned_user_ids:
+            return True
+        banned_role_ids = {int(rid) for rid in entry.get("banned_roles", []) if str(rid).isdigit()}
+        if not banned_role_ids:
+            return False
+        return any(role.id in banned_role_ids for role in member.roles)
+
+    async def _disconnect_unauthorized_members(
+        self,
+        channel: discord.VoiceChannel,
+        entry: Dict[str, Any],
+        reason: str,
+    ):
+        owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
+        for member in list(channel.members):
+            if member.bot:
+                continue
+            if owner_id and member.id == owner_id:
+                continue
+            if self.is_admin_member(member):
+                continue
+            if not self._member_is_banned_from_entry(member, entry):
+                continue
+            try:
+                await member.move_to(None, reason=reason)
+            except Exception:
+                pass
+
     def _build_channel_overwrites(
         self,
         guild: discord.Guild,
@@ -1592,12 +1621,6 @@ class TempVCSystem:
             category,
         )
         overwrites[guild.default_role] = self._build_everyone_overwrite(entry)
-
-        owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
-        if owner_id:
-            owner_member = guild.get_member(owner_id)
-            if owner_member and self._can_set_member_overwrite(guild, owner_member):
-                overwrites[owner_member] = self._owner_overwrite(entry)
 
         permit_overwrite = self._permit_overwrite(entry)
         ban_overwrite = self._ban_overwrite()
@@ -1619,8 +1642,9 @@ class TempVCSystem:
         )
         for user_id in permitted_user_ids:
             member = guild.get_member(int(user_id))
-            if member:
-                overwrites[member] = permit_overwrite
+            target = member if member is not None else discord.Object(id=int(user_id))
+            overwrites[target] = permit_overwrite
+
         banned_role_ids, _ = self._partition_manageable_roles_for_overwrites(
             guild,
             entry.get("banned_roles", []),
@@ -1636,8 +1660,15 @@ class TempVCSystem:
         )
         for user_id in banned_user_ids:
             member = guild.get_member(int(user_id))
-            if member:
-                overwrites[member] = ban_overwrite
+            target = member if member is not None else discord.Object(id=int(user_id))
+            overwrites[target] = ban_overwrite
+
+        owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
+        if owner_id:
+            owner_member = guild.get_member(owner_id)
+            if owner_member and self._can_set_member_overwrite(guild, owner_member):
+                overwrites[owner_member] = self._owner_overwrite(entry)
+
         bot_overwrite_target = self._get_bot_overwrite_target(guild)
         if bot_overwrite_target is not None:
             overwrites[bot_overwrite_target] = self._owner_overwrite(entry)
@@ -1723,6 +1754,11 @@ class TempVCSystem:
         entry["bitrate"] = bitrate
         entry["user_limit"] = user_limit
         entry["region"] = region
+        await self._disconnect_unauthorized_members(
+            channel,
+            entry,
+            reason=f"Removed banned member ({edit_reason})",
+        )
 
     def _resolve_template(self, config: Dict[str, Any], template_name: str) -> Dict[str, Any]:
         templates = config.get("templates", {})

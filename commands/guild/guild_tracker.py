@@ -30,6 +30,9 @@ WYNNCRAFT_API_KEY = os.getenv('WYNNCRAFT_KEY_7')
 # Path to username matches DB (maps Discord user ID -> Wynncraft username)
 USERNAME_MATCH_DB_PATH = Path(__file__).parent.parent.parent / "data/username_matches.json"
 
+# Only watch member leaves from this Discord server
+MAIN_GUILD_ID = 554418045397762048
+
 DELAY = 30  # Check interval (same as standalone tracker)
 
 # Path to the JSON file (shared with standalone tracker)
@@ -819,6 +822,9 @@ def setup(bot_instance, has_required_role, config):
         if not notifications_enabled:
             return
         
+        if member.guild.id != MAIN_GUILD_ID:
+            return
+        
         try:
             # Load username matches to find their Wynncraft username
             try:
@@ -870,7 +876,8 @@ def setup(bot_instance, has_required_role, config):
                 color=0xFF6600,
                 timestamp=datetime.now(timezone.utc)
             )
-            await channel.send(embed=embed, content=f"```\n/gu kick {wynncraft_username}\n```")
+            await channel.send(embed=embed)
+            await channel.send(f"```\n/gu kick {wynncraft_username}\n```")
             print(f"[GUILD NOTIFY] Sent Discord leave kick notification for {wynncraft_username} (Discord: {member})")
         
         except Exception as e:

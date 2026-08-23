@@ -166,6 +166,8 @@ class MultiLangBot(commands.Bot):
         # Player stats scheduler
         self.stats_scheduler = None
         
+        self._loaded_command_modules = {}
+        
         # Add global interaction check for ban system
         self.tree.interaction_check = self.global_interaction_check
         
@@ -229,26 +231,58 @@ class MultiLangBot(commands.Bot):
             print("[OK] Daily restart scheduled for 00:00")
             
             # Initialize player stats scheduler
-            if PlayerStatsScheduler and PlayerStatsConfig:
-                try:
-                    # Hardcoded to track Empire of Sindria guild
-                    TRACKED_GUILD = "Empire of Sindria"
-                    
-                    self.stats_scheduler = PlayerStatsScheduler(
-                        self.wynncraft_api,
-                        player_list=[],
-                        guild_list=[TRACKED_GUILD]
-                    )
-                    # Start the scheduler
-                    self.stats_scheduler.start()
-                    print(f"[OK] Player stats scheduler started (tracking guild: {TRACKED_GUILD})")
-                except Exception as e:
-                    print(f"[WARNING] Failed to start player stats scheduler: {e}")
+            await self._init_player_stats_scheduler()
             
         except Exception as e:
             print(f"[ERROR] Failed during setup_hook: {e}")
             import traceback
             traceback.print_exc()
+    
+    async def _init_player_stats_scheduler(self, fresh_reload=False):
+        """(Re)initialize the player stats scheduler.
+        
+        Mirrors the initialization that happens in setup_hook() on a real
+        startup. Called both on startup and on /reload so the scheduler is
+        fully torn down and rebuilt just like the rest of the bot's state.
+        """
+        global PlayerStatsScheduler, PlayerStatsConfig
+        
+        # Stop and discard any existing scheduler first
+        if self.stats_scheduler:
+            try:
+                print("[RELOAD] Stopping existing player stats scheduler...")
+                self.stats_scheduler.stop()
+                print("[RELOAD] Player stats scheduler stopped")
+            except Exception as e:
+                print(f"[WARNING] Failed to stop existing player stats scheduler: {e}")
+            self.stats_scheduler = None
+        
+        if fresh_reload:
+            try:
+                import importlib
+                import player_stats_scheduler as _pss_module
+                importlib.reload(_pss_module)
+                PlayerStatsScheduler = _pss_module.PlayerStatsScheduler
+                PlayerStatsConfig = _pss_module.PlayerStatsConfig
+                print("[RELOAD] Reloaded player_stats_scheduler module")
+            except Exception as e:
+                print(f"[WARNING] Failed to reload player_stats_scheduler module: {e}")
+        
+        if PlayerStatsScheduler and PlayerStatsConfig:
+            try:
+                # Hardcoded to track Empire of Sindria guild
+                TRACKED_GUILD = "Empire of Sindria"
+                
+                self.stats_scheduler = PlayerStatsScheduler(
+                    self.wynncraft_api,
+                    player_list=[],
+                    guild_list=[TRACKED_GUILD]
+                )
+                # Start the scheduler
+                self.stats_scheduler.start()
+                print(f"[OK] Player stats scheduler started (tracking guild: {TRACKED_GUILD})")
+            except Exception as e:
+                print(f"[WARNING] Failed to start player stats scheduler: {e}")
     
     @tasks.loop(time=time(hour=0, minute=0))
     async def daily_restart(self):
@@ -298,6 +332,17 @@ class MultiLangBot(commands.Bot):
         total_files = 0
         loaded_files = 0
         failed_commands = []  # Track failed commands with errors
+        
+        if self._loaded_command_modules:
+            print(f"[RELOAD] Tearing down {len(self._loaded_command_modules)} previously loaded command module(s)...")
+            for prev_rel_path, prev_module in self._loaded_command_modules.items():
+                if hasattr(prev_module, 'teardown'):
+                    try:
+                        print(f"[RELOAD] Calling teardown() for {prev_rel_path}")
+                        prev_module.teardown(self)
+                    except Exception as teardown_error:
+                        print(f"[RELOAD] Warning: teardown() failed for {prev_rel_path}: {teardown_error}")
+            self._loaded_command_modules = {}
         
         # Get all Python files recursively
         python_files = list(PYTHON_COMMANDS_DIR.rglob('*.py'))
@@ -415,6 +460,9 @@ class MultiLangBot(commands.Bot):
                 
                 loaded_by_folder[folder_name].extend(command_names)
                 loaded_files += 1
+                
+                # Track this module instance so a future reload can tear it down
+                self._loaded_command_modules[str(rel_path)] = module
                 
             except Exception as e:
                 command_identifier = f"{rel_path}" if rel_path else "unknown command"
@@ -675,15 +723,20 @@ def create_bot():
             print("[RELOAD] Starting command reload...")
             print("=" * 60)
             
-            # CRITICAL: Clear Python's module cache for command files
             print("[RELOAD] Clearing Python module cache...")
+            bot_py_file = str(Path(__file__).resolve())
             modules_to_remove = []
-            for module_name in list(sys.modules.keys()):
-                # Remove any modules from commands directory
-                if 'commands' in module_name or module_name.startswith('commands.'):
-                    modules_to_remove.append(module_name)
-                # Also remove related modules (ticket_handler, etc.)
-                elif any(x in module_name for x in ['ticket_handler', 'fetch_api', 'player_stats', 'guild_queue']):
+            for module_name, module in list(sys.modules.items()):
+                module_file = getattr(module, '__file__', None)
+                if not module_file:
+                    continue
+                try:
+                    resolved = str(Path(module_file).resolve())
+                except Exception:
+                    continue
+                if resolved == bot_py_file:
+                    continue  # never reload bot.py itself
+                if resolved.startswith(str(_BOT_DIR)):
                     modules_to_remove.append(module_name)
             
             # Call teardown() on modules that have it before removing
@@ -701,6 +754,13 @@ def create_bot():
                 print(f"[RELOAD] Removed cached module: {module_name}")
             
             print(f"[RELOAD] Cleared {len(modules_to_remove)} cached modules")
+            
+            if bot._background_tasks:
+                print(f"[RELOAD] Cancelling {len(bot._background_tasks)} tracked background task(s)...")
+                for task in bot._background_tasks:
+                    if not task.done():
+                        task.cancel()
+            bot._background_tasks = []
             
             # Remove all cogs
             print("[RELOAD] Removing all cogs...")
@@ -753,6 +813,9 @@ def create_bot():
                 print(f"[RELOAD] ⚠️ Warning: Could not restore support ticket views: {restore_error}")
                 import traceback
                 traceback.print_exc()
+            
+            print("[RELOAD] Reinitializing player stats scheduler...")
+            await bot._init_player_stats_scheduler(fresh_reload=True)
             
             total_python = sum(len(cmds) for folder, cmds in python_cmds_by_folder.items() if folder != '_stats')
             

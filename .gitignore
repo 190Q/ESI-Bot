@@ -242,5 +242,6 @@ pending_invites.json
 events.json
 temp_vc_channels/
 temp_vc_config.json
+duke_first_time_pings.json
 
 playtime_tracking.db.filepart

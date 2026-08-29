@@ -19,7 +19,7 @@ from guild_queue import (
 from utils.permissions import has_roles
 from utils import errors
 
-# Path to the username â†” user_id match database
+# Path to the username ↔ user_id match database
 USERNAME_MATCH_DB_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data/username_matches.json",
@@ -93,14 +93,14 @@ def _load_username_match_db():
     except FileNotFoundError:
         return {}
     except json.JSONDecodeError:
-        # Corrupt or empty file â€“ start fresh rather than breaking the command
+        # Corrupt or empty file – start fresh rather than breaking the command
         return {}
     except Exception as e:
         print(f"[WARN] Failed to load username match DB: {e}")
         return {}
 
 def save_username_match(user_id: int, username: str, uuid: str = None) -> None:
-    """Persist a mapping of Discord user ID â†’ inâ€‘game username and UUID to the JSON DB."""
+    """Persist a mapping of Discord user ID → in‑game username and UUID to the JSON DB."""
     db = _load_username_match_db()
     # Save as dict with username and uuid if uuid is provided, otherwise just username for backwards compatibility
     if uuid:
@@ -798,7 +798,7 @@ class AcceptConfirmView(discord.ui.View):
                             self.queue_type = queue_type
                             print(f"[QUEUE] Player {self.username} is in {queue_type} queue at position {queue_pos} (guild still full)")
                         else:
-                            print(f"[QUEUE] Player {self.username} was in queue but guild has open slots â€” showing normal accept message")
+                            print(f"[QUEUE] Player {self.username} was in queue but guild has open slots — showing normal accept message")
                         remove_from_queue(self.user.id)
                         print(f"[QUEUE] Removed {self.username} from queue (accepted)")
                 except Exception as e:
@@ -1189,23 +1189,23 @@ async def show_confirmation_embed(interaction: discord.Interaction, user: discor
     
     if pronoun_value:
         if rank_key == "viscount":
-            pronoun_display = f"{pronoun_value} â†’ {'Viscountess' if pronoun_value == 'she/her' else 'Viscount'}"
+            pronoun_display = f"{pronoun_value} → {'Viscountess' if pronoun_value == 'she/her' else 'Viscount'}"
         elif rank_key == "envoy":
             if pronoun_value == "she/her":
-                pronoun_display = f"{pronoun_value} â†’ Lady"
+                pronoun_display = f"{pronoun_value} → Lady"
             elif pronoun_value == "he/him":
-                pronoun_display = f"{pronoun_value} â†’ Sir"
+                pronoun_display = f"{pronoun_value} → Sir"
             else:
-                pronoun_display = f"{pronoun_value} â†’ Envoy"
+                pronoun_display = f"{pronoun_value} → Envoy"
         else:
             pronoun_display = f"{pronoun_value}"
         embed.add_field(name="Pronoun", value=pronoun_display, inline=False)
     
     if roles_to_add_mentions:
-        embed.add_field(name="Roles to Add", value="\n".join([f"â€¢ {role}" for role in roles_to_add_mentions]), inline=False)
+        embed.add_field(name="Roles to Add", value="\n".join([f"• {role}" for role in roles_to_add_mentions]), inline=False)
     
     if roles_to_remove_mentions:
-        embed.add_field(name="Roles to Remove", value="\n".join([f"â€¢ {role}" for role in roles_to_remove_mentions]), inline=False)
+        embed.add_field(name="Roles to Remove", value="\n".join([f"• {role}" for role in roles_to_remove_mentions]), inline=False)
     
     embed.add_field(name="New Nickname", value=f"`{new_nickname}`", inline=False)
     embed.add_field(name="Important", value="This action cannot be undone. Please verify all information is correct before confirming.", inline=False)
@@ -1222,7 +1222,7 @@ async def show_confirmation_embed(interaction: discord.Interaction, user: discor
     )
     
     # Edit the ephemeral message and send the embed publicly with buttons
-    await interaction.response.edit_message(content="âœ… Rank assignment details posted!", view=None)
+    await interaction.response.edit_message(content="✅ Rank assignment details posted!", view=None)
 
     # If we're in a thread, send to the parent channel instead
     target_channel = interaction.channel

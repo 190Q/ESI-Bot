@@ -2250,7 +2250,7 @@ class ConfirmSubmitView(View):
                                     
                                     # Send application answers in thread
                                     app_embed = discord.Embed(
-                                        title=f"ðŸ“‹ Application Answers",
+                                        title=f"📋 Application Answers",
                                         description=f"**Submitted by:** {applicant.mention}\n**Channel:** {interaction.channel.mention}",
                                         color=0x5865F2,
                                         timestamp=datetime.utcnow()

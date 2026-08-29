@@ -2698,9 +2698,11 @@ class UnlinkSelect(Select):
 
 
 class BlacklistManageView(View):
-    def __init__(self, owner_id: int):
+    def __init__(self, owner_id: int, *, readonly: bool = False, hide_home: bool = False):
         super().__init__(timeout=300)
         self.owner_id = owner_id
+        self.readonly = bool(readonly)
+        self.hide_home = bool(hide_home)
         self.mode = "home"
         self.list_page = 0
         self.retracted_mode = False
@@ -2728,26 +2730,43 @@ class BlacklistManageView(View):
             return False
         return True
 
+    async def _deny_readonly(self, interaction: discord.Interaction) -> bool:
+        """Return True if action was blocked because this session is read-only."""
+        if not self.readonly:
+            return False
+        await errors.send_custom_error(
+            interaction,
+            "Permission Denied",
+            "This browse session is read-only. Use `/blacklist_manage` to make changes.",
+        )
+        return True
+
     def _clear_items(self):
         self.clear_items()
 
     def _build_home_items(self):
         self._clear_items()
-        add_btn = Button(label="Add Entry", style=discord.ButtonStyle.success, emoji="➕")
-        add_btn.callback = self.add_callback
-        self.add_item(add_btn)
+        if not self.readonly:
+            add_btn = Button(label="Add Entry", style=discord.ButtonStyle.success, emoji="➕")
+            add_btn.callback = self.add_callback
+            self.add_item(add_btn)
 
-        retract_btn = Button(label="Retract", style=discord.ButtonStyle.danger)
-        retract_btn.callback = self.retract_callback
-        self.add_item(retract_btn)
+            retract_btn = Button(label="Retract", style=discord.ButtonStyle.danger)
+            retract_btn.callback = self.retract_callback
+            self.add_item(retract_btn)
+
+        list_btn = Button(label="Browse All", style=discord.ButtonStyle.primary, emoji="📋")
+        list_btn.callback = self.list_callback
+        self.add_item(list_btn)
 
         search_btn = Button(label="Search", style=discord.ButtonStyle.primary, emoji="🔎")
         search_btn.callback = self.search_callback
         self.add_item(search_btn)
 
-        links_btn = Button(label="Link Alts", style=discord.ButtonStyle.secondary, emoji="🔗")
-        links_btn.callback = self.links_callback
-        self.add_item(links_btn)
+        if not self.readonly:
+            links_btn = Button(label="Link Alts", style=discord.ButtonStyle.secondary, emoji="🔗")
+            links_btn.callback = self.links_callback
+            self.add_item(links_btn)
 
         inspect_btn = Button(label="Inspect", style=discord.ButtonStyle.secondary, emoji="🔍")
         inspect_btn.callback = self.inspect_callback
@@ -2797,9 +2816,10 @@ class BlacklistManageView(View):
         back.callback = self.back_to_results_callback
         self.add_item(back)
 
-        home = Button(label="Home", style=discord.ButtonStyle.secondary)
-        home.callback = self.home_callback
-        self.add_item(home)
+        if not self.hide_home:
+            home = Button(label="Home", style=discord.ButtonStyle.secondary, emoji="🏠")
+            home.callback = self.home_callback
+            self.add_item(home)
 
     def _build_list_items(self, total: int, per_page: int = 8):
         self._clear_items()
@@ -2835,9 +2855,10 @@ class BlacklistManageView(View):
             clear_btn.callback = self.clear_all_callback
             self.add_item(clear_btn)
 
-        back = Button(label="Home", style=discord.ButtonStyle.secondary)
-        back.callback = self.home_callback
-        self.add_item(back)
+        if not self.hide_home:
+            back = Button(label="Home", style=discord.ButtonStyle.secondary)
+            back.callback = self.home_callback
+            self.add_item(back)
 
     def _build_retract_items(
         self,
@@ -2923,6 +2944,8 @@ class BlacklistManageView(View):
         )
 
     async def add_callback(self, interaction: discord.Interaction):
+        if await self._deny_readonly(interaction):
+            return
         self.mode = "add"
         self._build_add_items()
         embed = discord.Embed(
@@ -2939,6 +2962,16 @@ class BlacklistManageView(View):
             color=0x2ECC71,
         )
         await interaction.response.edit_message(embed=embed, view=self)
+
+    async def list_callback(self, interaction: discord.Interaction):
+        """Browse all entries (clears search), then allow filter/search."""
+        self.search_username = None
+        self.search_added_by_id = None
+        self.search_start_unix = None
+        self.search_end_unix = None
+        self.filter_category = None
+        self.retracted_mode = False
+        await self.show_list(interaction, category=None, retracted_mode=False, page=0)
 
     async def filter_callback(self, interaction: discord.Interaction):
         """Category filter applied on top of the current search."""
@@ -3017,6 +3050,8 @@ class BlacklistManageView(View):
         self.add_item(back)
 
     async def links_callback(self, interaction: discord.Interaction):
+        if await self._deny_readonly(interaction):
+            return
         self.mode = "links"
         links = list_account_links(limit=25, offset=0)
         total = count_account_links()
@@ -3058,9 +3093,13 @@ class BlacklistManageView(View):
             await interaction.response.edit_message(embed=embed, view=self)
 
     async def link_add_callback(self, interaction: discord.Interaction):
+        if await self._deny_readonly(interaction):
+            return
         await interaction.response.send_modal(BlacklistLinkModal(self))
 
     async def retract_callback(self, interaction: discord.Interaction):
+        if await self._deny_readonly(interaction):
+            return
         # Opening retract from home/refresh starts at page 0
         self.retract_page = 0
         await self.show_retract_page(interaction, page=0)
@@ -3360,9 +3399,11 @@ def setup(bot, has_required_role, config):
 
     @bot.tree.command(
         name="blacklist_check",
-        description="Check a Minecraft username against the blacklist",
+        description="Check a username, or use %all% to browse/search the full blacklist",
     )
-    @app_commands.describe(username="The Minecraft username to check")
+    @app_commands.describe(
+        username="Minecraft username, or %all% to open browse/search/filter UI"
+    )
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def blacklist_check(interaction: discord.Interaction, username: str):
@@ -3370,7 +3411,37 @@ def setup(bot, has_required_role, config):
             await errors.NO_PERMISSION.send(interaction)
             return
 
-        embeds = build_check_embeds(username)
+        raw = (username or "").strip()
+        if raw.lower() in {"%all%", "all", "*"}:
+            can_manage = has_roles(interaction.user, MANAGE_ROLES)
+            view = BlacklistManageView(
+                owner_id=interaction.user.id,
+                readonly=not can_manage,
+                hide_home=True,
+            )
+            boot = discord.Embed(
+                title="Blacklist Browser",
+                description=(
+                    "Loading all blacklist entries…\n"
+                    "Use **Search** and **Filter** on the next screen."
+                    + ("\n\n_Read-only mode._" if not can_manage else "")
+                ),
+                color=0x5865F2,
+            )
+            await interaction.response.send_message(
+                embed=boot, view=view, ephemeral=True
+            )
+            try:
+                view.message = await interaction.original_response()
+            except Exception as e:
+                print(f"[Blacklist] Failed to capture check-all message: {e}")
+                view.message = None
+            await view.show_list(
+                interaction, category=None, retracted_mode=False, page=0
+            )
+            return
+
+        embeds = build_check_embeds(raw)
         await interaction.response.send_message(embeds=embeds[:10], ephemeral=True)
 
     @bot.tree.command(
@@ -3384,7 +3455,7 @@ def setup(bot, has_required_role, config):
             await errors.NO_PERMISSION.send(interaction)
             return
 
-        view = BlacklistManageView(owner_id=interaction.user.id)
+        view = BlacklistManageView(owner_id=interaction.user.id, readonly=False)
         embed = build_manage_home_embed()
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         try:

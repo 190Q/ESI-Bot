@@ -10,9 +10,7 @@ from datetime import datetime, timezone
 import aiohttp
 from typing import Tuple
 
-# Add parent directory to path to import blacklist
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from blacklist import is_blacklisted
 from rank_logger import log_rank_change
 from guild_queue import (
     get_guild_capacity, get_queue_position, add_to_queue, remove_from_queue,
@@ -611,8 +609,8 @@ class PronounSelectView(discord.ui.View):
         await show_confirmation_embed(interaction, self.user, self.username, self.rank_key, pronoun_value, self.source_message_id, uuid=self.uuid)
 
 class AcceptConfirmView(discord.ui.View):
-    """View for handling accept confirmation with blacklist double-confirm"""
-    def __init__(self, user, username, rank_key, pronoun_value, roles_to_add, roles_to_remove, nickname, is_blacklisted, executor_id, source_message_id=None, is_alt=False, main_username=None, uuid=None):
+    """View for handling accept confirmation"""
+    def __init__(self, user, username, rank_key, pronoun_value, roles_to_add, roles_to_remove, nickname, executor_id, source_message_id=None, is_alt=False, main_username=None, uuid=None):
         super().__init__(timeout=None)
         self.user = user
         self.username = username
@@ -621,9 +619,7 @@ class AcceptConfirmView(discord.ui.View):
         self.roles_to_add = roles_to_add
         self.roles_to_remove = roles_to_remove
         self.nickname = nickname
-        self.is_blacklisted = is_blacklisted
         self.executor_id = executor_id
-        self.confirm_count = 0
         self.source_message_id = source_message_id
         self.is_alt = is_alt
         self.main_username = main_username
@@ -634,7 +630,7 @@ class AcceptConfirmView(discord.ui.View):
         
         # Add confirm and cancel buttons
         confirm_button = discord.ui.Button(
-            label="Confirm" if not is_blacklisted else "Confirm (1/2)",
+            label="Confirm",
             style=discord.ButtonStyle.success,
             custom_id="accept_confirm"
         )
@@ -676,16 +672,6 @@ class AcceptConfirmView(discord.ui.View):
                 "Only the user who used the `/accept` command can confirm this action.",
             )
             return
-        
-        # If blacklisted, require double confirmation
-        if self.is_blacklisted:
-            self.confirm_count += 1
-            if self.confirm_count < 2:
-                # Update button to show second confirmation needed
-                self.children[0].label = "Confirm (2/2) - Click Again!"
-                self.children[0].style = discord.ButtonStyle.danger
-                await interaction.response.edit_message(view=self)
-                return
         
         await interaction.response.defer()
         
@@ -743,7 +729,6 @@ class AcceptConfirmView(discord.ui.View):
                     'username_assigned': self.username,
                     'pronoun': self.pronoun_value if self.pronoun_value else None,
                     'nickname_status': nickname_status,
-                    'was_blacklisted': self.is_blacklisted,
                     'returning_member': role_name in ("veteran", "ex_citizen") if role_name else False,
                     'is_alt': self.is_alt,
                     'main_username': self.main_username if self.is_alt else None
@@ -1128,9 +1113,6 @@ async def show_confirmation_embed(interaction: discord.Interaction, user: discor
     
     rank_config = RANK_CONFIGS[rank_key]
     
-    # Check if username is blacklisted
-    blacklisted, blacklist_reason = is_blacklisted(username)
-    
     # Get user's current role IDs
     user_role_ids = {role.id for role in user.roles}
     
@@ -1192,31 +1174,14 @@ async def show_confirmation_embed(interaction: discord.Interaction, user: discor
     else:
         new_nickname = f"{title} {username}"
 
-    # Create embed with blacklist warning if applicable
-    if blacklisted:
-        embed = discord.Embed(
-            title="BLACKLIST WARNING - Confirm Rank Assignment",
-            description="**WARNING: This user is blacklisted!**\n\nPlease confirm the following rank assignment:",
-            color=0xFF0000,
-            timestamp=datetime.utcnow()
-        )
-    else:
-        embed = discord.Embed(
-            title="Confirm Rank Assignment",
-            description="Please confirm the following rank assignment:",
-            color=0xFFA500,
-            timestamp=datetime.utcnow()
-        )
+    embed = discord.Embed(
+        title="Confirm Rank Assignment",
+        description="Please confirm the following rank assignment:",
+        color=0xFFA500,
+        timestamp=datetime.utcnow()
+    )
     
     embed.set_thumbnail(url=user.display_avatar.url)
-    
-    # Add blacklist warning at the top if blacklisted
-    if blacklisted:
-        blacklist_text = f"ðŸš« **BLACKLISTED USER DETECTED**\n"
-        blacklist_text += f"**Reason:** {blacklist_reason if blacklist_reason else 'No reason provided'}\n"
-        blacklist_text += f"**NameMC Profile:** [View Profile](https://namemc.com/search?q={username})\n"
-        blacklist_text += f"\n**Please verify this is intentional before proceeding!**\n**You must click the confirm button TWICE.**"
-        embed.add_field(name="Blacklist Status", value=blacklist_text, inline=False)
 
     embed.add_field(name="Target Member", value=f"{user.mention}", inline=True)
     embed.add_field(name="Rank", value=rank_config['display_name'], inline=True)
@@ -1249,7 +1214,7 @@ async def show_confirmation_embed(interaction: discord.Interaction, user: discor
     view = AcceptConfirmView(
         user, username, rank_key, pronoun_value, 
         roles_to_add, roles_to_remove, new_nickname, 
-        blacklisted, interaction.user.id,
+        interaction.user.id,
         source_message_id=source_message_id,
         is_alt=is_alt,
         main_username=main_username,

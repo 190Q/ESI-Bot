@@ -492,6 +492,22 @@ async def send_batched_notifications(channel, events):
                 timestamp=datetime.now(timezone.utc)
             )
             await channel.send(embed=embed)
+
+            # Permanent demotion blacklist: alert if rank is at/above an in-game cap
+            try:
+                from blacklist import check_ingame_rank_for_demotion_violations
+                alert_guild = getattr(channel, "guild", None)
+                for event in rank_changes:
+                    await check_ingame_rank_for_demotion_violations(
+                        bot,
+                        username=event.get("username") or "Unknown",
+                        new_rank=event.get("new_rank") or "",
+                        uuid=event.get("uuid"),
+                        old_rank=event.get("old_rank"),
+                        guild=alert_guild,
+                    )
+            except Exception as e:
+                print(f"[GUILD NOTIFY] Demotion blacklist check failed: {e}")
     
     except Exception as e:
         print(f"[GUILD NOTIFY] Failed to send notification: {e}")

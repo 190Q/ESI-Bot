@@ -12,11 +12,14 @@ from collections import defaultdict
 import sys
 import aiohttp
 
-# Add parent directory to path to import blacklist
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from suscard import calculate_suspiciousness, SusCardImageGenerator, WynncraftAPI
-from blacklist import is_blacklisted
 from guild_queue import get_guild_capacity, add_to_queue, get_queue_position, remove_from_queue, extract_username_from_embeds, VETERAN_ROLE_ID
+from blacklist import (
+    has_active_guild_ban,
+    is_guild_member_application,
+    format_application_blacklist_fields,
+)
 from utils.permissions import has_roles
 from utils import errors
 
@@ -2247,21 +2250,25 @@ class ConfirmSubmitView(View):
                                     
                                     # Send application answers in thread
                                     app_embed = discord.Embed(
-                                        title=f"📋 Application Answers",
+                                        title=f"ðŸ“‹ Application Answers",
                                         description=f"**Submitted by:** {applicant.mention}\n**Channel:** {interaction.channel.mention}",
                                         color=0x5865F2,
                                         timestamp=datetime.utcnow()
                                     )
-                                    
-                                    # Check for blacklist status
-                                    blacklisted, blacklist_reason = is_blacklisted(username)
-                                    if blacklisted:
-                                        blacklist_warning = "🚫 **BLACKLISTED USER DETECTED**\n"
-                                        blacklist_warning += f"**Reason:** {blacklist_reason if blacklist_reason else 'No reason provided'}\n"
-                                        blacklist_warning += f"**NameMC Profile:** [View Profile](https://namemc.com/search?q={username})"
-                                        app_embed.add_field(name="⚠️ Blacklist Status", value=blacklist_warning, inline=False)
-                                        # Change embed color to red if blacklisted
-                                        app_embed.color = 0xFF0000
+
+                                    try:
+                                        for field_name, field_value in format_application_blacklist_fields(
+                                            username=username,
+                                            discord_id=applicant.id,
+                                        ):
+                                            app_embed.add_field(
+                                                name=field_name,
+                                                value=field_value,
+                                                inline=False,
+                                            )
+                                            app_embed.color = 0xE67E22
+                                    except Exception as e:
+                                        print(f"[TICKETS] Failed to attach blacklist fields: {e}")
                                     
                                     for idx, question in enumerate(self.questions):
                                         answer = self.answers.get(idx, "*No answer provided*")
@@ -2320,25 +2327,28 @@ class ConfirmSubmitView(View):
                         timestamp=datetime.utcnow()
                     )
                     forward_embed.set_thumbnail(url=applicant.display_avatar.url)
-                    
-                    # Check for username and blacklist status
-                    username = None
+
+                    # Extract username for blacklist context if present
+                    fallback_username = None
                     for idx, question in enumerate(self.questions):
-                        if 'username' in question['label'].lower() or 'in game name' in question['label'].lower() or 'nickname' in question['label'].lower():
-                            username = self.answers.get(idx, '').strip()
-                            if username:
+                        label = question['label'].lower()
+                        if 'username' in label or 'in game name' in label or 'nickname' in label:
+                            fallback_username = self.answers.get(idx, '').strip() or None
+                            if fallback_username:
                                 break
-                    
-                    # Add blacklist warning if username is blacklisted
-                    if username:
-                        blacklisted, blacklist_reason = is_blacklisted(username)
-                        if blacklisted:
-                            blacklist_warning = "🚫 **BLACKLISTED USER DETECTED**\n"
-                            blacklist_warning += f"**Reason:** {blacklist_reason if blacklist_reason else 'No reason provided'}\n"
-                            blacklist_warning += f"**NameMC Profile:** [View Profile](https://namemc.com/search?q={username})"
-                            forward_embed.add_field(name="⚠️ Blacklist Status", value=blacklist_warning, inline=False)
-                            # Change embed color to red if blacklisted
-                            forward_embed.color = 0xFF0000
+                    try:
+                        for field_name, field_value in format_application_blacklist_fields(
+                            username=fallback_username,
+                            discord_id=applicant.id,
+                        ):
+                            forward_embed.add_field(
+                                name=field_name,
+                                value=field_value,
+                                inline=False,
+                            )
+                            forward_embed.color = 0xE67E22
+                    except Exception as e:
+                        print(f"[TICKETS] Failed to attach blacklist fields (fallback): {e}")
                     
                     for idx, question in enumerate(self.questions):
                         answer = self.answers.get(idx, "*No answer provided*")
@@ -3062,6 +3072,25 @@ async def create_application_channel(interaction: discord.Interaction, applicati
                 ],
             )
             return
+
+        # Guild-ban blacklist: block guild member applications
+        if is_guild_member_application(application_name):
+            try:
+                if has_active_guild_ban(discord_id=interaction.user.id):
+                    await errors.send_custom_error(
+                        interaction,
+                        "Guild Application Blocked",
+                        (
+                            "You cannot open a **Guild Member** application because you "
+                            "are blacklisted with an active **Guild Ban**."
+                        ),
+                        steps=[
+                            "Contact staff if you believe this blacklist entry is incorrect."
+                        ],
+                    )
+                    return
+            except Exception as e:
+                print(f"[TICKETS] Guild-ban blacklist check failed: {e}")
         
         # Get settings for this application
         settings = panel_data.get('settings', {}).get(application_name, {})

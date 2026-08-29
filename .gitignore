@@ -205,7 +205,6 @@ __marimo__/
 # Database folder
 api_tracking
 playtime_tracking
-blacklist.db
 claim_snipes.db
 esi_points.db
 guild_stats_data.db
@@ -245,3 +244,5 @@ temp_vc_config.json
 duke_first_time_pings.json
 
 playtime_tracking.db.filepart
+
+blacklist.db

@@ -25,8 +25,7 @@ from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# Parliament guild (same as bot.py)
-DEFAULT_GUILD_ID = 802999599060221992
+DEFAULT_GUILD_ID = 554418045397762048
 
 RANK_ROLES = {
     591769392828776449: "Viscount",
@@ -79,7 +78,6 @@ async def find_missing_jurors(guild_id: int) -> list[dict]:
                 guild = await client.fetch_guild(guild_id)
 
             print(f"Connected as {client.user}. Loading members for {guild.name} ({guild.id})...")
-            # Ensure full member cache (requires Server Members Intent)
             if not guild.chunked:
                 await guild.chunk()
 
@@ -115,7 +113,7 @@ async def find_missing_jurors(guild_id: int) -> list[dict]:
 
             missing.sort(key=lambda row: (_rank_sort_key(row["ranks"]), row["name"].lower()))
             results.extend(missing)
-        except Exception as exc:  # noqa: BLE001 - surface any fetch/chunk failure cleanly
+        except Exception as exc:
             error = exc
         finally:
             await client.close()
@@ -178,7 +176,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 

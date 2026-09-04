@@ -132,7 +132,8 @@ def _get_latest_api_db() -> Path | None:
     """Return the most-recently-modified .db file across all api_tracking day folders."""
     if not API_TRACKING_FOLDER.exists():
         return None
-    all_dbs = list(API_TRACKING_FOLDER.rglob("*.db"))
+    from utils.coverage_utils import is_coverage_db
+    all_dbs = [p for p in API_TRACKING_FOLDER.rglob("*.db") if not is_coverage_db(p)]
     if not all_dbs:
         return None
     return max(all_dbs, key=lambda p: p.stat().st_mtime)

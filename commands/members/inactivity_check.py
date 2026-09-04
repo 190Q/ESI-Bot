@@ -141,8 +141,9 @@ def get_final_playtime_for_day(day_folder, username):
     if not day_folder or not day_folder.exists():
         return 0
     
-    # Get all .db files in the folder, sorted by modification time (newest last)
-    db_files = sorted(day_folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
+    # Get snapshot .db files only (exclude coverage.db)
+    from utils.coverage_utils import list_snapshot_db_files
+    db_files = list_snapshot_db_files(day_folder)
     
     if not db_files:
         return 0

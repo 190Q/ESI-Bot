@@ -6,7 +6,12 @@ import statistics
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Callable, Dict, Optional, Union
-from utils.coverage_utils import record_daily_coverage
+from utils.coverage_utils import (
+    coverage_db_path_for_day,
+    is_coverage_db,
+    list_snapshot_db_files,
+    record_daily_coverage,
+)
 
 
 PathLike = Union[str, Path]
@@ -105,7 +110,7 @@ def cleanup_daily_folder(
     if not day_folder_path.exists():
         return
 
-    db_files = sorted(day_folder_path.glob("*.db"), key=lambda f: f.stat().st_mtime)
+    db_files = list_snapshot_db_files(day_folder_path)
     if len(db_files) <= 1:
         return
 
@@ -163,7 +168,7 @@ def cleanup_old_day_folders(
             days_old = (today - folder_date).days
         except ValueError:
             continue
-        db_files = sorted(folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
+        db_files = list_snapshot_db_files(folder)
         should_record_coverage = 1 <= days_old < min_days_old
         within_collapse_window = (
             days_old >= min_days_old
@@ -172,7 +177,7 @@ def cleanup_old_day_folders(
         should_record_before_collapse = within_collapse_window and len(db_files) > 1
         if should_record_coverage or should_record_before_collapse:
             record_daily_coverage(
-                api_tracking / "coverage.db",
+                coverage_db_path_for_day(folder),
                 date_str,
                 folder.name,
                 db_files,
@@ -933,7 +938,7 @@ def get_previous_api_db(api_tracking_folder: PathLike, current_db_path: PathLike
             if not os.path.isdir(day_path):
                 continue
             for filename in os.listdir(day_path):
-                if filename.endswith(".db"):
+                if filename.endswith(".db") and not is_coverage_db(filename):
                     db_files.append(os.path.join(day_path, filename))
     db_files.sort(key=os.path.getmtime)
 
@@ -973,7 +978,13 @@ def get_previous_day_latest_db(api_tracking_folder: PathLike, current_db_path: P
         if best_date is not None and folder_date < best_date:
             continue
 
-        db_files = sorted([f for f in os.listdir(day_path) if f.endswith(".db")])
+        db_files = sorted(
+            [
+                f
+                for f in os.listdir(day_path)
+                if f.endswith(".db") and not is_coverage_db(f)
+            ]
+        )
         if db_files:
             best_date = folder_date
             best_path = os.path.join(day_path, db_files[-1])

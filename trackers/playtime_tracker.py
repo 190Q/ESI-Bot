@@ -13,7 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from utils.coverage_utils import record_daily_coverage
+from utils.coverage_utils import (
+    coverage_db_path_for_day,
+    list_snapshot_db_files,
+    record_daily_coverage,
+)
 
 # Load environment variables
 load_dotenv()
@@ -26,7 +30,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DB_FOLDER = BASE_DIR / "databases"
 PLAYTIME_DB_PATH = DB_FOLDER / "playtime_tracking.db"
 PLAYTIME_TRACKING_FOLDER = DB_FOLDER / "playtime_tracking"
-COVERAGE_DB_PATH = PLAYTIME_TRACKING_FOLDER / "coverage.db"
 
 # Constants
 FETCH_INTERVAL_SECONDS = 300  # 5 minutes
@@ -148,7 +151,7 @@ def create_daily_backup():
     # Copy the database
     if PLAYTIME_DB_PATH.exists():
         # Check size against the most recent existing backup
-        existing_backups = sorted(day_folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
+        existing_backups = list_snapshot_db_files(day_folder)
         if existing_backups:
             last_backup_size = existing_backups[-1].stat().st_size
             current_size = PLAYTIME_DB_PATH.stat().st_size
@@ -172,8 +175,8 @@ def cleanup_daily_folder(day_folder):
     if not day_folder.exists():
         return
     
-    # Get all .db files in the folder
-    db_files = sorted(day_folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
+    # Get snapshot .db files in the folder (exclude coverage.db)
+    db_files = list_snapshot_db_files(day_folder)
     
     if len(db_files) <= 1:
         return
@@ -235,13 +238,13 @@ def cleanup_old_day_folders():
             date_str = folder.name.replace("playtime_", "")
             folder_date = datetime.strptime(date_str, "%d-%m-%Y").date()
             days_old = (today - folder_date).days
-            db_files = sorted(folder.glob("*.db"), key=lambda f: f.stat().st_mtime)
+            db_files = list_snapshot_db_files(folder)
             db_files = [f for f in db_files if not (f.stat().st_size == 0 and f.unlink() is None)]
             should_record_coverage = 1 <= days_old < 7
             should_record_before_collapse = days_old >= 7 and len(db_files) > 1
             if should_record_coverage or should_record_before_collapse:
                 record_daily_coverage(
-                    COVERAGE_DB_PATH,
+                    coverage_db_path_for_day(folder),
                     date_str,
                     folder.name,
                     db_files,

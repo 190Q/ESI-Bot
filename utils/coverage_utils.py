@@ -6,6 +6,7 @@ from typing import Dict, Iterable, List, Optional, Union
 
 PathLike = Union[str, Path]
 
+COVERAGE_DB_NAME = "coverage.db"
 SECONDS_PER_DAY = 24 * 60 * 60
 SLOT_SECONDS = 30 * 60
 MATCH_TOLERANCE_SECONDS = 10 * 60
@@ -16,6 +17,29 @@ EXPECTED_SNAPSHOT_TIMES_SECONDS = [
 
 def _as_path(path_value: PathLike) -> Path:
     return path_value if isinstance(path_value, Path) else Path(path_value)
+
+
+def is_coverage_db(path_value: PathLike) -> bool:
+    return _as_path(path_value).name.lower() == COVERAGE_DB_NAME
+
+
+def list_snapshot_db_files(day_folder: PathLike) -> List[Path]:
+    """Return snapshot .db files in a day folder, excluding coverage.db."""
+    folder = _as_path(day_folder)
+    if not folder.exists():
+        return []
+    return sorted(
+        (
+            path
+            for path in folder.glob("*.db")
+            if path.is_file() and not is_coverage_db(path)
+        ),
+        key=lambda path: path.stat().st_mtime,
+    )
+
+
+def coverage_db_path_for_day(day_folder: PathLike) -> Path:
+    return _as_path(day_folder) / COVERAGE_DB_NAME
 
 def _parse_file_seconds(db_file: Path) -> Optional[int]:
     try:
@@ -46,7 +70,11 @@ def _is_expected_time_present(expected_seconds: int, observed_seconds: List[int]
     return False
 
 def calculate_daily_coverage(db_files: Iterable[PathLike]) -> Dict[str, object]:
-    file_paths = [_as_path(path) for path in db_files]
+    file_paths = [
+        path
+        for path in (_as_path(value) for value in db_files)
+        if not is_coverage_db(path)
+    ]
     observed_seconds = [
         parsed
         for parsed in (_parse_file_seconds(path) for path in file_paths)

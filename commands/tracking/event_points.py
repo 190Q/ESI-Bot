@@ -194,6 +194,5 @@ def setup(bot, has_required_role, config):
             "uuid": player_uuid,
             "username": player_username
         }]
-        esi.save_points(resolved, f"Event: {reason}" or "Event points command")
     
     print("[OK] Loaded event command")

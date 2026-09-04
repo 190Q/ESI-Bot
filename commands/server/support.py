@@ -363,27 +363,48 @@ def setup(bot, has_required_role, config):
                 await errors.NO_PERMISSION.send(interaction)
                 return
             
+            await interaction.response.send_modal(
+                CloseTicketModal(self, button, interaction.message)
+            )
+
+    class CloseTicketModal(discord.ui.Modal, title="Close Support Ticket"):
+        reason = discord.ui.TextInput(
+            label="Reason",
+            placeholder="Optional reason for closing this ticket",
+            style=discord.TextStyle.paragraph,
+            required=False,
+            max_length=500,
+        )
+
+        def __init__(self, ack_view, button: discord.ui.Button, message: discord.Message):
+            super().__init__()
+            self.ack_view = ack_view
+            self.button = button
+            self.message = message
+
+        async def on_submit(self, interaction: discord.Interaction):
             try:
-                ticket_channel = self.bot.get_channel(self.ticket_channel_id)
-                
+                ticket_channel = self.ack_view.bot.get_channel(self.ack_view.ticket_channel_id)
+                close_reason = (self.reason.value or "").strip()
+
                 # Read ticket data before archiving so we have it for the DM
                 ticket_data = None
                 tickets_file = os.path.join(str(PROJECT_ROOT), "data", "support_tickets.json")
                 try:
                     with open(tickets_file, "r") as f:
                         data = json.load(f)
-                    if "tickets" in data and str(self.ticket_channel_id) in data["tickets"]:
-                        ticket_data = data["tickets"][str(self.ticket_channel_id)]
+                    if "tickets" in data and str(self.ack_view.ticket_channel_id) in data["tickets"]:
+                        ticket_data = data["tickets"][str(self.ack_view.ticket_channel_id)]
                 except Exception:
                     pass
-                
+
                 if ticket_channel:
-                    bot_name = self.bot.user.name if self.bot.user else "Bot"
+                    bot_name = self.ack_view.bot.user.name if self.ack_view.bot.user else "Bot"
                     archived_category_name = f"{bot_name} - Archived Tickets"
-                    
+
                     # Get or create archived category
                     archived_category = await get_or_create_category(ticket_channel.guild, archived_category_name)
-                    
+
                     if archived_category:
                         # Remove all added role permission overwrites before archiving
                         ticket_cat = ticket_data.get("category") if ticket_data else None
@@ -394,68 +415,80 @@ def setup(bot, has_required_role, config):
                                 await ticket_channel.set_permissions(role, overwrite=None)
 
                         await ticket_channel.edit(category=archived_category)
-                        
+
                         # Archive ticket in JSON
                         try:
                             with open(tickets_file, "r") as f:
                                 data = json.load(f)
-                            
-                            if "tickets" in data and str(self.ticket_channel_id) in data["tickets"]:
-                                td = data["tickets"][str(self.ticket_channel_id)]
-                                
+
+                            if "tickets" in data and str(self.ack_view.ticket_channel_id) in data["tickets"]:
+                                td = data["tickets"][str(self.ack_view.ticket_channel_id)]
+
                                 # Create archived ticket entry with minimal data
                                 archived_ticket = {
                                     "user_id": td["user_id"],
                                     "opened_at": td["created_at"],
-                                    "closed_at": datetime.utcnow().isoformat()
+                                    "closed_at": datetime.utcnow().isoformat(),
                                 }
-                                
+                                if close_reason:
+                                    archived_ticket["close_reason"] = close_reason
+
                                 # Initialize archived_tickets if it doesn't exist
                                 if "archived_tickets" not in data:
                                     data["archived_tickets"] = {}
-                                
+
                                 # Save archived ticket with channel_id as key
-                                data["archived_tickets"][str(self.ticket_channel_id)] = archived_ticket
-                                
+                                data["archived_tickets"][str(self.ack_view.ticket_channel_id)] = archived_ticket
+
                                 # Remove from active tickets
-                                del data["tickets"][str(self.ticket_channel_id)]
-                                
+                                del data["tickets"][str(self.ack_view.ticket_channel_id)]
+
                                 with open(tickets_file, "w") as f:
                                     json.dump(data, f, indent=4)
-                                
-                                print(f"[SUPPORT] Archived ticket {self.ticket_channel_id}")
+
+                                print(f"[SUPPORT] Archived ticket {self.ack_view.ticket_channel_id}")
                         except Exception as archive_error:
                             print(f"[SUPPORT] Error archiving ticket: {archive_error}")
-                        
+
                         # Clean up empty acknowledged categories
                         acknowledged_base = f"{bot_name} - Acknowledged Tickets"
                         await cleanup_empty_categories(ticket_channel.guild, acknowledged_base)
-                        
+
                         # Send closure notification to user
                         try:
-                            # Get ticket subject
-                            ticket_subject = ticket_data.get("subject", "Your support ticket") if ticket_data else "Your support ticket"
-                            
+                            ticket_subject = (
+                                ticket_data.get("subject", "Your support ticket")
+                                if ticket_data
+                                else "Your support ticket"
+                            )
+
+                            description = (
+                                f"Your support ticket **\"{ticket_subject}\"** has been resolved and closed. "
+                                f"Thank you for contacting support!"
+                            )
+                            if close_reason:
+                                description += f"\n\n**Reason:** {close_reason}"
+
                             closure_embed = discord.Embed(
                                 title="Support Ticket Closed",
-                                description=f"Your support ticket **\"{ticket_subject}\"** has been resolved and closed. Thank you for contacting support!",
-                                color=0x808080
+                                description=description,
+                                color=0x808080,
                             )
-                            await self.user.send(embed=closure_embed)
+                            await self.ack_view.user.send(embed=closure_embed)
                         except discord.Forbidden:
                             pass
-                
+
                 owner_confirmation_embed = discord.Embed(
                     title="Ticket Closed",
-                    description=f"The ticket has been archived.",
-                    color=0xFF0000
+                    description="The ticket has been archived.",
+                    color=0xFF0000,
                 )
                 await interaction.response.send_message(embed=owner_confirmation_embed, ephemeral=True)
-                
-                button.disabled = True
-                button.label = "Ticket Closed"
-                await interaction.message.edit(view=self)
-                
+
+                self.button.disabled = True
+                self.button.label = "Ticket Closed"
+                await self.message.edit(view=self.ack_view)
+
             except Exception as e:
                 print(f"Error closing ticket: {e}")
                 await errors.UNEXPECTED_ERROR.send(interaction)

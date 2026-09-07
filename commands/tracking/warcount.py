@@ -130,7 +130,7 @@ def get_databases_in_timeframe(days: int):
     except Exception as e:
         return None, f"Error: {str(e)}"
 
-def get_player_warcount(db_path: str, username: str) -> Optional[int]:
+def get_player_warcount(db_path: str, username: str, aliases: list = None, player_uuid: str = None) -> Optional[int]:
     """Get player's warcount from a database."""
     try:
         conn = sqlite3.connect(db_path)
@@ -143,11 +143,26 @@ def get_player_warcount(db_path: str, username: str) -> Optional[int]:
             print(f"Warning: player_stats table not found in {db_path}")
             return None
         
-        # Query case-insensitive
-        cursor.execute(
-            "SELECT wars FROM player_stats WHERE LOWER(username) = LOWER(?)",
-            (username,)
-        )
+        names = [username.lower()]
+        if aliases:
+            names.extend([a.lower() for a in aliases if a])
+        names = list(set(names))
+        placeholders = ",".join("?" * len(names))
+        
+        # Check if uuid column exists
+        cursor.execute("PRAGMA table_info(player_stats)")
+        cols = [r[1] for r in cursor.fetchall()]
+        
+        if player_uuid and "uuid" in cols:
+            cursor.execute(
+                f"SELECT wars FROM player_stats WHERE LOWER(uuid) = LOWER(?) OR LOWER(username) IN ({placeholders})",
+                [player_uuid] + names,
+            )
+        else:
+            cursor.execute(
+                f"SELECT wars FROM player_stats WHERE LOWER(username) IN ({placeholders})",
+                names,
+            )
         
         result = cursor.fetchone()
         conn.close()
@@ -160,7 +175,7 @@ def get_player_warcount(db_path: str, username: str) -> Optional[int]:
         print(f"Error querying database {db_path}: {e}")
         return None
 
-def get_daily_warcount_deltas(databases: list, username: str) -> list:
+def get_daily_warcount_deltas(databases: list, username: str, aliases: list = None, player_uuid: str = None) -> list:
     """Calculate daily warcount deltas for a player."""
     from collections import defaultdict
     
@@ -171,8 +186,8 @@ def get_daily_warcount_deltas(databases: list, username: str) -> list:
         db1_path, db1_time = databases[i]
         db2_path, db2_time = databases[i + 1]
         
-        warcount1 = get_player_warcount(db1_path, username)
-        warcount2 = get_player_warcount(db2_path, username)
+        warcount1 = get_player_warcount(db1_path, username, aliases=aliases, player_uuid=player_uuid)
+        warcount2 = get_player_warcount(db2_path, username, aliases=aliases, player_uuid=player_uuid)
         
         if warcount1 is not None and warcount2 is not None:
             delta = warcount2 - warcount1
@@ -405,8 +420,13 @@ def setup(bot, has_required_role, config):
                 return
             
             # Single player logic
+            from utils.player_resolver import resolve_player_identity
+            p_uuid, resolved_uname, player_aliases = resolve_player_identity(username)
+            if resolved_uname:
+                username = resolved_uname
+
             # Validate username exists in the guild (latest database)
-            if get_player_warcount(latest_db, username) is None:
+            if get_player_warcount(latest_db, username, aliases=player_aliases, player_uuid=p_uuid) is None:
                 await errors.PLAYER_NOT_IN_GUILD.send(
                     interaction,
                     username=username,
@@ -416,7 +436,7 @@ def setup(bot, has_required_role, config):
             await interaction.response.defer()
 
             # Calculate daily deltas and fill missing days with 0
-            daily_deltas = get_daily_warcount_deltas(databases, username)
+            daily_deltas = get_daily_warcount_deltas(databases, username, aliases=player_aliases, player_uuid=p_uuid)
             daily_deltas = fill_daily_deltas(daily_deltas, delta)
             
             # Calculate stats

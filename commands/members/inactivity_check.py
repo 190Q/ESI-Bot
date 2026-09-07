@@ -105,9 +105,9 @@ def get_guild_db_for_date(target_date):
 
 
 def get_players_from_guild_db(db_path):
-    """Get all player usernames from the player_stats table."""
+    """Get all players from the player_stats table as dict mapping uuid_or_name -> username."""
     if not db_path or not os.path.exists(db_path):
-        return []
+        return {}
     
     try:
         conn = sqlite3.connect(db_path)
@@ -117,16 +117,21 @@ def get_players_from_guild_db(db_path):
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='player_stats'")
         if not cursor.fetchone():
             conn.close()
-            return []
+            return {}
         
-        cursor.execute("SELECT username FROM player_stats WHERE username IS NOT NULL")
-        players = [row[0] for row in cursor.fetchall()]
+        cursor.execute("SELECT uuid, username FROM player_stats WHERE username IS NOT NULL")
+        players = {}
+        for row in cursor.fetchall():
+            uid = (row[0] or "").strip().lower()
+            uname = (row[1] or "").strip()
+            key = uid if uid else uname.lower()
+            players[key] = uname
         conn.close()
         return players
     
     except Exception as e:
         print(f"[INAC_CHECK] Error reading guild database: {e}")
-        return []
+        return {}
 
 
 def get_playtime_folder_for_date(date):
@@ -136,7 +141,7 @@ def get_playtime_folder_for_date(date):
     return folder if folder.exists() else None
 
 
-def get_final_playtime_for_day(day_folder, username):
+def get_final_playtime_for_day(day_folder, username, aliases=None):
     """Get the final playtime for a user from a day's backup folder."""
     if not day_folder or not day_folder.exists():
         return 0
@@ -150,28 +155,34 @@ def get_final_playtime_for_day(day_folder, username):
     
     # Use the most recent backup
     latest_db = db_files[-1]
+    names = [username.lower()]
+    if aliases:
+        names.extend([a.lower() for a in aliases if a])
+    names = list(set(names))
+    placeholders = ",".join("?" * len(names))
     
     try:
         conn = sqlite3.connect(latest_db)
         cursor = conn.cursor()
         
-        # Query case-insensitive
         cursor.execute(
-            "SELECT playtime_seconds FROM playtime WHERE LOWER(username) = LOWER(?)",
-            (username,)
+            f"SELECT playtime_seconds FROM playtime WHERE LOWER(username) IN ({placeholders})",
+            names
         )
         
-        result = cursor.fetchone()
+        rows = cursor.fetchall()
         conn.close()
         
-        return result[0] if result else 0
+        if rows:
+            return max([r[0] for r in rows if r and r[0] is not None], default=0)
+        return 0
     
     except Exception as e:
         print(f"[INAC_CHECK] Error querying playtime database: {e}")
         return 0
 
 
-def get_total_playtime_for_period(username, start_date, end_date):
+def get_total_playtime_for_period(username, start_date, end_date, aliases=None):
     """Get total playtime for a user during a date range.
     
     Sums up the daily playtime for each day in the range.
@@ -182,7 +193,7 @@ def get_total_playtime_for_period(username, start_date, end_date):
     while current_date <= end_date:
         folder = get_playtime_folder_for_date(current_date)
         if folder:
-            daily_playtime = get_final_playtime_for_day(folder, username)
+            daily_playtime = get_final_playtime_for_day(folder, username, aliases=aliases)
             total_seconds += daily_playtime
         current_date += timedelta(days=1)
     
@@ -232,15 +243,17 @@ def load_username_matches():
         with open(USERNAME_MATCHES_PATH, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        # Create reverse mapping: minecraft_username.lower() -> discord_id
+        # Create reverse mapping: minecraft_username.lower() -> discord_id, and uuid.lower() -> discord_id
         reverse_map = {}
         for discord_id, info in data.items():
-            # Skip entries that aren't dicts
             if not isinstance(info, dict):
                 continue
             mc_username = info.get('username', '')
+            mc_uuid = info.get('uuid', '')
             if mc_username and isinstance(mc_username, str):
                 reverse_map[mc_username.lower()] = int(discord_id)
+            if mc_uuid and isinstance(mc_uuid, str):
+                reverse_map[mc_uuid.lower()] = int(discord_id)
         
         print(f"[INAC_CHECK] Loaded {len(reverse_map)} username matches")
         return reverse_map
@@ -1120,19 +1133,22 @@ async def run_inactivity_check(interaction: discord.Interaction, start_date, end
         )
         return
     
-    end_players = set(get_players_from_guild_db(end_guild_db))
-    start_players = set(get_players_from_guild_db(start_guild_db))
+    end_players_map = get_players_from_guild_db(end_guild_db)
+    start_players_map = get_players_from_guild_db(start_guild_db)
     
-    if not end_players and not start_players:
+    end_keys = set(end_players_map.keys())
+    start_keys = set(start_players_map.keys())
+    
+    if not end_keys and not start_keys:
         await errors.NO_DATA_AVAILABLE.send(
             interaction,
             reason="No players found in the guild databases.",
         )
         return
     
-    players_in_both = end_players & start_players
-    players_left = start_players - end_players
-    players_new = end_players - start_players
+    keys_in_both = end_keys & start_keys
+    players_left = [start_players_map[k] for k in (start_keys - end_keys)]
+    players_new = [end_players_map[k] for k in (end_keys - start_keys)]
     
     days_with_data, total_days, missing_dates = count_available_days_in_period(start_date, end_date)
     print(f"[INAC_CHECK] Days with data: {days_with_data}, Total days: {total_days}, Missing dates: {missing_dates}")
@@ -1148,10 +1164,13 @@ async def run_inactivity_check(interaction: discord.Interaction, start_date, end
         )
         return
     
+    from utils.player_resolver import resolve_player_identity
     player_playtimes = []
-    for player in players_in_both:
-        total_playtime = get_total_playtime_for_period(player, start_date, end_date)
-        player_playtimes.append((player, total_playtime))
+    for key in keys_in_both:
+        curr_name = end_players_map[key]
+        _p_uuid, _resolved_uname, player_aliases = resolve_player_identity(curr_name)
+        total_playtime = get_total_playtime_for_period(curr_name, start_date, end_date, aliases=player_aliases)
+        player_playtimes.append((curr_name, total_playtime, _p_uuid))
     
     player_playtimes.sort(key=lambda x: x[1])
     
@@ -1163,8 +1182,8 @@ async def run_inactivity_check(interaction: discord.Interaction, start_date, end
     below_minimum_count = sum(1 for p in player_playtimes if p[1] < min_playtime_seconds)
     
     # Split players into active and inactive
-    inactive_players = [(u, p) for u, p in player_playtimes if p < min_playtime_seconds]
-    active_players = [(u, p) for u, p in player_playtimes if p >= min_playtime_seconds]
+    inactive_players = [(u, p, uid) for u, p, uid in player_playtimes if p < min_playtime_seconds]
+    active_players = [(u, p, uid) for u, p, uid in player_playtimes if p >= min_playtime_seconds]
     # Sort active by playtime descending
     active_players.sort(key=lambda x: x[1], reverse=True)
     
@@ -1174,8 +1193,8 @@ async def run_inactivity_check(interaction: discord.Interaction, start_date, end
     unmatched_inactive = []
     exempt_inactive = []  # (username, playtime_secs, discord_id, reason)
     
-    for username, playtime_secs in inactive_players:
-        discord_id = username_matches.get(username.lower())
+    for username, playtime_secs, p_uuid in inactive_players:
+        discord_id = username_matches.get(username.lower()) or (p_uuid and username_matches.get(p_uuid.lower()))
         if discord_id:
             # Check if user is exempt for this week
             if is_user_exempt(discord_id, start_date, end_date):

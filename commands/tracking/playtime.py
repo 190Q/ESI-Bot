@@ -147,7 +147,7 @@ def get_available_days():
     return day_folders
 
 
-def get_final_playtime_for_day(day_folder: Path, username: str) -> Optional[int]:
+def get_final_playtime_for_day(day_folder: Path, username: str, aliases: list = None) -> Optional[int]:
     """Get the final playtime for a user from a day's backup folder.
     
     Returns the playtime from the most recent backup of that day.
@@ -164,22 +164,27 @@ def get_final_playtime_for_day(day_folder: Path, username: str) -> Optional[int]
     
     # Use the most recent backup
     latest_db = db_files[-1]
+    names = [username.lower()]
+    if aliases:
+        names.extend([a.lower() for a in aliases if a])
+    names = list(set(names))
     
     try:
         conn = sqlite3.connect(latest_db)
         cursor = conn.cursor()
         
-        # Query case-insensitive
+        placeholders = ",".join("?" * len(names))
         cursor.execute(
-            "SELECT playtime_seconds FROM playtime WHERE LOWER(username) = LOWER(?)",
-            (username,)
+            f"SELECT playtime_seconds FROM playtime WHERE LOWER(username) IN ({placeholders})",
+            names,
         )
         
-        result = cursor.fetchone()
+        rows = cursor.fetchall()
         conn.close()
         
-        if result:
-            return result[0]
+        if rows:
+            max_secs = max([r[0] for r in rows if r and r[0] is not None], default=None)
+            return max_secs
         return None
     
     except Exception as e:
@@ -187,7 +192,7 @@ def get_final_playtime_for_day(day_folder: Path, username: str) -> Optional[int]
         return None
 
 
-def get_daily_playtime_data(username: str, days: int) -> Tuple[list, bool]:
+def get_daily_playtime_data(username: str, days: int, aliases: list = None) -> Tuple[list, bool]:
     """Get daily playtime data for a user over the specified number of days.
     
     Always returns data for the full requested range, filling missing days with 0.
@@ -215,7 +220,7 @@ def get_daily_playtime_data(username: str, days: int) -> Tuple[list, bool]:
         if date_key in available_lookup:
             # We have data for this day
             folder = available_lookup[date_key]
-            playtime = get_final_playtime_for_day(folder, username)
+            playtime = get_final_playtime_for_day(folder, username, aliases=aliases)
             if playtime is not None:
                 user_found_in_any_db = True
             daily_data.append({
@@ -361,8 +366,14 @@ def setup(bot, has_required_role, config):
                 )
                 return
             
+            # Resolve player identity and aliases (e.g. past usernames)
+            from utils.player_resolver import resolve_player_identity
+            _p_uuid, _resolved_uname, player_aliases = resolve_player_identity(username)
+            if _resolved_uname:
+                username = _resolved_uname
+
             # Get daily playtime data
-            daily_data, user_found = get_daily_playtime_data(username, delta)
+            daily_data, user_found = get_daily_playtime_data(username, delta, aliases=player_aliases)
             
             start_date = daily_data[0]['date'].strftime('%Y-%m-%d')
             end_date = daily_data[-1]['date'].strftime('%Y-%m-%d')

@@ -129,7 +129,7 @@ def get_api_databases_in_timeframe(days: int):
         return None, f"Error: {str(e)}"
 
 
-def get_player_graidcount(db_path: str, username: str) -> Optional[int]:
+def get_player_graidcount(db_path: str, username: str, aliases: list = None) -> Optional[int]:
     """Get player's total graid count from a database, adjusted for API faults."""
     try:
         conn = sqlite3.connect(db_path)
@@ -141,17 +141,23 @@ def get_player_graidcount(db_path: str, username: str) -> Optional[int]:
             conn.close()
             return None
         
+        names = [username.lower()]
+        if aliases:
+            names.extend([a.lower() for a in aliases if a])
+        names = list(set(names))
+        placeholders = ",".join("?" * len(names))
+        
         cursor.execute(
-            "SELECT total_graids FROM guild_raid_stats WHERE LOWER(username) = LOWER(?)",
-            (username,)
+            f"SELECT total_graids FROM guild_raid_stats WHERE LOWER(username) IN ({placeholders})",
+            names,
         )
         
-        result = cursor.fetchone()
-        if not result:
+        rows = cursor.fetchall()
+        if not rows:
             conn.close()
             return None
         
-        total = result[0]
+        total = max([r[0] for r in rows if r and r[0] is not None], default=0)
         
         # Subtract fault offset if present (guild-wide API inflation)
         cursor.execute(
@@ -159,8 +165,8 @@ def get_player_graidcount(db_path: str, username: str) -> Optional[int]:
         )
         if cursor.fetchone():
             cursor.execute(
-                "SELECT offset FROM graid_fault_offsets WHERE LOWER(username) = LOWER(?)",
-                (username,)
+                f"SELECT offset FROM graid_fault_offsets WHERE LOWER(username) IN ({placeholders})",
+                names,
             )
             offset_row = cursor.fetchone()
             if offset_row and offset_row[0]:
@@ -174,7 +180,7 @@ def get_player_graidcount(db_path: str, username: str) -> Optional[int]:
         return None
 
 
-def get_daily_graidcount_deltas(databases: list, username: str) -> list:
+def get_daily_graidcount_deltas(databases: list, username: str, aliases: list = None) -> list:
     """Calculate daily graid count deltas for a player."""
     from collections import defaultdict
     
@@ -185,8 +191,8 @@ def get_daily_graidcount_deltas(databases: list, username: str) -> list:
         db1_path, db1_time = databases[i]
         db2_path, db2_time = databases[i + 1]
         
-        graidcount1 = get_player_graidcount(db1_path, username)
-        graidcount2 = get_player_graidcount(db2_path, username)
+        graidcount1 = get_player_graidcount(db1_path, username, aliases=aliases)
+        graidcount2 = get_player_graidcount(db2_path, username, aliases=aliases)
         
         if graidcount1 is not None and graidcount2 is not None:
             # Skip when prev is 0
@@ -425,8 +431,13 @@ def setup(bot, has_required_role, config):
                 return
             
             # Single player logic
+            from utils.player_resolver import resolve_player_identity
+            p_uuid, resolved_uname, player_aliases = resolve_player_identity(username)
+            if resolved_uname:
+                username = resolved_uname
+
             # Validate username exists in the guild (latest database)
-            if get_player_graidcount(latest_db, username) is None:
+            if get_player_graidcount(latest_db, username, aliases=player_aliases) is None:
                 await errors.PLAYER_NOT_IN_GUILD.send(
                     interaction,
                     username=username,
@@ -436,7 +447,7 @@ def setup(bot, has_required_role, config):
             await interaction.response.defer()
 
             # Calculate daily deltas and fill missing days with 0
-            daily_deltas = get_daily_graidcount_deltas(databases, username)
+            daily_deltas = get_daily_graidcount_deltas(databases, username, aliases=player_aliases)
             daily_deltas = fill_daily_deltas(daily_deltas, delta)
             
             # Calculate stats

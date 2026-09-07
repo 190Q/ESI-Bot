@@ -139,23 +139,25 @@ def _get_latest_api_db() -> Path | None:
     return max(all_dbs, key=lambda p: p.stat().st_mtime)
 
 
-def _get_guild_usernames() -> set[str]:
+def _get_guild_members_and_uuids() -> tuple[set[str], dict[str, str]]:
     """
-    Return a set of lowercased usernames currently in the guild,
-    sourced from the latest api_tracking database.
+    Return (set_of_lowercased_usernames, dict_of_uuid_to_current_username)
+    currently in the guild, sourced from the latest api_tracking database.
     """
     db = _get_latest_api_db()
     if db is None:
-        return set()
+        return set(), {}
     try:
         conn = sqlite3.connect(db)
         c = conn.cursor()
-        c.execute("SELECT username FROM player_stats")
-        names = {row[0].lower() for row in c.fetchall() if row[0]}
+        c.execute("SELECT uuid, username FROM player_stats WHERE username IS NOT NULL")
+        rows = c.fetchall()
         conn.close()
-        return names
+        uuid_to_name = {(r[0] or "").strip().lower(): r[1] for r in rows if r[0]}
+        names = {(r[1] or "").strip().lower() for r in rows if r[1]}
+        return names, uuid_to_name
     except Exception:
-        return set()
+        return set(), {}
 
 
 def _get_points_for_cycles(cycle_ids: list[int]) -> list[dict]:
@@ -163,7 +165,7 @@ def _get_points_for_cycles(cycle_ids: list[int]) -> list[dict]:
     Return a list of dicts {uuid, username, points, clean_ep, dirty_ep}
     summed across the given cycle_ids, restricted to players currently in the guild.
     """
-    guild_names = _get_guild_usernames()
+    guild_names, uuid_to_name = _get_guild_members_and_uuids()
 
     conn = sqlite3.connect(POINTS_DB)
     c = conn.cursor()
@@ -179,11 +181,13 @@ def _get_points_for_cycles(cycle_ids: list[int]) -> list[dict]:
 
     results = []
     for uuid, username, pts, clean, dirty in rows:
-        if guild_names and username.lower() not in guild_names:
+        u_norm = (uuid or "").strip().lower()
+        current_name = uuid_to_name.get(u_norm) or username
+        if guild_names and (u_norm not in uuid_to_name and current_name.lower() not in guild_names):
             continue
         results.append({
             "uuid": uuid,
-            "username": username,
+            "username": current_name,
             "points": pts or 0,
             "clean_ep": clean or 0,
             "dirty_ep": dirty or 0,
@@ -357,21 +361,27 @@ def setup(bot, has_required_role, config):
 
         # Single-player view────────────────────────────────────────
         if username:
-            # Look up UUID by username (case-insensitive) from points DB
-            conn = sqlite3.connect(POINTS_DB)
-            c = conn.cursor()
-            c.execute(
-                "SELECT uuid, username FROM esi_points WHERE LOWER(username) = LOWER(?) LIMIT 1",
-                (username,),
-            )
-            row = c.fetchone()
-            conn.close()
+            # Look up UUID by username or UUID via resolver
+            from utils.player_resolver import resolve_player_identity
+            uuid, resolved_name, player_aliases = resolve_player_identity(username)
 
-            if not row:
+            if not uuid:
+                # Fallback check in esi_points
+                conn = sqlite3.connect(POINTS_DB)
+                c = conn.cursor()
+                placeholders = ",".join("?" * len(player_aliases)) if player_aliases else "?"
+                c.execute(
+                    f"SELECT uuid, username FROM esi_points WHERE LOWER(username) IN ({placeholders}) ORDER BY cycle_id DESC LIMIT 1",
+                    player_aliases if player_aliases else (username.lower(),),
+                )
+                row = c.fetchone()
+                conn.close()
+                if row:
+                    uuid, resolved_name = row
+
+            if not uuid:
                 await errors.NO_RECORDS_FOUND.send(interaction, username=username)
                 return
-
-            uuid, resolved_name = row
 
             # Points per requested cycle
             conn = sqlite3.connect(POINTS_DB)

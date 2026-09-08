@@ -677,6 +677,20 @@ def create_bot():
             print(f"[STARTUP WARNING] Failed to restore support tickets: {e}")
             import traceback
             traceback.print_exc()
+
+        # Restore inactivity request views & hub view (always run, not just first time)
+        print("[STARTUP] Restoring inactivity request and hub views...")
+        try:
+            if hasattr(bot, '_restore_inactivity_requests_views'):
+                restored, failed = await bot._restore_inactivity_requests_views()
+                print(f"[STARTUP] ✅ Inactivity requests restored: {restored} restored, {failed} failed")
+            if hasattr(bot, '_restore_inactivity_hub_view'):
+                await bot._restore_inactivity_hub_view()
+                print(f"[STARTUP] ✅ Inactivity hub view restored")
+        except Exception as e:
+            print(f"[STARTUP WARNING] Failed to restore inactivity views: {e}")
+            import traceback
+            traceback.print_exc()
                 
     @bot.event
     async def on_error(event, *args, **kwargs):
@@ -811,6 +825,22 @@ def create_bot():
                     print("[RELOAD] ⚠️ Warning: Support ticket restore function not found")
             except Exception as restore_error:
                 print(f"[RELOAD] ⚠️ Warning: Could not restore support ticket views: {restore_error}")
+                import traceback
+                traceback.print_exc()
+
+            # Restore inactivity request views & hub view
+            print("[RELOAD] Restoring inactivity request and hub views...")
+            inact_restored = 0
+            inact_failed = 0
+            try:
+                if hasattr(bot, '_restore_inactivity_requests_views'):
+                    inact_restored, inact_failed = await bot._restore_inactivity_requests_views()
+                    print(f"[RELOAD] ✅ Inactivity request views restored: {inact_restored} restored, {inact_failed} failed")
+                if hasattr(bot, '_restore_inactivity_hub_view'):
+                    await bot._restore_inactivity_hub_view()
+                    print(f"[RELOAD] ✅ Inactivity hub view restored")
+            except Exception as restore_error:
+                print(f"[RELOAD] ⚠️ Warning: Could not restore inactivity views: {restore_error}")
                 import traceback
                 traceback.print_exc()
             

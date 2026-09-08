@@ -1,4 +1,4 @@
-﻿import discord
+import discord
 from discord import app_commands
 from datetime import datetime
 import os
@@ -7,6 +7,7 @@ import asyncio
 from utils.permissions import has_roles
 from utils import errors
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
+from utils.tickets import get_or_create_category, cleanup_empty_categories
 
 REQUIRED_ROLES = []
 CATEGORY_THRESHOLD = 50
@@ -36,69 +37,6 @@ CATEGORY_ROLES = {
 
 def setup(bot, has_required_role, config):
     """Setup function for bot integration"""
-    
-    async def get_or_create_category(guild, category_name):
-        """Get existing category with space or create a new one"""
-        base_name = category_name.split(' #')[0]
-        
-        # Load existing category tracking
-        tickets_file = os.path.join(str(PROJECT_ROOT), "data", "support_tickets.json")
-        try:
-            with open(tickets_file, "r") as f:
-                data = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            data = {"tickets": {}, "categories": {}}
-        
-        if "categories" not in data:
-            data["categories"] = {}
-        
-        # Clean up deleted categories from tracking
-        tracked_categories = data["categories"].get(base_name, [])
-        valid_categories = []
-        for cat_id in tracked_categories:
-            category = guild.get_channel(cat_id)
-            if category and len(category.channels) < CATEGORY_THRESHOLD:
-                valid_categories.append(cat_id)
-                # Return first category with space
-                if len(valid_categories) == len(tracked_categories):
-                    return category
-            elif category and len(category.channels) >= CATEGORY_THRESHOLD:
-                valid_categories.append(cat_id)
-            # If category doesn't exist, don't add to valid list
-        
-        data["categories"][base_name] = valid_categories
-        
-        # Return existing category with space
-        for cat_id in valid_categories:
-            category = guild.get_channel(cat_id)
-            if category and len(category.channels) < CATEGORY_THRESHOLD:
-                with open(tickets_file, "w") as f:
-                    json.dump(data, f, indent=4)
-                return category
-        
-        # Create new category
-        try:
-            next_number = len(valid_categories) + 1
-            new_category_name = f"{category_name} #{next_number}" if next_number > 1 else category_name
-            
-            position = None
-            if valid_categories:
-                last_cat = guild.get_channel(valid_categories[-1])
-                if last_cat:
-                    position = last_cat.position + 1
-            
-            new_category = await guild.create_category(new_category_name, position=position)
-            
-            # Track new category
-            data["categories"][base_name].append(new_category.id)
-            with open(tickets_file, "w") as f:
-                json.dump(data, f, indent=4)
-            
-            print(f"Created new category: {new_category_name} at position {position}")
-            return new_category
-        except Exception as e:
-            print(f"Error creating category: {e}")
-            return None
     
     class SupportModal(discord.ui.Modal, title="Contact Support"):
         subject = discord.ui.TextInput(
@@ -584,40 +522,6 @@ def setup(bot, has_required_role, config):
         
         print(f"[SUPPORT] 📊 Restoration complete: {restored_count} restored, {failed_count} failed")
         return restored_count, failed_count
-    
-    async def cleanup_empty_categories(guild, base_name):
-        """Remove empty numbered categories and update tracking"""
-        tickets_file = os.path.join(str(PROJECT_ROOT), "data", "support_tickets.json")
-        try:
-            with open(tickets_file, "r") as f:
-                data = json.load(f)
-        except:
-            return
-        
-        if "categories" not in data or base_name not in data["categories"]:
-            return
-        
-        tracked = data["categories"][base_name]
-        valid = []
-        
-        for cat_id in tracked:
-            category = guild.get_channel(cat_id)
-            if category:
-                if '#' in category.name and len(category.channels) == 0:
-                    try:
-                        await category.delete()
-                        print(f"Deleted empty category: {category.name}")
-                        # Don't add to valid list - it's been deleted
-                    except Exception as e:
-                        print(f"Failed to delete category: {e}")
-                        valid.append(cat_id)
-                else:
-                    valid.append(cat_id)
-            # If category doesn't exist, don't add to valid list
-        
-        data["categories"][base_name] = valid
-        with open(tickets_file, "w") as f:
-            json.dump(data, f, indent=4)
     
     @bot.tree.command(
         name="contact_support",

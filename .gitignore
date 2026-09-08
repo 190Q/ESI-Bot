@@ -239,6 +239,9 @@ user_bans.json
 guild_capacity_override.json
 pending_invites.json
 events.json
+inactivity_hub.json
+inactivity_requests.json
+ticket_restrictions.json
 temp_vc_channels/
 temp_vc_config.json
 duke_first_time_pings.json

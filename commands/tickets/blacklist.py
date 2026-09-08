@@ -3128,7 +3128,7 @@ class BlacklistManageView(View):
                 "Select one or more **active** entries for the **same username**, "
                 "then provide a retraction reason.\n\n"
                 f"**Page:** `{page + 1}` / `{total_pages}`\n"
-                f"**Showing:** `{start_n}`–`{end_n}` of `{total}` active entries\n\n"
+                f"**Showing:** `{start_n}`-`{end_n}` of `{total}` active entries\n\n"
                 "Use **Prev/Next** to browse more entries.\n\n"
                 "Retracted entries move into the retraction history with:\n"
                 "• original categories\n• original reasons\n• retraction reason"

@@ -239,13 +239,13 @@ def _get_player_history(uuid: str) -> list[dict]:
 
 def _cycle_label(cycle_id: int) -> str:
     start, end = get_cycle_bounds(cycle_id)
-    return f"Cycle {cycle_id} ({start.strftime('%d %b')} – {end.strftime('%d %b %Y')})"
+    return f"Cycle {cycle_id} ({start.strftime('%d %b')} - {end.strftime('%d %b %Y')})"
 
 
 #  TXT builders
 def _(players: list[dict], cycle_ids: list[int]) -> str:
     lines = []
-    lines.append("ESI Points – Full Leaderboard")
+    lines.append("ESI Points - Full Leaderboard")
     lines.append("=" * 50)
     lines.append("Cycles: " + ", ".join(_cycle_label(c) for c in cycle_ids))
     lines.append(f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
@@ -264,7 +264,7 @@ def _build_player_history_txt(username: str, uuid: str, points_by_cycle: dict,
                                history: list[dict], guild_ranks: dict,
                                clean_dirty: dict[int, tuple[int, int]] | None = None) -> str:
     lines = []
-    lines.append(f"ESI Points – History for {username}")
+    lines.append(f"ESI Points - History for {username}")
     lines.append("=" * 50)
     lines.append(f"UUID: {uuid}")
     lines.append(f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
@@ -295,7 +295,7 @@ def _build_player_history_txt(username: str, uuid: str, points_by_cycle: dict,
 
 def _build_leaderboard_txt(players: list[dict], cycle_ids: list[int], guild_ranks: dict) -> str:
     lines = []
-    lines.append("ESI Points – Full Leaderboard")
+    lines.append("ESI Points - Full Leaderboard")
     lines.append("=" * 78)
     lines.append("Cycles: " + ", ".join(_cycle_label(c) for c in cycle_ids))
     lines.append(f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
@@ -422,7 +422,7 @@ def setup(bot, has_required_role, config):
                 pts = cycle_rows.get(cid, 0)
                 c_ep, d_ep = clean_dirty.get(cid, (pts, 0))
                 start, end = get_cycle_bounds(cid)
-                field_name = f"Cycle {cid} ({start.strftime('%d %b')} – {end.strftime('%d %b')})"
+                field_name = f"Cycle {cid} ({start.strftime('%d %b')} - {end.strftime('%d %b')})"
                 embed.add_field(
                     name=field_name,
                     value=f"**{c_ep}** CEP / **{d_ep}** DEP",

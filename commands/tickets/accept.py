@@ -93,7 +93,7 @@ def _load_username_match_db():
     except FileNotFoundError:
         return {}
     except json.JSONDecodeError:
-        # Corrupt or empty file – start fresh rather than breaking the command
+        # Corrupt or empty file - start fresh rather than breaking the command
         return {}
     except Exception as e:
         print(f"[WARN] Failed to load username match DB: {e}")

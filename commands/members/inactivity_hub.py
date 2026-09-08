@@ -20,6 +20,7 @@ from utils.tickets import (
     RECRUITMENT_MANAGER_ROLE_ID,
     PARLIAMENT_ROLE_ID,
     JUROR_ROLE_ID,
+    SINDIAN_CITIZEN_ROLE_ID,
     TICKET_PERMS,
 )
 from commands.members.inactivity_check import (
@@ -1396,6 +1397,26 @@ class InactivityHubView(discord.ui.View):
         custom_id="request_inactivity_exemption",
     )
     async def request_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 0. Check for required Sindrian Citizen role
+        user_role_ids = [r.id for r in getattr(interaction.user, "roles", [])]
+        owner_id = int(os.getenv("OWNER_ID", "0"))
+        is_owner = interaction.user.id == owner_id
+        is_admin = (
+            hasattr(interaction.user, "guild_permissions")
+            and interaction.user.guild_permissions.administrator
+        )
+        has_citizen = SINDIAN_CITIZEN_ROLE_ID in user_role_ids
+        has_parliament = PARLIAMENT_ROLE_ID in user_role_ids
+
+        if not (has_citizen or is_owner or is_admin or has_parliament):
+            await errors.send_custom_error(
+                interaction,
+                "Permission Denied",
+                "You must have the **Sindrian Citizen** role to request an inactivity exemption.",
+                steps=["Make sure you have the Sindrian Citizen role assigned to your account."],
+            )
+            return
+
         # 1. Cleanup expired exemptions
         cleanup_expired_exemptions()
 
@@ -1594,20 +1615,6 @@ def setup(bot, has_required_role, config):
         await interaction.response.defer(ephemeral=True)
 
         try:
-            # Lock channel permissions: @everyone cannot send messages, bot can
-            await channel.set_permissions(
-                channel.guild.default_role,
-                send_messages=False,
-                read_messages=True,
-            )
-            await channel.set_permissions(
-                channel.guild.me,
-                send_messages=True,
-                read_messages=True,
-                embed_links=True,
-                attach_files=True,
-            )
-
             # Message 1 (Top): Live Public Roster Embed
             roster_embed = build_roster_embed()
             roster_message = await channel.send(embed=roster_embed)
@@ -1652,7 +1659,7 @@ def setup(bot, has_required_role, config):
             await errors.send_custom_error(
                 interaction,
                 "Missing Permissions",
-                f"I don't have permission to manage permissions or send messages in {channel.mention}.",
+                f"I don't have permission to send messages or embed links in {channel.mention}.",
             )
         except Exception as e:
             print(f"[INACT_HUB] Error setting up hub: {e}")

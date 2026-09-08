@@ -160,8 +160,11 @@ def build_roster_embed() -> discord.Embed:
         if "permanent" in weeks:
             continue
 
-        # Must have opted into public duration
-        if not data.get("public_duration", False):
+        public_duration = data.get("public_duration", False)
+        public_reason = data.get("public_reason", False) and bool(data.get("reason"))
+
+        # If neither duration nor reason is public, skip
+        if not public_duration and not public_reason:
             continue
 
         # Filter to currently valid weeks
@@ -169,15 +172,17 @@ def build_roster_embed() -> discord.Embed:
         if not valid_weeks:
             continue
 
-        duration_range = get_overall_date_range(valid_weeks)
-        if not duration_range:
+        duration_range = get_overall_date_range(valid_weeks) if public_duration else None
+        reason_text = data.get("reason") if public_reason else None
+
+        if duration_range and reason_text:
+            line = f"• <@{user_key}>: `{duration_range}` *(Reason: {reason_text})*"
+        elif duration_range:
+            line = f"• <@{user_key}>: `{duration_range}`"
+        elif reason_text:
+            line = f"• <@{user_key}>: *(Reason: {reason_text})*"
+        else:
             continue
-
-        line = f"• <@{user_key}>: `{duration_range}`"
-
-        # Check if reason was also made public
-        if data.get("public_reason", False) and data.get("reason"):
-            line += f" *(Reason: {data.get('reason')}*)"
 
         roster_lines.append(line)
 

@@ -192,6 +192,8 @@ class PermitSelectorView(UserBoundView):
                 blocked_by_banned_role_user_ids.add(int(user_id))
         if blocked_by_banned_role_user_ids:
             safe_user_ids = [uid for uid in safe_user_ids if uid not in blocked_by_banned_role_user_ids]
+        if self.owner_id and self.owner_id not in safe_user_ids:
+            safe_user_ids.append(self.owner_id)
         selected_user_set = set(safe_user_ids)
         selected_role_set = set(safe_role_ids)
 
@@ -688,7 +690,12 @@ class KickMemberView(UserBoundView):
 
 
 class TransferOwnerView(UserBoundView):
-    def __init__(self, system: TempVCSystem, channel_id: int, requester_id: int):
+    def __init__(
+        self,
+        system: TempVCSystem,
+        channel_id: int,
+        requester_id: int,
+    ):
         super().__init__(requester_id=requester_id, timeout=120)
         self.system = system
         self.channel_id = channel_id
@@ -718,30 +725,93 @@ class TransferOwnerView(UserBoundView):
         self.add_item(select)
 
     async def _transfer_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
         if self.member_select.values[0] == "0":
-            await errors.NO_DATA_AVAILABLE.send(interaction, reason="No members available for transfer.")
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    title="Transfer Ownership",
+                    description="No members available for transfer.",
+                    color=0xED4245,
+                ),
+                view=None,
+            )
             return
         target_id = int(self.member_select.values[0])
         channel = interaction.guild.get_channel(self.channel_id)
         entry = await self.system.get_entry(self.channel_id)
         if not isinstance(channel, discord.VoiceChannel) or not entry:
-            await errors.NOT_FOUND.send(interaction, reason="This temporary VC is no longer available.")
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    title="Transfer Ownership",
+                    description="This temporary VC is no longer available.",
+                    color=0xED4245,
+                ),
+                view=None,
+            )
             return
         if not self.system.can_manage(interaction.user, entry):
-            await errors.NO_PERMISSION.send(interaction)
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    title="Transfer Ownership",
+                    description="You do not have permission to transfer this VC.",
+                    color=0xED4245,
+                ),
+                view=None,
+            )
             return
         target_member = interaction.guild.get_member(target_id)
         if not target_member:
-            await errors.NOT_FOUND.send(interaction, reason="Target member not found.")
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    title="Transfer Ownership",
+                    description="Target member not found.",
+                    color=0xED4245,
+                ),
+                view=None,
+            )
             return
 
+        previous_owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
         entry["owner_id"] = target_member.id
         entry.pop("owner_absent_since", None)
         entry.pop("pending_owner_id", None)
+        self.system.ensure_owner_permissions(entry, previous_owner_id=previous_owner_id)
         self.system.add_log(entry, interaction.user.id, "transfer", f"Ownership transferred to {target_member.id}")
         await self.system.sync_channel(channel, entry, reason=f"Ownership transfer by {interaction.user}")
         await self.system.upsert_entry(channel.id, entry)
-        await send_ephemeral(interaction, f"✅ Ownership transferred to {target_member.mention}.")
+
+        if previous_owner_id:
+            try:
+                prev_target = interaction.guild.get_member(previous_owner_id)
+                if prev_target is None:
+                    prev_target = discord.Object(id=previous_owner_id)
+                await channel.set_permissions(
+                    prev_target,
+                    overwrite=None,
+                    reason=f"Previous owner removed by ownership transfer",
+                )
+            except Exception as exc:
+                print(f"[VC_GENERATOR] Failed to remove previous owner {previous_owner_id} overwrite on channel {channel.id}: {exc}")
+
+        panel = VCPanelView(
+            self.system,
+            channel.id,
+            interaction.user.id,
+            show_claim_button=self.system.is_admin_member(interaction.user)
+            and int(entry.get("owner_id") or entry.get("pending_owner_id") or 0) != interaction.user.id,
+        )
+        panel_embed = self.system.build_panel_embed(
+            channel,
+            entry,
+            interaction.user,
+            status=f"✅ Ownership transferred to {target_member.mention}.",
+        )
+        try:
+            await interaction.edit_original_response(embed=panel_embed, view=panel)
+        except Exception as exc:
+            print(f"[VC_GENERATOR] Failed to edit transfer response back to panel for channel {channel.id}: {exc}")
+        self.stop()
 
 
 class RegionSelectView(UserBoundView):
@@ -961,6 +1031,8 @@ class PresetPermitSelectorView(UserBoundView):
                 blocked_by_banned_role_user_ids.add(int(user_id))
         if blocked_by_banned_role_user_ids:
             safe_user_ids = [uid for uid in safe_user_ids if uid not in blocked_by_banned_role_user_ids]
+        if self.owner_id and self.owner_id not in safe_user_ids:
+            safe_user_ids.append(self.owner_id)
 
         selected_user_set = set(safe_user_ids)
         selected_role_set = set(safe_role_ids)
@@ -1987,6 +2059,7 @@ class PresetLoadSelectView(UserBoundView):
 
         before_snapshot = self.system.build_user_preset_from_entry(entry)
         self.system.apply_user_preset_to_entry(entry, preset_settings)
+        self.system.ensure_owner_permissions(entry)
         after_snapshot = self.system.build_user_preset_from_entry(entry)
         changed = before_snapshot != after_snapshot
 
@@ -2405,9 +2478,11 @@ class VCPanelView(UserBoundView):
         if not self.system.is_admin_member(interaction.user):
             await errors.NO_PERMISSION.send(interaction)
             return
+        previous_owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
         entry["owner_id"] = interaction.user.id
         entry.pop("owner_absent_since", None)
         entry.pop("pending_owner_id", None)
+        self.system.ensure_owner_permissions(entry, previous_owner_id=previous_owner_id)
         await self._update_state(interaction, entry, channel, "claim_admin", "Parliament/admin took ownership")
         await self._refresh_with_status(interaction, "👑 You took ownership as Parliament/admin.")
 
@@ -2422,8 +2497,7 @@ class VCPanelView(UserBoundView):
             return
         view = TransferOwnerView(self.system, channel.id, self.requester_id)
         await view.setup_options(interaction.guild)
-        await send_ephemeral(
-            interaction,
+        await interaction.response.edit_message(
             embed=discord.Embed(
                 title="Transfer Ownership",
                 description=f"Select who should own {channel.mention}.",

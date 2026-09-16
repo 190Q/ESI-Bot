@@ -368,6 +368,7 @@ class TempVCSystem:
         entry["owner_id"] = replacement_owner.id
         entry.pop("pending_owner_id", None)
         entry.pop("owner_absent_since", None)
+        self.ensure_owner_permissions(entry, previous_owner_id=current_owner_id)
         self.add_log(
             entry,
             None,
@@ -988,6 +989,7 @@ class TempVCSystem:
         base["banned_roles"] = list(dict.fromkeys(base["banned_roles"]))
         base["permitted_roles"] = list(dict.fromkeys(base["permitted_roles"]))
         base["logs"] = base["logs"][-MAX_STORED_LOG_ENTRIES:]
+        self.ensure_owner_permissions(base)
         return base
 
 
@@ -1070,6 +1072,41 @@ class TempVCSystem:
     def can_manage(self, member: discord.Member, entry: Dict[str, Any]) -> bool:
         effective_owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
         return self.is_admin_member(member) or member.id == effective_owner_id
+
+    def ensure_owner_permissions(
+        self,
+        entry: Dict[str, Any],
+        previous_owner_id: Optional[int] = None,
+    ):
+        """Keep the current VC owner permitted and never banned.
+
+        Optionally strip the previous owner's explicit permit/ban entries when
+        ownership is transferred.
+        """
+        owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
+
+        if previous_owner_id is not None:
+            prev = int(previous_owner_id or 0)
+            if prev > 0 and prev != owner_id:
+                entry.setdefault("permitted_users", [])
+                entry["permitted_users"] = [
+                    uid for uid in entry["permitted_users"] if int(uid) != prev
+                ]
+                entry.setdefault("banned_users", [])
+                entry["banned_users"] = [
+                    uid for uid in entry["banned_users"] if int(uid) != prev
+                ]
+
+        if owner_id > 0:
+            entry.setdefault("banned_users", [])
+            entry["banned_users"] = [
+                uid for uid in entry["banned_users"] if int(uid) != owner_id
+            ]
+            entry.setdefault("permitted_users", [])
+            permitted = [
+                uid for uid in entry["permitted_users"] if int(uid) != owner_id
+            ]
+            entry["permitted_users"] = list(dict.fromkeys([owner_id, *permitted]))
 
     def add_log(self, entry: Dict[str, Any], actor_id: Optional[int], action: str, details: str = ""):
         entry.setdefault("logs", [])
@@ -1615,12 +1652,15 @@ class TempVCSystem:
         guild: discord.Guild,
         entry: Dict[str, Any],
         category: Optional[discord.CategoryChannel] = None,
+        channel: Optional[discord.VoiceChannel] = None,
     ) -> Dict[Any, discord.PermissionOverwrite]:
         overwrites: Dict[Any, discord.PermissionOverwrite] = self._build_category_baseline_overwrites(
             guild,
             category,
         )
-        overwrites[guild.default_role] = self._build_everyone_overwrite(entry)
+
+        explicit_overwrites: Dict[Any, discord.PermissionOverwrite] = {}
+        explicit_overwrites[guild.default_role] = self._build_everyone_overwrite(entry)
 
         permit_overwrite = self._permit_overwrite(entry)
         ban_overwrite = self._ban_overwrite()
@@ -1631,10 +1671,7 @@ class TempVCSystem:
         for role_id in permitted_role_ids:
             role = guild.get_role(int(role_id))
             if role:
-                if role.id in PRIVILEGED_ROLE_ID_SET:
-                    overwrites[role] = self._owner_overwrite(entry)
-                else:
-                    overwrites[role] = permit_overwrite
+                explicit_overwrites[role] = permit_overwrite
 
         permitted_user_ids, _ = self._partition_manageable_members_for_overwrites(
             guild,
@@ -1643,7 +1680,7 @@ class TempVCSystem:
         for user_id in permitted_user_ids:
             member = guild.get_member(int(user_id))
             target = member if member is not None else discord.Object(id=int(user_id))
-            overwrites[target] = permit_overwrite
+            explicit_overwrites[target] = permit_overwrite
 
         banned_role_ids, _ = self._partition_manageable_roles_for_overwrites(
             guild,
@@ -1652,7 +1689,7 @@ class TempVCSystem:
         for role_id in banned_role_ids:
             role = guild.get_role(int(role_id))
             if role:
-                overwrites[role] = ban_overwrite
+                explicit_overwrites[role] = ban_overwrite
 
         banned_user_ids, _ = self._partition_manageable_members_for_overwrites(
             guild,
@@ -1661,17 +1698,25 @@ class TempVCSystem:
         for user_id in banned_user_ids:
             member = guild.get_member(int(user_id))
             target = member if member is not None else discord.Object(id=int(user_id))
-            overwrites[target] = ban_overwrite
+            explicit_overwrites[target] = ban_overwrite
 
         owner_id = int(entry.get("owner_id") or entry.get("pending_owner_id") or 0)
         if owner_id:
             owner_member = guild.get_member(owner_id)
-            if owner_member and self._can_set_member_overwrite(guild, owner_member):
-                overwrites[owner_member] = self._owner_overwrite(entry)
+            owner_target = owner_member if owner_member is not None else discord.Object(id=owner_id)
+            explicit_overwrites[owner_target] = permit_overwrite
 
         bot_overwrite_target = self._get_bot_overwrite_target(guild)
         if bot_overwrite_target is not None:
-            overwrites[bot_overwrite_target] = self._owner_overwrite(entry)
+            explicit_overwrites[bot_overwrite_target] = self._owner_overwrite(entry)
+
+        if channel is not None:
+            for target, overwrite in explicit_overwrites.items():
+                sanitized = self._sanitize_overwrite_for_channel(channel, overwrite)
+                if sanitized is not None:
+                    overwrites[target] = sanitized
+        else:
+            overwrites.update(explicit_overwrites)
 
         return overwrites
 
@@ -1686,7 +1731,7 @@ class TempVCSystem:
         region = str(entry.get("region", "auto") or "auto")
         rtc_region = None if region == "auto" else region
         channel_category = channel.category if isinstance(channel.category, discord.CategoryChannel) else None
-        overwrites = self._build_channel_overwrites(channel.guild, entry, category=channel_category)
+        overwrites = self._build_channel_overwrites(channel.guild, entry, category=channel_category, channel=channel)
         overwrite_signature = self._build_overwrite_signature(overwrites)
         edit_reason = reason or "Temporary VC state update"
         current_region = str(getattr(channel, "rtc_region", None) or "auto")
@@ -1898,7 +1943,8 @@ class TempVCSystem:
                 # Override name if preset has a custom_name
                 if base_entry.get("custom_name"):
                     channel_name = base_entry["custom_name"]
-                self.add_log(base_entry, member.id, "preset_default_applied", f"Applied default preset {default_preset_name}")
+            self.add_log(base_entry, member.id, "preset_default_applied", f"Applied default preset {default_preset_name}")
+            self.ensure_owner_permissions(base_entry)
             base_entry["member_join_times"] = {str(member.id): now_iso()}
             self.add_log(base_entry, member.id, "channel_created", f"Created from generator {generator_channel.name}")
 
@@ -2001,6 +2047,7 @@ class TempVCSystem:
             entry.pop("owner_absent_since", None)
             entry.pop("pending_owner_id", None)
             self._cancel_owner_transfer_task(channel.id)
+            self.ensure_owner_permissions(entry)
             self.add_log(
                 entry,
                 member.id,

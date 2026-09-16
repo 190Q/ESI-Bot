@@ -10,9 +10,8 @@ from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 import io
 from utils import errors
-from commands.tickets.suscard_history import fetch_guild_history_names, format_guild_history
+from commands.tickets.history import fetch_guild_history_names, format_guild_history
 
-# Load environment variables
 load_dotenv()
 
 # Get Wynncraft API keys from environment

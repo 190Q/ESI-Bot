@@ -4,13 +4,14 @@ import aiohttp
 import os
 from datetime import datetime, timezone
 import math
-from typing import Optional, Dict
+from pathlib import Path
+from typing import Optional, Dict, Iterable
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 import io
 from utils import errors
+from commands.tickets.history import fetch_guild_history_names, format_guild_history
 
-# Load environment variables
 load_dotenv()
 
 # Get Wynncraft API keys from environment
@@ -252,7 +253,12 @@ class SusCardImageGenerator:
         return title_font, label_font, value_font, percentage_font, chart_label_font
     
     @classmethod
-    async def generate(cls, sus_data: dict, skin_bytes: bytes = None):
+    async def generate(
+        cls,
+        sus_data: dict,
+        skin_bytes: bytes = None,
+        guild_history_names: Optional[Iterable[str]] = None,
+    ):
         """Generate the complete sus card image"""
         # Card dimensions
         width, height = 1000, 600
@@ -262,7 +268,8 @@ class SusCardImageGenerator:
         
         # Load and paste background image
         try:
-            bg_img = Image.open('images/background.png')
+            background_path = Path(__file__).resolve().parents[2] / 'images' / 'suscardbackground.png'
+            bg_img = Image.open(background_path)
             bg_img = bg_img.resize((width, height), Image.Resampling.LANCZOS)
             
             # Create rounded mask
@@ -366,8 +373,36 @@ class SusCardImageGenerator:
         guild_text_y = guild_y + 10
         
         draw.text((guild_text_x, guild_text_y), "GUILD", fill='#999999', font=label_font)
-        draw.text((guild_text_x, guild_text_y + 20), sus_data['guild_name'], fill='#7ec8e3', font=value_font)
+        draw.text((guild_text_x, guild_text_y + 20), sus_data['guild_name'], fill='white', font=value_font)
         draw.text((guild_text_x, guild_text_y + 42), f"RANK: {sus_data['guild_rank']}", fill='#7ec8e3', font=label_font)
+
+        # Keep recent guilds separate from the suspicion breakdown.
+        history_y = guild_y + guild_box_height + 15
+        history_width = 925
+        history_height = 58
+        history_overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        history_draw = ImageDraw.Draw(history_overlay)
+        history_draw.rounded_rectangle(
+            [left_x, history_y, left_x + history_width, history_y + history_height],
+            radius=10,
+            fill=(30, 35, 50, 170),
+        )
+        img.paste(history_overlay, (0, 0), history_overlay)
+
+        history_names = list(guild_history_names or [])[-4:]
+        history_text = format_guild_history(history_names)
+        draw.text((left_x + 12, history_y + 8), "GUILD HISTORY", fill='white', font=label_font)
+
+        # Drop the oldest names first when the row is too long.
+        max_history_width = history_width - 24
+        rendered_history = history_text
+        while rendered_history and draw.textlength(rendered_history, font=value_font) > max_history_width:
+            if "  •  " in rendered_history:
+                rendered_history = "  •  ".join(rendered_history.split("  •  ")[1:])
+            else:
+                rendered_history = rendered_history[:-2].rstrip() + "…"
+                break
+        draw.text((left_x + 12, history_y + 29), rendered_history, fill='#c6cedb', font=value_font)
         
         # Draw bar chart in top right
         chart_width = 480
@@ -480,7 +515,7 @@ class SusCardImageGenerator:
         gap_x = 15
         gap_y = 15
         stats_start_x = left_x
-        stats_start_y = height - (2 * stat_height + gap_y + 30)
+        stats_start_y = 420
         
         stats = [
             ('OVERALL SUS', f"{sus_data['overall_sus']:.2f}%", 'Suspiciousness', '#5dade2'),
@@ -574,17 +609,24 @@ def setup(bot, has_required_role, config):
                 )
                 return
             
-            # Fetch player skin
-            skin_bytes = None
-            if sus_data['uuid']:
-                skin_bytes = await WynncraftAPI.fetch_player_skin(sus_data['uuid'])
-            
-            # Generate image
-            img_bytes = await SusCardImageGenerator.generate(sus_data, skin_bytes)
-            
-            # Send image
-            file = discord.File(img_bytes, filename=f"suscard_{sus_data['username']}.png")
-            await interaction.followup.send(file=file)
+            guild_history_names = await fetch_guild_history_names(
+                player_data,
+                headers=WynncraftAPI._get_headers(),
+            )
+
+            # Build the card from the player's live data.
+            skin_bytes = await WynncraftAPI.fetch_player_skin(sus_data.get('uuid'))
+            img_bytes = await SusCardImageGenerator.generate(
+                sus_data,
+                skin_bytes=skin_bytes,
+                guild_history_names=guild_history_names,
+            )
+
+            # Discord matches the embed image to this attachment name.
+            file = discord.File(img_bytes, filename="suscard.png")
+            embed = discord.Embed(color=discord.Color.from_rgb(255, 77, 77))
+            embed.set_image(url="attachment://suscard.png")
+            await interaction.followup.send(embed=embed, file=file)
             
         except Exception as e:
             await errors.IMAGE_GENERATION_FAILED.send(

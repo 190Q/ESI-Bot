@@ -2215,7 +2215,7 @@ class ConfirmSubmitView(View):
                                     if sus_data:
                                         # Generate sus card image
                                         selected_uuid = player_data.get('uuid')
-                                        skin_bytes = await WynncraftAPI.fetch_player_skin(selected_uuid)
+                                        skin_bytes = await WynncraftAPI.fetch_skin(selected_uuid)
                                         
                                         try:
                                             sus_card_bytes = await SusCardImageGenerator.generate(sus_data, skin_bytes)

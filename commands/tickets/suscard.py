@@ -691,7 +691,7 @@ def _safe_filename(name: str) -> str:
 
 def setup(bot, has_required_role, config):
     # Keep this signature because the bot loader supplies all three arguments.
-    @bot.tree.command(name="suscard", description="Generate a visual sus card for a player")
+    @bot.tree.command(name="sus", description="Generate a visual sus card for a player")
     @app_commands.describe(username="The Wynncraft player to check")
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)

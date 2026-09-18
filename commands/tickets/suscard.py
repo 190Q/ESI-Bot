@@ -41,41 +41,7 @@ WYNNCRAFT_KEYS = [
 ]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-IMAGES_DIR = PROJECT_ROOT / "images"
-BACKGROUND_PATH = IMAGES_DIR / "background.webp"
-PREFERRED_IMAGE_EXTENSIONS = (".webp", ".png")
-
-def _resolve_image_path(base_dir: Path, filename: str, *, preferred_exts=PREFERRED_IMAGE_EXTENSIONS) -> Optional[Path]:
-    """Resolve an image path, preferring WebP and falling back to PNG."""
-    if not filename:
-        return None
-
-    base_dir = Path(base_dir)
-    raw = Path(filename)
-    candidates = []
-
-    def _add(path: Path):
-        if path not in candidates:
-            candidates.append(path)
-
-    if raw.is_absolute():
-        _add(raw)
-        stem = raw.stem
-        for ext in preferred_exts:
-            _add(raw.with_name(stem + ext))
-    else:
-        _add(base_dir / raw.name)
-        stem = raw.stem if raw.suffix else raw.name
-        for ext in preferred_exts:
-            _add(base_dir / f"{stem}{ext}")
-
-    for candidate in candidates:
-        try:
-            if candidate.is_file():
-                return candidate
-        except OSError:
-            continue
-    return None
+BACKGROUND_PATH = PROJECT_ROOT / "images" / "background.png"
 
 
 class WynncraftAPI:
@@ -436,8 +402,6 @@ class SusCardImageGenerator:
     WIDTH = 1650
     HEIGHT = 900
 
-    _BACKGROUND_CACHE: Optional[Image.Image] = None
-
     PANEL = (13, 25, 37, 220)
     PANEL_SOFT = (15, 28, 42, 205)
     BORDER = (111, 129, 145, 175)
@@ -530,22 +494,15 @@ class SusCardImageGenerator:
 
     @classmethod
     def _background(cls) -> Image.Image:
-        if cls._BACKGROUND_CACHE is None:
-            path = _resolve_image_path(IMAGES_DIR, "background")
-            try:
-                if path:
-                    background = Image.open(path).convert("RGB")
-                    background = ImageOps.fit(background, (cls.WIDTH, cls.HEIGHT), method=Image.Resampling.LANCZOS)
-                    background = background.filter(ImageFilter.GaussianBlur(2.2)).convert("RGBA")
-                else:
-                    raise OSError("background image not found")
-            except (OSError, ValueError):
-                background = Image.new("RGBA", (cls.WIDTH, cls.HEIGHT), (20, 30, 42, 255))
+        try:
+            background = Image.open(BACKGROUND_PATH).convert("RGB")
+            background = ImageOps.fit(background, (cls.WIDTH, cls.HEIGHT), method=Image.Resampling.LANCZOS)
+            background = background.filter(ImageFilter.GaussianBlur(2.2)).convert("RGBA")
+        except (OSError, ValueError):
+            background = Image.new("RGBA", (cls.WIDTH, cls.HEIGHT), (20, 30, 42, 255))
 
-            dark = Image.new("RGBA", background.size, (5, 14, 24, 150))
-            cls._BACKGROUND_CACHE = Image.alpha_composite(background, dark)
-
-        return cls._BACKGROUND_CACHE.copy()
+        dark = Image.new("RGBA", background.size, (5, 14, 24, 150))
+        return Image.alpha_composite(background, dark)
 
     @classmethod
     def _draw_metric_card(

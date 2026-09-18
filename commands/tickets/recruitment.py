@@ -15,11 +15,6 @@ import sqlite3
 from pathlib import Path
 from utils import errors
 
-# Add player.py directory to path
-PLAYER_MODULE_PATH = '/home/ubuntu/DiscordBots/kira/python-commands/coj'
-if PLAYER_MODULE_PATH not in sys.path:
-    sys.path.insert(0, PLAYER_MODULE_PATH)
-
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -442,22 +437,20 @@ class PlaytimeGraphGenerator:
 async def generate_player_card(player_data: dict, skin_bytes: bytes = None):
     """Generate player card using the same method as the player command"""
     try:
-        # Import the generator from player.py using dynamic import
         import sys
         import os
         
-        # Get the directory containing this file
         current_dir = os.path.dirname(os.path.abspath(__file__))
         if current_dir not in sys.path:
             sys.path.insert(0, current_dir)
         
         import player
-        from player import PlayerStatsImageGenerator
         
-        # Generate the card using the exact same method
-        return await PlayerStatsImageGenerator.generate(player_data, skin_bytes)
-    except ImportError as e:
-        print(f"ERROR: Could not import PlayerStatsImageGenerator - {e}")
+        guild_xp = await player.WynncraftAPI.fetch_guild_contribution(player_data)
+        card_data = player.build_card_data(player_data, guild_xp=guild_xp)
+        return await player.PlayerCardImageGenerator.generate(card_data, skin_bytes)
+    except Exception as e:
+        print(f"ERROR: Could not generate player card - {e}")
         import traceback
         traceback.print_exc()
         raise

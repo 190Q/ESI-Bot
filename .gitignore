@@ -245,6 +245,7 @@ ticket_restrictions.json
 temp_vc_channels/
 temp_vc_config.json
 duke_first_time_pings.json
+tests/
 
 playtime_tracking.db.filepart
 

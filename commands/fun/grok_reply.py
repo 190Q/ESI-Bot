@@ -121,6 +121,7 @@ GROK_REPLIES_UNIVERSAL = [
     "Type shit.",
     "Consider walking into oncoming traffic lowk.",
     "I was busy doing nothing, and you still managed to interrupt it.",
+    "https://cdn.discordapp.com/attachments/1415428699490222121/1555318673109950675/togif.gif?backend=b2",
 ]
 
 GROK_REPLY_REPLIES = [

@@ -21,12 +21,29 @@ Examples:
   # Include threads under the exported channels and skip bot messages
   python scripts/export_channel_history.py --since 2025-01-01 --channel-id 111 --include-threads --exclude-bots
 
+  # Also download the attached images, GIFs, videos, files and stickers
+  python scripts/export_channel_history.py --since 2025-01-01 --channel-id 111 --download-attachments
+
+  # Only pull down image/GIF attachments, ignoring other file types
+  python scripts/export_channel_history.py --since 2025-01-01 --channel-id 111 --download-attachments --attachments-only-images
+
+  # Also grab media that arrives inside embeds (bot posts, link previews, Tenor)
+  python scripts/export_channel_history.py --since 2025-01-01 --channel-id 111 --download-attachments --download-embed-media
+
 Notes:
   - Requires DISCORD_TOKEN in the project .env (same token as the bot).
   - The "Message Content Intent" must be enabled for the bot in the Discord
     Developer Portal, otherwise message text comes back empty.
+  - Attachment metadata (filename, size, content type, CDN URL) is always
+    recorded. The URLs Discord returns are signed and expire after roughly a
+    day, so pass --download-attachments to keep the actual files.
+  - Downloads cover real attachments, stickers, and (with --download-embed-media)
+    media that Discord renders inside embeds, such as bot-posted images, link
+    previews, and Tenor/Giphy clips. Plain image links in message text are not
+    fetched. Embed videos are only fetched when the URL points at a real media
+    file, so YouTube-style embed pages are skipped.
   - Files are written incrementally, so a cancelled or failed run still keeps
-    whatever was already fetched.
+    whatever was already fetched, and re-running skips files already on disk.
 """
 
 from __future__ import annotations
@@ -42,7 +59,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TextIO
+from urllib.parse import urlparse
 
+import aiohttp
 import discord
 from dotenv import load_dotenv
 
@@ -54,6 +73,28 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "exports" / "channel_history"
 PROGRESS_EVERY = 250
 MAX_RETRIES = 5
 RETRY_BACKOFF_SECONDS = 5.0
+ATTACHMENT_RETRIES = 3
+ATTACHMENTS_DIR_NAME = "attachments"
+
+IMAGE_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".jpe",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".svg",
+    ".avif",
+    ".heic",
+    ".heif",
+    ".ico",
+}
+
+VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".m4v", ".gifv"}
+EMBED_MEDIA_KINDS = ("image", "thumbnail", "video")
 
 _DATE_ONLY_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _UNSAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
@@ -73,8 +114,11 @@ CSV_FIELDS = [
     "content",
     "attachment_count",
     "attachment_urls",
+    "attachment_files",
     "embed_count",
     "sticker_count",
+    "sticker_files",
+    "embed_media_files",
     "mention_user_ids",
     "mention_role_ids",
     "mentions_everyone",
@@ -155,6 +199,208 @@ def _safe_filename(name: str, *, fallback: str) -> str:
     return cleaned[:80]
 
 
+def _relative_path(path: Path, root: Path) -> str:
+    """Path relative to the export root, always with forward slashes."""
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _is_image_file(filename: Optional[str], content_type: Optional[str]) -> bool:
+    if content_type and content_type.lower().startswith("image/"):
+        return True
+    return Path(filename or "").suffix.lower() in IMAGE_EXTENSIONS
+
+
+def _extension_from_url(url: str, fallback: str = "") -> str:
+    """File extension taken from a URL path, including the leading dot."""
+    suffix = Path(urlparse(url).path).suffix.lower()
+    if suffix and 1 < len(suffix) <= 6 and suffix[1:].isalnum():
+        return suffix
+    return fallback
+
+
+def _collect_embed_media(message: discord.Message) -> List[Dict[str, Any]]:
+    """Collect media URLs referenced by a message's embeds."""
+    media: List[Dict[str, Any]] = []
+    for embed_index, embed in enumerate(message.embeds):
+        for kind in EMBED_MEDIA_KINDS:
+            asset = getattr(embed, kind, None)
+            url = getattr(asset, "url", None) if asset is not None else None
+            if not url:
+                continue
+            media.append(
+                {
+                    "embed_index": embed_index,
+                    "kind": kind,
+                    "url": url,
+                    "local_path": None,
+                    "download_error": None,
+                }
+            )
+    return media
+
+
+async def _fetch_media(
+    session: "aiohttp.ClientSession",
+    url: str,
+    target: Path,
+    *,
+    expected_size: Optional[int],
+    max_bytes: Optional[int],
+) -> Optional[str]:
+    """Stream ``url`` into ``target``.
+
+    Returns ``None`` on success (or when the file is already on disk) and an
+    error message otherwise. Downloads are written to a ``.part`` file first so
+    an interrupted run never leaves a truncated file in place.
+    """
+    if target.exists():
+        existing = target.stat().st_size
+        if expected_size is None or existing == expected_size:
+            return None
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target.with_name(target.name + ".part")
+    attempt = 0
+
+    while True:
+        try:
+            timeout = aiohttp.ClientTimeout(total=300, connect=30)
+            async with session.get(url, timeout=timeout) as response:
+                if response.status in {429, 500, 502, 503, 504} and attempt < ATTACHMENT_RETRIES:
+                    attempt += 1
+                    await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
+                    continue
+                if response.status != 200:
+                    return f"HTTP {response.status}"
+
+                written = 0
+                with temp_path.open("wb") as handle:
+                    async for chunk in response.content.iter_chunked(65536):
+                        written += len(chunk)
+                        if max_bytes is not None and written > max_bytes:
+                            handle.close()
+                            temp_path.unlink(missing_ok=True)
+                            return "larger than --max-attachment-size-mb"
+                        handle.write(chunk)
+
+                temp_path.replace(target)
+                return None
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+            temp_path.unlink(missing_ok=True)
+            if attempt >= ATTACHMENT_RETRIES:
+                return f"{type(exc).__name__}: {exc}"
+            attempt += 1
+            await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
+
+
+async def _download_message_media(
+    session: "aiohttp.ClientSession",
+    message: discord.Message,
+    record: Dict[str, Any],
+    *,
+    attachment_dir: Path,
+    output_root: Path,
+    only_images: bool,
+    max_bytes: Optional[int],
+    include_embed_media: bool = False,
+) -> tuple[int, int]:
+    """Download one message's attachments, stickers and embed media.
+
+    Returns a ``(downloaded, failed)`` pair.
+    """
+    downloaded = 0
+    failed = 0
+
+    for index, entry in enumerate(record["attachments"], 1):
+        attachment = message.attachments[index - 1]
+
+        if only_images and not _is_image_file(attachment.filename, attachment.content_type):
+            continue
+        if max_bytes is not None and attachment.size and attachment.size > max_bytes:
+            entry["download_error"] = "larger than --max-attachment-size-mb"
+            failed += 1
+            continue
+
+        filename = _safe_filename(attachment.filename, fallback="attachment")
+        target = attachment_dir / f"{message.id}-{index}-{filename}"
+        error = await _fetch_media(
+            session,
+            attachment.url,
+            target,
+            expected_size=attachment.size,
+            max_bytes=max_bytes,
+        )
+
+        if error:
+            entry["download_error"] = error
+            failed += 1
+        else:
+            entry["local_path"] = _relative_path(target, output_root)
+            downloaded += 1
+
+    for index, entry in enumerate(record["stickers"], 1):
+        url = entry.get("url")
+        if not url:
+            continue
+
+        extension = _safe_filename(entry.get("format") or "png", fallback="png")
+        name = _safe_filename(entry.get("name") or "sticker", fallback="sticker")
+        target = attachment_dir / f"{message.id}-sticker{index}-{name}.{extension}"
+        error = await _fetch_media(
+            session,
+            url,
+            target,
+            expected_size=None,
+            max_bytes=max_bytes,
+        )
+
+        if error:
+            entry["download_error"] = error
+            failed += 1
+        else:
+            entry["local_path"] = _relative_path(target, output_root)
+            downloaded += 1
+
+    if include_embed_media:
+        seen_urls: set[str] = set()
+        for entry in record["embed_media"]:
+            url = entry["url"]
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+
+            suffix = _extension_from_url(url)
+            if entry["kind"] == "video":
+                if only_images or suffix not in VIDEO_EXTENSIONS:
+                    continue
+            elif only_images and suffix not in IMAGE_EXTENSIONS:
+                continue
+
+            target = (
+                attachment_dir
+                / f"{message.id}-embed{entry['embed_index']}-{entry['kind']}{suffix or '.bin'}"
+            )
+            error = await _fetch_media(
+                session,
+                url,
+                target,
+                expected_size=None,
+                max_bytes=max_bytes,
+            )
+
+            if error:
+                entry["download_error"] = error
+                failed += 1
+            else:
+                entry["local_path"] = _relative_path(target, output_root)
+                downloaded += 1
+
+    return downloaded, failed
+
+
 class _BaseWriter:
     """Writes message records to a single output file."""
 
@@ -231,8 +477,17 @@ class _CsvWriter(_BaseWriter):
             "content": record["content"],
             "attachment_count": record["attachment_count"],
             "attachment_urls": " | ".join(item["url"] for item in record["attachments"]),
+            "attachment_files": " | ".join(
+                item["local_path"] for item in record["attachments"] if item.get("local_path")
+            ),
             "embed_count": record["embed_count"],
             "sticker_count": record["sticker_count"],
+            "sticker_files": " | ".join(
+                item["local_path"] for item in record["stickers"] if item.get("local_path")
+            ),
+            "embed_media_files": " | ".join(
+                item["local_path"] for item in record["embed_media"] if item.get("local_path")
+            ),
             "mention_user_ids": " ".join(str(value) for value in record["mention_user_ids"]),
             "mention_role_ids": " ".join(str(value) for value in record["mention_role_ids"]),
             "mentions_everyone": int(bool(record["mentions_everyone"])),
@@ -279,7 +534,19 @@ class _TextWriter(_BaseWriter):
             self._handle.write(f"  [reply to] {record['reply_to_message_id']}\n")
 
         for attachment in record["attachments"]:
-            self._handle.write(f"  [attachment] {attachment['filename']} -> {attachment['url']}\n")
+            location = attachment.get("local_path") or attachment["url"]
+            self._handle.write(f"  [attachment] {attachment['filename']} -> {location}\n")
+
+        for sticker in record["stickers"]:
+            location = sticker.get("local_path") or sticker.get("url") or "?"
+            self._handle.write(f"  [sticker] {sticker['name']} -> {location}\n")
+
+        for media in record["embed_media"]:
+            if not media.get("local_path"):
+                continue
+            self._handle.write(
+                f"  [embed {media['kind']}] {media['local_path']}\n"
+            )
 
         if record["embed_count"]:
             self._handle.write(f"  [embeds] {record['embed_count']}\n")
@@ -326,12 +593,26 @@ def _message_to_record(message: discord.Message, channel: discord.abc.GuildChann
                 "url": attachment.url,
                 "size": attachment.size,
                 "content_type": attachment.content_type,
+                "local_path": None,
+                "download_error": None,
             }
             for attachment in message.attachments
         ],
         "attachment_count": len(message.attachments),
         "embeds": [embed.to_dict() for embed in message.embeds],
         "embed_count": len(message.embeds),
+        "embed_media": _collect_embed_media(message),
+        "stickers": [
+            {
+                "id": sticker.id,
+                "name": sticker.name,
+                "format": getattr(sticker.format, "name", None),
+                "url": getattr(sticker, "url", None),
+                "local_path": None,
+                "download_error": None,
+            }
+            for sticker in message.stickers
+        ],
         "sticker_count": len(message.stickers),
         "mention_user_ids": [user.id for user in message.mentions],
         "mention_role_ids": [role.id for role in message.role_mentions],
@@ -349,6 +630,8 @@ class _ChannelResult:
     channel_name: str
     channel_type: str
     messages: int = 0
+    attachments_downloaded: int = 0
+    attachment_failures: int = 0
     first_message_at: Optional[str] = None
     last_message_at: Optional[str] = None
     error: Optional[str] = None
@@ -359,6 +642,8 @@ class _ChannelResult:
             "channel_name": self.channel_name,
             "channel_type": self.channel_type,
             "messages": self.messages,
+            "attachments_downloaded": self.attachments_downloaded,
+            "attachment_failures": self.attachment_failures,
             "first_message_at": self.first_message_at,
             "last_message_at": self.last_message_at,
             "error": self.error,
@@ -422,6 +707,19 @@ async def _resolve_channels(
                 problems.append(f"Could not list archived threads for #{parent.name}: {exc}")
 
     return resolved, problems
+
+
+def _print_accessible_guilds(client: discord.Client) -> None:
+    guilds = sorted(client.guilds, key=lambda item: item.name.lower())
+    if not guilds:
+        print(
+            "This token is not in any guild. Check DISCORD_TOKEN in .env.",
+            file=sys.stderr,
+        )
+        return
+    print(f"This token can only see {len(guilds)} guild(s):", file=sys.stderr)
+    for item in guilds:
+        print(f"  {item.id}  {item.name}", file=sys.stderr)
 
 
 def _list_guild_channels(guild: discord.Guild) -> None:
@@ -488,17 +786,28 @@ async def _export_channel(
     channel: discord.abc.GuildChannel,
     writers: List[_BaseWriter],
     *,
+    stem: str,
     since: datetime,
     until: Optional[datetime],
     exclude_bots: bool,
     limit: Optional[int],
     index: int,
     total: int,
+    session: Optional["aiohttp.ClientSession"] = None,
+    output_root: Optional[Path] = None,
+    attachments_root: Optional[Path] = None,
+    only_images: bool = False,
+    max_attachment_bytes: Optional[int] = None,
+    include_embed_media: bool = False,
 ) -> _ChannelResult:
     name = getattr(channel, "name", str(channel.id))
     result = _ChannelResult(channel_id=channel.id, channel_name=name, channel_type=str(channel.type))
 
     print(f"[{index}/{total}] Exporting #{name} ({channel.id})...")
+
+    attachment_dir: Optional[Path] = None
+    if session is not None and attachments_root is not None and output_root is not None:
+        attachment_dir = attachments_root / stem
 
     for writer in writers:
         writer.write_channel_header(name, channel.id)
@@ -513,6 +822,21 @@ async def _export_channel(
                 continue
 
             record = _message_to_record(message, channel)
+
+            if attachment_dir is not None:
+                downloaded, failures = await _download_message_media(
+                    session,
+                    message,
+                    record,
+                    attachment_dir=attachment_dir,
+                    output_root=output_root,
+                    only_images=only_images,
+                    max_bytes=max_attachment_bytes,
+                    include_embed_media=include_embed_media,
+                )
+                result.attachments_downloaded += downloaded
+                result.attachment_failures += failures
+
             for writer in writers:
                 writer.write(record)
 
@@ -534,7 +858,12 @@ async def _export_channel(
         span = ""
         if result.first_message_at and result.last_message_at:
             span = f" ({result.first_message_at} -> {result.last_message_at})"
-        print(f"    [OK] {result.messages:,} messages{span}")
+        media = ""
+        if attachment_dir is not None:
+            media = f", {result.attachments_downloaded:,} media file(s) downloaded"
+            if result.attachment_failures:
+                media += f" ({result.attachment_failures:,} failed)"
+        print(f"    [OK] {result.messages:,} messages{span}{media}")
 
     return result
 
@@ -545,7 +874,11 @@ async def _process(client: discord.Client, args: argparse.Namespace) -> int:
         try:
             guild = await client.fetch_guild(args.guild_id)
         except discord.NotFound:
-            print(f"Guild {args.guild_id} not found, or the bot is not a member.", file=sys.stderr)
+            print(
+                f"Guild {args.guild_id} not found, or the bot is not a member of it.",
+                file=sys.stderr,
+            )
+            _print_accessible_guilds(client)
             return 1
         except discord.Forbidden:
             print(f"Missing access to guild {args.guild_id}.", file=sys.stderr)
@@ -594,16 +927,42 @@ async def _process(client: discord.Client, args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    download_media = bool(args.download_attachments or args.download_embed_media)
+
+    attachments_root: Optional[Path] = None
+    if download_media:
+        attachments_root = (
+            Path(args.attachments_dir).expanduser().resolve()
+            if args.attachments_dir
+            else output_dir / ATTACHMENTS_DIR_NAME
+        )
+        attachments_root.mkdir(parents=True, exist_ok=True)
+
+    max_attachment_bytes = (
+        args.max_attachment_size_mb * 1024 * 1024 if args.max_attachment_size_mb > 0 else None
+    )
+
     print(f"Guild:    {guild.name} ({guild.id})")
     print(f"Channels: {len(channels)}")
     print(f"Window:   {since.isoformat()} -> {(until.isoformat() if until else 'now')}")
     print(f"Format:   {args.format}")
     print(f"Output:   {output_dir}")
+    if attachments_root is not None:
+        scope = "images/GIFs only" if args.attachments_only_images else "all attachments"
+        if args.download_embed_media:
+            scope += " + embed media"
+        print(f"Media:    {scope} -> {attachments_root}")
+    else:
+        print("Media:    metadata only (Discord CDN URLs expire; pass --download-attachments)")
     print("-" * 70)
 
     combined_path = output_dir / _safe_filename(f"_all-{guild.name}", fallback="all")
     combined_path = combined_path.with_suffix(f".{_WRITER_TYPES[args.format].extension}")
     combined_writer = None if args.no_combined else _make_writer(combined_path, args.format)
+
+    session: Optional[aiohttp.ClientSession] = (
+        aiohttp.ClientSession() if attachments_root is not None else None
+    )
 
     results: List[_ChannelResult] = []
     try:
@@ -622,12 +981,19 @@ async def _process(client: discord.Client, args: argparse.Namespace) -> int:
                 result = await _export_channel(
                     channel,
                     writers,
+                    stem=stem,
                     since=since,
                     until=until,
                     exclude_bots=args.exclude_bots,
                     limit=limit,
                     index=index,
                     total=len(channels),
+                    session=session,
+                    output_root=output_dir,
+                    attachments_root=attachments_root,
+                    only_images=args.attachments_only_images,
+                    max_attachment_bytes=max_attachment_bytes,
+                    include_embed_media=args.download_embed_media,
                 )
             finally:
                 writers[0].close()
@@ -636,8 +1002,12 @@ async def _process(client: discord.Client, args: argparse.Namespace) -> int:
     finally:
         if combined_writer is not None:
             combined_writer.close()
+        if session is not None:
+            await session.close()
 
     total_messages = sum(result.messages for result in results)
+    total_attachments = sum(result.attachments_downloaded for result in results)
+    total_attachment_failures = sum(result.attachment_failures for result in results)
     failed = [result for result in results if result.error]
 
     manifest = {
@@ -650,7 +1020,16 @@ async def _process(client: discord.Client, args: argparse.Namespace) -> int:
         "exclude_bots": bool(args.exclude_bots),
         "include_threads": bool(args.include_threads),
         "per_channel_limit": limit,
+        "download_attachments": download_media,
+        "download_embed_media": bool(args.download_embed_media),
+        "attachments_only_images": bool(args.attachments_only_images),
+        "attachments_dir": (
+            _relative_path(attachments_root, output_dir) if attachments_root is not None else None
+        ),
+        "max_attachment_size_mb": args.max_attachment_size_mb or None,
         "total_messages": total_messages,
+        "total_attachments_downloaded": total_attachments,
+        "total_attachment_failures": total_attachment_failures,
         "channels": [result.as_dict() for result in results],
     }
     manifest_path = output_dir / "manifest.json"
@@ -658,6 +1037,13 @@ async def _process(client: discord.Client, args: argparse.Namespace) -> int:
 
     print("-" * 70)
     print(f"Exported {total_messages:,} message(s) from {len(results)} channel(s).")
+    if attachments_root is not None:
+        print(f"Downloaded {total_attachments:,} media file(s) to {attachments_root}")
+        if total_attachment_failures:
+            print(f"[WARN] {total_attachment_failures:,} media file(s) failed (see download_error in the export).")
+    else:
+        print("Attachment files were not downloaded; only their URLs were recorded, and")
+        print("those URLs expire. Re-run with --download-attachments to keep the files.")
     if combined_writer is not None:
         print(f"Combined file: {combined_path}")
     print(f"Manifest:      {manifest_path}")
@@ -796,6 +1182,39 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Maximum messages per channel (0 = no limit). Useful for a quick test run.",
+    )
+    parser.add_argument(
+        "--download-attachments",
+        action="store_true",
+        help="Download attached files (images, GIFs, videos, ...) and stickers to disk.",
+    )
+    parser.add_argument(
+        "--download-embed-media",
+        action="store_true",
+        help=(
+            "Also download media referenced by embeds (bot-posted images, link "
+            "previews, Tenor/Giphy clips). Implies --download-attachments."
+        ),
+    )
+    parser.add_argument(
+        "--attachments-dir",
+        type=str,
+        default=None,
+        help=(
+            "Where to save downloaded media. Defaults to an 'attachments' folder "
+            "inside --output-dir, split into one subfolder per channel."
+        ),
+    )
+    parser.add_argument(
+        "--attachments-only-images",
+        action="store_true",
+        help="With --download-attachments, skip anything that is not an image or GIF.",
+    )
+    parser.add_argument(
+        "--max-attachment-size-mb",
+        type=int,
+        default=0,
+        help="Skip media larger than this many MB (0 = no limit).",
     )
     return parser
 

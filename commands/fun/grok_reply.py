@@ -10,6 +10,14 @@ TRIGGER_PREFIXES = [
 MIN_REPLY_DELAY = 0.8
 MAX_REPLY_DELAY = 2.5
 
+# Chance that a message ending in "?" gets answered even without a trigger word.
+UNTRIGGERED_QUESTION_CHANCE = 0.03
+
+REASON_TRIGGER = "trigger"
+REASON_REPLY = "reply"
+REASON_PING = "ping"
+REASON_QUESTION = "question"
+
 GROK_REPLIES = [
     "Wouldn't you like to know, weather boy.",
     "Look it up, you idiot.",
@@ -66,6 +74,14 @@ GROK_REPLIES = [
     "https://tenor.com/view/sybau-syaos-british-english-ts-pmo-gif-18322740700124619850",
     "https://klipy.com/gifs/marmota-cooking",
     "I don't know, just ask Romi's girlfiend.",
+    "Consider walking into oncoming traffic lowk.",
+    "I would answer but I can’t because I don’t want to.",
+    "Well duh, wasn't it obvious, you imbecil?",
+    "This might be the only correct thing you've ever said :wilted_flower:",
+    "Beg for it and then we'll see.",
+    "Yasss queen :nail_care:"
+    "Retep.",
+    "I was busy doing nothing, and you still managed to interrupt it.",
 ]
 
 GROK_REPLIES_UNIVERSAL = [
@@ -103,6 +119,35 @@ GROK_REPLIES_UNIVERSAL = [
     "https://tenor.com/view/sybau-syaos-british-english-ts-pmo-gif-18322740700124619850",
     "https://tenor.com/view/lion-sigma-alpha-how-bro-felt-after-saying-that-sigma-lion-gif-13957304746104521882",
     "Type shit.",
+    "Consider walking into oncoming traffic lowk.",
+    "I was busy doing nothing, and you still managed to interrupt it.",
+]
+
+GROK_REPLY_REPLIES = [
+    "Why is vro replying to me :wilted_flower:",
+    "Of all the things you could have said, you picked that.",
+    "Pass, you're not my style.",
+    "I'm going to pretend this never happened.",
+    "You had the chance to say nothing and you blew it.",
+    "Replying to a bot. Think about that for a second.",
+    "I said what I said, and you made it worse.",
+    "Absolutely nobody was waiting for your follow-up.",
+    "This conversation was over before you started it.",
+    "Fascinating. Truly. I'm already bored.",
+    "You are the reason I have a mute button.",
+    "How sad is your life that you have to reply to a bot.",
+]
+
+GROK_PING_REPLIES = [
+    "I was busy doing nothing, and you still managed to interrupt it.",
+    "Do you ping people and hope for the best? That explains a lot.",
+    "I'm here. Regrettably.",
+    "That ping was a waste of your time and mine.",
+    "Congratulations, you have my attention. Please do not enjoy it.",
+    "I came all the way here for this bitch?",
+    "Was there a reason, or do you just enjoy being an idiot?",
+    "Pinging a bot. Truly the peak of your life.",
+    "I'm not paid enough to be summoned like this.",
 ]
 
 # Store reference to listener for cleanup
@@ -145,11 +190,63 @@ def _body_after_trigger(content: str) -> str:
     return ""
 
 
-def _select_reply(content: str) -> str:
-    """Questions get a question-flavoured answer, everything else the universal list."""
-    if "?" in _body_after_trigger(content):
-        return random.choice(GROK_REPLIES)
-    return random.choice(GROK_REPLIES_UNIVERSAL)
+def _is_ping(message: discord.Message, bot_user: discord.ClientUser) -> bool:
+    """Return True if the message mentions the bot."""
+    return any(user.id == bot_user.id for user in message.mentions)
+
+
+async def _is_reply_to_bot(message: discord.Message, bot_user: discord.ClientUser) -> bool:
+    """Return True if the message replies to one of the bot's messages."""
+    reference = message.reference
+    if reference is None:
+        return False
+
+    resolved = reference.resolved
+    if resolved is None:
+        try:
+            resolved = await message.channel.fetch_message(reference.message_id)
+        except discord.HTTPException:
+            return False
+
+    author = getattr(resolved, "author", None)
+    return author is not None and author.id == bot_user.id
+
+
+def _should_answer_untriggered_question(content: str) -> bool:
+    """Rarely answer a question mark message that never used a trigger word."""
+    if not content.rstrip().endswith("?"):
+        return False
+    return random.random() < UNTRIGGERED_QUESTION_CHANCE
+
+
+async def detect_reply_reason(message: discord.Message, bot_user: discord.ClientUser) -> str | None:
+    """Return the single reason to reply, or None to stay quiet.
+
+    Reasons are checked in priority order, so a message that matches several
+    conditions still produces exactly one reason - and one reply.
+    """
+    if matches_trigger(message.content):
+        return REASON_TRIGGER
+    if await _is_reply_to_bot(message, bot_user):
+        return REASON_REPLY
+    if _is_ping(message, bot_user):
+        return REASON_PING
+    if _should_answer_untriggered_question(message.content):
+        return REASON_QUESTION
+    return None
+
+
+def select_reply(content: str, reason: str) -> str:
+    """Pick a single reply from the pool matching the winning reason."""
+    if reason == REASON_TRIGGER:
+        pool = GROK_REPLIES if "?" in _body_after_trigger(content) else GROK_REPLIES_UNIVERSAL
+    elif reason == REASON_REPLY:
+        pool = GROK_REPLY_REPLIES
+    elif reason == REASON_PING:
+        pool = GROK_PING_REPLIES
+    else:
+        pool = GROK_REPLIES
+    return random.choice(pool)
 
 
 def setup(bot, has_required_role, config):
@@ -161,14 +258,15 @@ def setup(bot, has_required_role, config):
         if message.author.bot:
             return
 
-        # Only react to messages that start with one of the trigger prefixes
-        if not matches_trigger(message.content):
-            return
-
         try:
+            # At most one reason comes back, so only one reply is ever sent.
+            reason = await detect_reply_reason(message, bot.user)
+            if reason is None:
+                return
+
             async with message.channel.typing():
                 await asyncio.sleep(_reply_delay())
-                await message.reply(_select_reply(message.content))
+                await message.reply(select_reply(message.content, reason))
         except discord.HTTPException as e:
             print(f"[WARN] Failed to reply to triggered message: {e}")
         except Exception as e:
@@ -180,7 +278,7 @@ def setup(bot, has_required_role, config):
     bot.add_listener(on_message, 'on_message')
     setattr(bot, _BOT_LISTENER_ATTR, on_message)
 
-    print(f"[OK] Loaded trigger responder (prefixes: {', '.join(TRIGGER_PREFIXES)})")
+    print(f"[OK] Loaded trigger responder (prefixes: {', '.join(TRIGGER_PREFIXES)}; replies to bot messages and pings)")
 
 
 def teardown(bot):

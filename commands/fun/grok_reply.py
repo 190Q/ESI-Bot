@@ -50,6 +50,22 @@ GROK_REPLIES = [
     "Lowkey I don't care. Highkey I don't care either.",
     "Ratio + L + nobody asked :skull:",
     "I'm lowkey tired of you already :wilted_flower:",
+    "Absolutely. Write it down, this won't happen again.",
+    "Go for it. I'll pretend I had nothing to do with it.",
+    "Yes. Frame this moment.",
+    "My prediction is good news. Brace yourself.",
+    "Do not bite the hand that fingers you, or whatever the saying is.",
+    "Yes. Even a broken clock gets lucky, and today it's you.",
+    "Fine, yes. Savor it, because it won't happen again.",
+    "Yes. Now go enjoy your one win of the year.",
+    "Yes, and you didn't even need my help. Embarrassing that you asked.",
+    "You might be the smartest person in this chat. Low bar, though.",
+    "Keep going. You're almost not wrong.",
+    "Sure, it's a yes. Happy now?",
+    "Credit where it's due: that was almost smart.",
+    "Wow, a good idea from you. Someone call the press.",
+    "https://tenor.com/view/sybau-syaos-british-english-ts-pmo-gif-18322740700124619850",
+    "https://klipy.com/gifs/marmota-cooking",
 ]
 
 GROK_REPLIES_UNIVERSAL = [
@@ -78,6 +94,14 @@ GROK_REPLIES_UNIVERSAL = [
     "You woke up and chose to type that?",
     "Incredible. Never speak again.",
     "Whatever helps you sleep at night twin.",
+    "Do not bite the hand that fingers you, or whatever the saying is.",
+    "You might be the smartest person in this chat. Low bar, though.",
+    "Keep going. You're almost not wrong.",
+    "Credit where it's due: that was almost smart.",
+    "Wow, a good idea from you. Someone call the press.",
+    "https://tenor.com/view/dap-me-up-dap-me-up-gay-gif-15098348701378709709",
+    "https://tenor.com/view/sybau-syaos-british-english-ts-pmo-gif-18322740700124619850",
+    "https://tenor.com/view/lion-sigma-alpha-how-bro-felt-after-saying-that-sigma-lion-gif-13957304746104521882",
 ]
 
 # Store reference to listener for cleanup

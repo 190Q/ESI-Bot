@@ -52,6 +52,34 @@ GROK_REPLIES = [
     "I'm lowkey tired of you already :wilted_flower:",
 ]
 
+GROK_REPLIES_UNIVERSAL = [
+    "Cool story.",
+    "Noted. Filed under 'who asked'.",
+    "Nobody asked, but thanks for the update.",
+    "Anyway.",
+    "I'm gonna pretend I didn't see that to save you from the embarassement.",
+    "Respectfully, I don't care.",
+    "Sounds like a you problem :wilted_flower:",
+    "Replying to this is a waste of energy.",
+    "Take a breath vro.",
+    "Not reading all that, but I'm happy for you. Or sorry that happened.",
+    "That's crazy. Anyway.",
+    "I have seen your message and chosen violence.",
+    "Bro said all that for nothing :wilted_flower:",
+    "67",
+    "https://tenor.com/view/bosnov-67-bosnov-67-67-meme-gif-16727368109953357722",
+    "https://tenor.com/view/dont-care-didnt-ask-cope-_ratio-skill-issue-canceled-gif-24148064",
+    "Sybau, I'm busy doing your mom.",
+    "Hmm. Yeah. No.",
+    "Tell it to someone who cares.",
+    "Delete this and we never speak of it :wilted_flower:",
+    "Mhm. Sure. Whatever you say twin.",
+    "I'm a bot, not your therapist.",
+    "You woke up and chose to type that?",
+    "Incredible. Never speak again.",
+    "Whatever helps you sleep at night twin.",
+]
+
 # Store reference to listener for cleanup
 _listener = None
 
@@ -82,6 +110,23 @@ def matches_trigger(content: str) -> bool:
     return any(stripped.startswith(prefix.lower()) for prefix in TRIGGER_PREFIXES)
 
 
+def _body_after_trigger(content: str) -> str:
+    """Everything the user typed after the matched trigger prefix."""
+    stripped = content.lstrip()
+    lowered = stripped.lower()
+    for prefix in TRIGGER_PREFIXES:
+        if lowered.startswith(prefix.lower()):
+            return stripped[len(prefix):]
+    return ""
+
+
+def _select_reply(content: str) -> str:
+    """Questions get a question-flavoured answer, everything else the universal list."""
+    if "?" in _body_after_trigger(content):
+        return random.choice(GROK_REPLIES)
+    return random.choice(GROK_REPLIES_UNIVERSAL)
+
+
 def setup(bot, has_required_role, config):
     """Setup function for bot integration"""
     global _listener
@@ -98,7 +143,7 @@ def setup(bot, has_required_role, config):
         try:
             async with message.channel.typing():
                 await asyncio.sleep(_reply_delay())
-                await message.reply(random.choice(GROK_REPLIES))
+                await message.reply(_select_reply(message.content))
         except discord.HTTPException as e:
             print(f"[WARN] Failed to reply to triggered message: {e}")
         except Exception as e:

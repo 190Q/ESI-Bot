@@ -63,9 +63,9 @@ GROK_REPLIES = [
     "Keep going. You're almost not wrong.",
     "Sure, it's a yes. Happy now?",
     "Credit where it's due: that was almost smart.",
-    "Wow, a good idea from you. Someone call the press.",
     "https://tenor.com/view/sybau-syaos-british-english-ts-pmo-gif-18322740700124619850",
     "https://klipy.com/gifs/marmota-cooking",
+    "I don't know, just ask Romi's girlfiend.",
 ]
 
 GROK_REPLIES_UNIVERSAL = [
@@ -102,6 +102,7 @@ GROK_REPLIES_UNIVERSAL = [
     "https://tenor.com/view/dap-me-up-dap-me-up-gay-gif-15098348701378709709",
     "https://tenor.com/view/sybau-syaos-british-english-ts-pmo-gif-18322740700124619850",
     "https://tenor.com/view/lion-sigma-alpha-how-bro-felt-after-saying-that-sigma-lion-gif-13957304746104521882",
+    "Type shit.",
 ]
 
 # Store reference to listener for cleanup

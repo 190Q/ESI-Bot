@@ -11,12 +11,49 @@ MIN_REPLY_DELAY = 0.8
 MAX_REPLY_DELAY = 2.5
 
 # Chance that a message ending in "?" gets answered even without a trigger word.
-UNTRIGGERED_QUESTION_CHANCE = 0.03
+UNTRIGGERED_QUESTION_CHANCE = 0.003
 
 REASON_TRIGGER = "trigger"
 REASON_REPLY = "reply"
 REASON_PING = "ping"
 REASON_QUESTION = "question"
+
+# Replies that fit every situation, so every pool draws from them too.
+GROK_SHARED_REPLIES = [
+    "I was busy doing nothing, and you still managed to interrupt it.",
+    "Sybau vro, I'm not talking to someone that looks like a discombobulated potato.",
+    "You look like you can't center a div.",
+    "Twin, you look easy to draw, don't even talk to me.",
+    "Do not bite the hand that fingers you, or whatever the saying is.",
+    "You might be the smartest person in this chat. Low bar, though.",
+    "Keep going. You're almost not wrong.",
+    "Credit where it's due: that was almost smart.",
+    "Consider walking into oncoming traffic lowk.",
+    "Smash.",
+    "https://cdn.discordapp.com/attachments/1459362186316222616/1544795902906998814/image.gif",
+    "https://cdn.discordapp.com/attachments/1415428699490222121/1555318673109950675/togif.gif?backend=b2",
+    "https://tenor.com/view/bosnov-67-bosnov-67-67-meme-gif-16727368109953357722",
+    "https://tenor.com/view/dap-me-up-dap-me-up-gay-gif-15098348701378709709",
+    "https://tenor.com/view/dont-care-didnt-ask-cope-_ratio-skill-issue-canceled-gif-24148064",
+    "https://tenor.com/view/lion-sigma-alpha-how-bro-felt-after-saying-that-sigma-lion-gif-13957304746104521882",
+    "https://tenor.com/view/sybau-syaos-british-english-ts-pmo-gif-18322740700124619850",
+]
+
+GROK_EMPTY_TRIGGER_REPLIES = [
+    "You typed my name and then forgot how to type.",
+    "Take your time. I'll wait.",
+    "Did your brain buffered halfway through the message?",
+    "You had one job and it was to add words.",
+    "Typing out a message was so boring that you decided to go jerk if right after pinging me :wilted_flower:",
+    "Congratulations, you have contributed absolutely nothing to this society.",
+    "I'm here, I'm listening, and you're wasting both.",
+    "Did your keyboard die, or are you just a bitch?",
+    "You called, I came, and you hung up on yourself.",
+    "Four letters of effort. Impressive.",
+    "Use words twin.",
+    "An empty message from an empty head.",
+    "The silence after your name is the smartest thing you've said all day.",
+]
 
 GROK_REPLIES = [
     "Wouldn't you like to know, weather boy.",
@@ -62,26 +99,21 @@ GROK_REPLIES = [
     "Go for it. I'll pretend I had nothing to do with it.",
     "Yes. Frame this moment.",
     "My prediction is good news. Brace yourself.",
-    "Do not bite the hand that fingers you, or whatever the saying is.",
     "Yes. Even a broken clock gets lucky, and today it's you.",
     "Fine, yes. Savor it, because it won't happen again.",
     "Yes. Now go enjoy your one win of the year.",
     "Yes, and you didn't even need my help. Embarrassing that you asked.",
-    "You might be the smartest person in this chat. Low bar, though.",
-    "Keep going. You're almost not wrong.",
     "Sure, it's a yes. Happy now?",
-    "Credit where it's due: that was almost smart.",
-    "https://tenor.com/view/sybau-syaos-british-english-ts-pmo-gif-18322740700124619850",
     "https://klipy.com/gifs/marmota-cooking",
     "I don't know, just ask Romi's girlfiend.",
-    "Consider walking into oncoming traffic lowk.",
     "I would answer but I can’t because I don’t want to.",
     "Well duh, wasn't it obvious, you imbecil?",
     "This might be the only correct thing you've ever said :wilted_flower:",
     "Beg for it and then we'll see.",
-    "Yasss queen :nail_care:"
+    "Yasss queen :nail_care:",
     "Retep.",
-    "I was busy doing nothing, and you still managed to interrupt it.",
+    "Why not put all the energy onto a JOB or something instead of asking these stupid questions.",
+    "You question was almost as bad as Xin's mic sounds."
 ]
 
 GROK_REPLIES_UNIVERSAL = [
@@ -99,8 +131,6 @@ GROK_REPLIES_UNIVERSAL = [
     "I have seen your message and chosen violence.",
     "Bro said all that for nothing :wilted_flower:",
     "67",
-    "https://tenor.com/view/bosnov-67-bosnov-67-67-meme-gif-16727368109953357722",
-    "https://tenor.com/view/dont-care-didnt-ask-cope-_ratio-skill-issue-canceled-gif-24148064",
     "Sybau, I'm busy doing your mom.",
     "Hmm. Yeah. No.",
     "Tell it to someone who cares.",
@@ -110,18 +140,9 @@ GROK_REPLIES_UNIVERSAL = [
     "You woke up and chose to type that?",
     "Incredible. Never speak again.",
     "Whatever helps you sleep at night twin.",
-    "Do not bite the hand that fingers you, or whatever the saying is.",
-    "You might be the smartest person in this chat. Low bar, though.",
-    "Keep going. You're almost not wrong.",
-    "Credit where it's due: that was almost smart.",
     "Wow, a good idea from you. Someone call the press.",
-    "https://tenor.com/view/dap-me-up-dap-me-up-gay-gif-15098348701378709709",
-    "https://tenor.com/view/sybau-syaos-british-english-ts-pmo-gif-18322740700124619850",
-    "https://tenor.com/view/lion-sigma-alpha-how-bro-felt-after-saying-that-sigma-lion-gif-13957304746104521882",
     "Type shit.",
-    "Consider walking into oncoming traffic lowk.",
-    "I was busy doing nothing, and you still managed to interrupt it.",
-    "https://cdn.discordapp.com/attachments/1415428699490222121/1555318673109950675/togif.gif?backend=b2",
+    "Great, but why not fit this energy into a JOB or something?",
 ]
 
 GROK_REPLY_REPLIES = [
@@ -137,10 +158,10 @@ GROK_REPLY_REPLIES = [
     "Fascinating. Truly. I'm already bored.",
     "You are the reason I have a mute button.",
     "How sad is your life that you have to reply to a bot.",
+    "BOMBOCLAT.",
 ]
 
 GROK_PING_REPLIES = [
-    "I was busy doing nothing, and you still managed to interrupt it.",
     "Do you ping people and hope for the best? That explains a lot.",
     "I'm here. Regrettably.",
     "That ping was a waste of your time and mine.",
@@ -240,14 +261,17 @@ async def detect_reply_reason(message: discord.Message, bot_user: discord.Client
 def select_reply(content: str, reason: str) -> str:
     """Pick a single reply from the pool matching the winning reason."""
     if reason == REASON_TRIGGER:
-        pool = GROK_REPLIES if "?" in _body_after_trigger(content) else GROK_REPLIES_UNIVERSAL
+        body = _body_after_trigger(content).strip()
+        if not body:
+            return random.choice(GROK_EMPTY_TRIGGER_REPLIES)
+        pool = GROK_REPLIES if "?" in body else GROK_REPLIES_UNIVERSAL
     elif reason == REASON_REPLY:
         pool = GROK_REPLY_REPLIES
     elif reason == REASON_PING:
         pool = GROK_PING_REPLIES
     else:
         pool = GROK_REPLIES
-    return random.choice(pool)
+    return random.choice(pool + GROK_SHARED_REPLIES)
 
 
 def setup(bot, has_required_role, config):

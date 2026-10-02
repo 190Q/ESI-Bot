@@ -8,6 +8,7 @@ import random
 from utils.permissions import has_roles
 from utils.paths import DATA_DIR
 from utils import errors
+from utils.usage import record_feature
 
 # Store task reference for teardown
 _birthday_task = None
@@ -107,6 +108,11 @@ def setup(bot, has_required_role, config):
                                     birthday_message = f"{random.choice(birthday_messages)}\n-# tell them happy birthday {catgun_str} and if you want your birthday to be announced too contact a parliament member."
                                     await channel.send(birthday_message)
                                     print(f"[Birthday] Announced birthday for {member}")
+                                    record_feature(
+                                        "Birthday announcements",
+                                        user_id=member.id,
+                                        guild_id=guild.id,
+                                    )
                 
                 if (user_time.month == birthday_date.month and 
                     user_time.day == birthday_date.day + 1 and 

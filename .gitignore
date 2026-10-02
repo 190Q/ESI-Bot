@@ -218,6 +218,8 @@ shop.db
 inactivity_exemptions.db
 playtime.db
 temp_vc_messages.db
+shop.db-shm
+shop.db-wal
 
 # Data folders
 alt_accounts.json

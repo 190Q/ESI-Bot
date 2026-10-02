@@ -3,6 +3,8 @@ import random
 
 import discord
 
+from utils.usage import record_feature
+
 TRIGGER_PREFIXES = [
     "@grok",
 ]
@@ -292,6 +294,12 @@ def setup(bot, has_required_role, config):
             async with message.channel.typing():
                 await asyncio.sleep(_reply_delay())
                 await message.reply(select_reply(message.content, reason))
+
+            record_feature(
+                "Grok replies",
+                user_id=message.author.id,
+                guild_id=message.guild.id if message.guild else None,
+            )
         except discord.HTTPException as e:
             print(f"[WARN] Failed to reply to triggered message: {e}")
         except Exception as e:

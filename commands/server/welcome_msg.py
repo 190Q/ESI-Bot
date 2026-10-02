@@ -5,6 +5,7 @@ import random
 import json
 from utils.permissions import has_roles
 from utils import errors
+from utils.usage import record_feature
 
 REQUIRED_ROLES = [
     int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else 0,
@@ -85,6 +86,7 @@ def setup(bot, has_required_role, config):
             success = await send_welcome_message(channel, member)
         if success:
             print(f"[Welcome] Sent welcome message for {member}")
+            record_feature("Welcome messages", user_id=member.id, guild_id=member.guild.id)
     
     @bot.tree.command(
         name="welcome_channel",

@@ -218,6 +218,25 @@ class MultiLangBot(commands.Bot):
             traceback.print_exc()
             return True  # On error, allow command to proceed
     
+    async def on_app_command_completion(self, interaction: discord.Interaction, command) -> None:
+        """Count every slash command that ran to completion.
+
+        discord.py dispatches this for slash and context menu commands once the
+        command has finished without raising. A command that raises is counted
+        by the tree error handler instead, so nothing is counted twice.
+        """
+        try:
+            from utils.usage import record_command
+
+            name = getattr(command, "qualified_name", None) or getattr(command, "name", "unknown")
+            record_command(
+                name,
+                user_id=getattr(interaction.user, "id", None),
+                guild_id=interaction.guild.id if interaction.guild else None,
+            )
+        except Exception as exc:
+            print(f"[USAGE] Failed to record command usage: {exc}")
+
     async def setup_hook(self):
         """Called when bot is starting up"""
         try:
@@ -704,6 +723,18 @@ def create_bot():
     async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
         """Handle slash command errors"""
         print(f"[ERROR] Slash command error: {error}")
+
+        try:
+            from utils.usage import record_command
+
+            record_command(
+                interaction.command.name if interaction.command else "unknown",
+                user_id=getattr(interaction.user, "id", None),
+                guild_id=interaction.guild.id if interaction.guild else None,
+                ok=False,
+            )
+        except Exception as exc:
+            print(f"[USAGE] Failed to record command failure: {exc}")
         
         # Prevent duplicate responses
         if interaction.response.is_done():

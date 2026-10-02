@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 
 from utils import errors
+from utils.usage import record_feature
 
 CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
@@ -113,6 +114,11 @@ def setup(bot, has_required_role, config):
         ):
             try:
                 await system.create_temp_channel_for_member(member, after.channel)
+                record_feature(
+                    "Temp voice channels",
+                    user_id=member.id,
+                    guild_id=member.guild.id,
+                )
             except Exception as exc:
                 print(f"[VC_GENERATOR] Failed to create temp VC for {member}: {exc}")
             return

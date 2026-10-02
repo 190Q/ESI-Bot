@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import asyncio
 from utils.permissions import has_roles
 from utils import errors
+from utils.usage import record_feature
 
 AUTO_REACT_DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "auto_reactions.json"
 ITEMS_PER_PAGE = 5
@@ -467,17 +468,26 @@ def setup(bot, has_required_role, config):
             app_emoji_map = await fetch_application_emoji_map(bot)
             
             # React with each emoji, with a small delay between reactions to avoid API rate limiting
+            reacted = 0
             for emoji in emojis:
                 try:
                     reaction_emoji = await resolve_emoji_for_reaction(emoji, app_emoji_map)
                     if reaction_emoji is None:
                         continue
                     await message.add_reaction(reaction_emoji)
+                    reacted += 1
                     # Add a small delay between reactions to avoid hitting Discord API limits
                     await asyncio.sleep(0.2)
                 except discord.HTTPException as e:
                     print(f"[WARN] Failed to add reaction {emoji}: {e}")
                 except Exception as e:
                     print(f"[ERROR] Error adding reaction {emoji}: {e}")
+
+            if reacted:
+                record_feature(
+                    "Auto-reactions",
+                    user_id=message.author.id,
+                    guild_id=message.guild.id if message.guild else None,
+                )
     
     print("[OK] Loaded auto-reaction commands")

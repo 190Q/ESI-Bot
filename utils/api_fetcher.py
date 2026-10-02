@@ -1,3 +1,5 @@
+import math
+
 import aiohttp
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
@@ -85,7 +87,7 @@ def extract_member_stats(
             "rank": None,
         },
         "playtime": 0,
-        "wars": 0,
+        "wars": None,
         "totalLevel": 0,
         "mobsKilled": 0,
         "chestsFound": 0,
@@ -118,8 +120,17 @@ def extract_member_stats(
             if stats["playtime"] == 0 and isinstance(global_data.get("playtime"), (int, float)):
                 stats["playtime"] = global_data["playtime"]
 
-            if isinstance(global_data.get("wars"), (int, float)):
-                stats["wars"] = int(global_data["wars"])
+            wars = global_data.get("wars")
+            if (
+                not isinstance(wars, bool)
+                and isinstance(wars, (int, float))
+                and (
+                    not isinstance(wars, float)
+                    or (math.isfinite(wars) and wars.is_integer())
+                )
+                and wars >= 0
+            ):
+                stats["wars"] = int(wars)
 
             if "totalLevel" in global_data:
                 stats["totalLevel"] = global_data["totalLevel"] or 0

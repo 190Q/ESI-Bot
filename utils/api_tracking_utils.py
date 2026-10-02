@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -89,6 +90,134 @@ BADGE_ROLES = {
 
 def _as_path(path_value: PathLike) -> Path:
     return path_value if isinstance(path_value, Path) else Path(path_value)
+
+
+def _normalize_war_count(value) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and (
+        not math.isfinite(value) or not value.is_integer()
+    ):
+        return None
+
+    value = int(value)
+    if value < 0:
+        return None
+    return value
+
+
+def _get_previous_snapshot_for_cursor(cursor):
+    try:
+        rows = cursor.execute("PRAGMA database_list").fetchall()
+        main_db = next((row for row in rows if row[1] == "main"), None)
+        if not main_db or not main_db[2]:
+            return None
+
+        current_db = Path(main_db[2]).resolve()
+        day_folder = current_db.parent
+        if not day_folder.name.startswith("api_"):
+            return None
+
+        return get_previous_api_db(day_folder.parent, current_db)
+    except Exception:
+        return None
+
+
+def _load_previous_war_counts(db_path):
+    by_uuid = {}
+    by_username = {}
+    if not db_path:
+        return by_uuid, by_username
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='player_stats'"
+        )
+        if not cursor.fetchone():
+            conn.close()
+            return by_uuid, by_username
+
+        columns = {
+            row[1]
+            for row in cursor.execute("PRAGMA table_info(player_stats)").fetchall()
+        }
+        if "username" not in columns or "wars" not in columns:
+            conn.close()
+            return by_uuid, by_username
+
+        uuid_column = "uuid" if "uuid" in columns else "NULL"
+        rows = cursor.execute(
+            f"SELECT {uuid_column}, username, wars FROM player_stats"
+        ).fetchall()
+        conn.close()
+
+        for uuid, username, wars in rows:
+            wars = _normalize_war_count(wars)
+            if wars is None:
+                continue
+            if uuid:
+                by_uuid[str(uuid).lower()] = wars
+            if username:
+                by_username[str(username).lower()] = wars
+    except Exception:
+        return {}, {}
+
+    return by_uuid, by_username
+
+
+def preserve_war_counts_for_snapshot(
+    cursor,
+    member_stats: list,
+    log_prefix: str = "[API]",
+) -> None:
+    previous_db = _get_previous_snapshot_for_cursor(cursor)
+    previous_by_uuid, previous_by_username = _load_previous_war_counts(previous_db)
+
+    missing_or_invalid = 0
+    lower_than_previous = 0
+    unavailable = 0
+
+    for stats in member_stats or []:
+        current_wars = _normalize_war_count(stats.get("wars"))
+        uuid = stats.get("uuid")
+        username = stats.get("username")
+
+        previous_wars = None
+        if uuid:
+            previous_wars = previous_by_uuid.get(str(uuid).lower())
+        if previous_wars is None and username:
+            previous_wars = previous_by_username.get(str(username).lower())
+
+        if current_wars is None:
+            if previous_wars is not None:
+                stats["wars"] = previous_wars
+                missing_or_invalid += 1
+            else:
+                stats["wars"] = None
+                unavailable += 1
+            continue
+
+        if previous_wars is not None and current_wars < previous_wars:
+            stats["wars"] = previous_wars
+            lower_than_previous += 1
+            continue
+
+        stats["wars"] = current_wars
+
+    preserved = missing_or_invalid + lower_than_previous
+    if preserved:
+        print(
+            f"{log_prefix} Preserved previous war counts for {preserved} player(s) "
+            f"({missing_or_invalid} missing/invalid, "
+            f"{lower_than_previous} lower than the previous snapshot)."
+        )
+    if unavailable:
+        print(
+            f"{log_prefix} War count unavailable for {unavailable} player(s); "
+            "stored as NULL."
+        )
 
 
 def get_current_day_string() -> str:
@@ -723,6 +852,8 @@ def save_player_and_raid_stats(
     guild_members: Optional[list] = None,
     include_shortened_rank: bool = False,
 ):
+    preserve_war_counts_for_snapshot(cursor, member_stats)
+
     if include_shortened_rank:
         cursor.execute(
             """
@@ -826,7 +957,7 @@ def save_player_and_raid_stats(
                     guild_data.get("prefix") if isinstance(guild_data, dict) else None,
                     guild_data.get("rank") if isinstance(guild_data, dict) else None,
                     stats.get("playtime", 0),
-                    stats.get("wars", 0),
+                    stats.get("wars"),
                     stats.get("totalLevel", 0),
                     stats.get("mobsKilled", 0),
                     stats.get("chestsFound", 0),
@@ -863,7 +994,7 @@ def save_player_and_raid_stats(
                     guild_data.get("prefix") if isinstance(guild_data, dict) else None,
                     guild_data.get("rank") if isinstance(guild_data, dict) else None,
                     stats.get("playtime", 0),
-                    stats.get("wars", 0),
+                    stats.get("wars"),
                     stats.get("totalLevel", 0),
                     stats.get("mobsKilled", 0),
                     stats.get("chestsFound", 0),

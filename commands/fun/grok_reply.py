@@ -28,7 +28,7 @@ GROK_SHARED_REPLIES = [
     "You might be the smartest person in this chat. Low bar, though.",
     "Keep going. You're almost not wrong.",
     "Credit where it's due: that was almost smart.",
-    "Consider walking into oncoming traffic lowk.",
+    "Consider never speaking again.",
     "Smash.",
     "https://cdn.discordapp.com/attachments/1459362186316222616/1544795902906998814/image.gif",
     "https://cdn.discordapp.com/attachments/1415428699490222121/1555318673109950675/togif.gif?backend=b2",

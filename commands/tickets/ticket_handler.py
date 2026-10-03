@@ -22,6 +22,7 @@ from blacklist import (
 )
 from utils.permissions import has_roles
 from utils import errors
+from utils.application_history import sync_applications
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 NOTIFICATION_FILE = _ROOT / 'data' / 'app_notifications.json'
@@ -393,6 +394,7 @@ def save_forwarded_apps(apps):
     """Save forwarded applications to JSON file"""
     with open(FORWARDED_APPS_FILE, 'w') as f:
         json.dump(apps, f, indent=4)
+    sync_applications(apps)
 
 def save_forwarded_app(channel_id: int, message_id: int, user_id: int, app_type: str, parent_message_id: int = None, ticket_channel_id: int = None, threshold: int = None):
     """Save a forwarded application to the database"""
@@ -3276,6 +3278,7 @@ def setup(bot, has_required_role, config):
                     threshold=0
                 )
                 bot.add_view(vote_view)
+        sync_applications(apps)
         
         # Re-register persistent ticket panel views
         for panel_id, panel_data in panels.items():

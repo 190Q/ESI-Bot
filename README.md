@@ -141,7 +141,7 @@ ESI-Bot/
 │   ├── badges/                 # Quest/recruitment/war stat badges
 │   ├── fun/                    # Birthdays, auto-reactions, ship, @grok, crab
 │   ├── guild/                  # Guild API fetch, tracking, points, role export
-│   ├── members/                # Ranks, onboarding, queue, linking, inactivity
+│   ├── members/                # Ranks, onboarding, queue, linking, inactivity, nitro roles
 │   ├── moderation/             # Bans, spam detection, venting cleanup
 │   ├── server/                 # Support tickets, welcome messages
 │   ├── tickets/                # Applications, panels, alt check, blacklist
@@ -225,6 +225,7 @@ Commands are discovered by scanning `commands/**/*.py` at startup — every file
 | `/manage_queue` | Manage the guild member waiting queue |
 | `/link_user` | Link a Discord user to their Minecraft IGN |
 | `/linked_users` | List all stored username matches |
+| `/nitro_colour` | Set the colour style of your Nitro boost role (normal, gradient or holographic); staff can also link a role to a member |
 
 ### Moderation
 
@@ -299,7 +300,7 @@ Some modules register event listeners instead of commands:
 - **Crab hello** and **`@grok` replies** on message content
 - **Spam detection** — link/spam heuristics with per-channel role restrictions
 - **Welcome messages** for new members
-- **Role sync** and **Duke onboarding** on `on_member_update`
+- **Role sync**, **Duke onboarding** and **Nitro boost colour roles** on `on_member_update`
 - **Rank logging** to `databases/rank_changes.db`
 - **Usage analytics** — every completed slash command is counted in `databases/usage.db`
 
@@ -345,7 +346,7 @@ All three are read-only or export-only and take their Discord token from the pro
 
 ## Storage
 
-- `data/*.json` — persistent state: queues, pending applications, ticket panels, birthdays, tracked guilds, inactivity requests, username matches, command bans, auto-reactions, and more. Written at runtime.
+- `data/*.json` — persistent state: queues, pending applications, ticket panels, birthdays, tracked guilds, inactivity requests, username matches, command bans, auto-reactions, nitro colour roles, and more. Written at runtime.
 - `databases/*.db` — SQLite databases: `esi_points.db`, `points_baseline.db`, `blacklist.db`, `rank_changes.db`, `recruited_data.db`, `playtime_tracking.db`, `temp_vc_messages.db`, `usage.db`, and others. Created automatically on first use.
 - `databases/api_tracking/` and `databases/playtime_tracking/` — per-day snapshot folders, pruned automatically as they age.
 - `config/*.json` — committed configuration: `welcome.json` (welcome channel) and `activity_logger.json` (tracked guilds).

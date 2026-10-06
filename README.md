@@ -15,7 +15,7 @@ For end-user command documentation, see the **[Sindrian Bot Handbook](https://do
 - **ESI points** — rolling two-week EP cycles, awarded automatically from tracked deltas
 - **Moderation** — spam detection, per-command bans, blacklist management, venting cleanup
 - **Community** — birthdays, auto-reactions, ship scores, `@grok` replies, temporary voice channels, welcome messages
-- **Operations** — `/reload` hot-reload, daily restart at 00:00 UTC, crash-restart loop, graceful shutdown, usage analytics
+- **Operations** — `/reload` hot-reload, daily restart at 00:00, crash-restart loop, graceful shutdown, usage analytics
 
 ---
 
@@ -71,10 +71,19 @@ cd ESI-Bot
 DISCORD_TOKEN=your_discord_bot_token
 OWNER_ID=your_discord_user_id
 
+# Bot API client (rotates round-robin)
 WYNNCRAFT_KEY_1=your_wynncraft_api_key
 WYNNCRAFT_KEY_2=your_wynncraft_api_key
 WYNNCRAFT_KEY_3=your_wynncraft_api_key
+
+# Guild + territory tracking
+WYNNCRAFT_KEY_7=your_wynncraft_api_key
+
+# Playtime tracking
+WYNNCRAFT_KEY_11=your_wynncraft_api_key
 ```
+
+See [Environment variables](#environment-variables) for the full list, including the extra slots read by the API tracker.
 
 **3. Install dependencies** (see [Dependencies](#dependencies)).
 
@@ -118,7 +127,7 @@ The bot and the background trackers are separate processes, each managed in its 
 
 To detach from a session without stopping it, press `Ctrl+A` then `D`.
 
-The bot also restarts itself every day at **00:00** and will re-launch after a crash (up to 5 consecutive crashes within 10 seconds, then it gives up to avoid a restart loop).
+The bot also restarts itself every day at **00:00 local time** on the host and will re-launch after a crash (up to 5 consecutive crashes within 10 seconds, then it gives up to avoid a restart loop).
 
 ---
 

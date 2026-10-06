@@ -23,7 +23,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import discord
 from discord.http import Route
 
-from utils.paths import DATA_DIR
+from utils.colour_names import normalise_simple_colour, simple_colour_of
+from utils.paths import CONFIG_DIR, DATA_DIR
 
 BOOST_ANNOUNCE_CHANNEL_ID = 554418045397762050
 BOT_ROLE_ID = 1429795745107808358
@@ -33,11 +34,18 @@ RETENTION_DAYS = 30
 HOLOGRAPHIC_COLOURS = (11127295, 16759788, 16761760)
 ENHANCED_ROLE_COLORS_FEATURE = "ENHANCED_ROLE_COLORS"
 
+COLOUR_ALERT_CHANNEL_ID = 1447167603951927347
+COLOUR_ALERT_CONFIG_FILE = CONFIG_DIR / "nitro_colour_alerts.json"
+_DEFAULT_ALERT_SIMPLE_COLOURS: Tuple[str, ...] = ("purple",)
+
 STORE_FILE = DATA_DIR / "nitro_roles.json"
 
 LINK_PERMISSION_ROLE_IDS = [
     600185623474601995,
 ]
+
+_watched_simple_colours: Tuple[str, ...] = _DEFAULT_ALERT_SIMPLE_COLOURS
+_alert_config_loaded = False
 
 _HEX_PATTERN = re.compile(r"^(?:#|0[xX])?([0-9a-fA-F]{6})$")
 _WORD_SPLIT = re.compile(r"[^a-z0-9]+")
@@ -317,3 +325,136 @@ def expiry_due(entry: Dict, now: Optional[datetime] = None) -> bool:
     if ended.tzinfo is None:
         ended = ended.replace(tzinfo=timezone.utc)
     return (now or datetime.now(timezone.utc)) - ended >= timedelta(days=RETENTION_DAYS)
+
+
+def load_alert_config(*, force: bool = False) -> Tuple[str, ...]:
+    """(Re)read the watched simple colours from ``config/nitro_colour_alerts.json``.
+
+    Read once on first use. Pass ``force=True`` (a command's ``setup`` does) to
+    pick up an edit without restarting the bot. Unknown names are skipped, and a
+    missing or unreadable file falls back to the defaults.
+    """
+    global _watched_simple_colours, _alert_config_loaded
+    if _alert_config_loaded and not force:
+        return _watched_simple_colours
+
+    colours: Tuple[str, ...] = _DEFAULT_ALERT_SIMPLE_COLOURS
+    try:
+        if COLOUR_ALERT_CONFIG_FILE.exists():
+            with open(COLOUR_ALERT_CONFIG_FILE, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            raw = data.get("simple_colours") if isinstance(data, dict) else data
+            if isinstance(raw, str):
+                raw = [raw]
+            if isinstance(raw, list):
+                resolved: List[str] = []
+                for item in raw:
+                    simple = normalise_simple_colour(item)
+                    if simple is None:
+                        print(
+                            f"[Nitro Colour] Ignoring unknown simple colour {item!r} "
+                            f"in {COLOUR_ALERT_CONFIG_FILE.name}"
+                        )
+                        continue
+                    if simple not in resolved:
+                        resolved.append(simple)
+                colours = tuple(resolved)
+            elif raw is not None:
+                print(
+                    f"[Nitro Colour] 'simple_colours' must be a list in "
+                    f"{COLOUR_ALERT_CONFIG_FILE.name}; using defaults"
+                )
+        else:
+            print(
+                f"[Nitro Colour] {COLOUR_ALERT_CONFIG_FILE.name} not found; "
+                "using default watched colours"
+            )
+    except Exception as exc:
+        print(f"[Nitro Colour] Failed to read {COLOUR_ALERT_CONFIG_FILE.name}: {exc}")
+
+    _watched_simple_colours = colours
+    _alert_config_loaded = True
+    if colours:
+        print(f"[Nitro Colour] Watching simple colour(s): {', '.join(colours)}")
+    else:
+        print("[Nitro Colour] No watched simple colours configured; colour alerts are off")
+    return _watched_simple_colours
+
+
+def _watched_matches(
+    colours: Sequence[Tuple[str, Optional[int]]],
+) -> Tuple[Dict[str, List[str]], Optional[int]]:
+    """Split *colours* into ``(matches, highlight)``.
+
+    *colours* is ``(slot label, value)`` pairs, values optional. *matches* maps
+    each watched simple colour to the slots that used it; *highlight* is the first
+    offending value, used as the embed's sidebar colour.
+    """
+    watched = load_alert_config()
+    matches: Dict[str, List[str]] = {}
+    highlight: Optional[int] = None
+    if not watched:
+        return matches, highlight
+
+    for label, value in colours:
+        if value is None:
+            continue
+        simple = simple_colour_of(value)
+        if simple not in watched:
+            continue
+        matches.setdefault(simple, []).append(label)
+        if highlight is None:
+            highlight = value
+    return matches, highlight
+
+
+async def notify_watched_colours(
+    client: discord.Client,
+    member: discord.Member,
+    role: discord.Role,
+    colours: Sequence[Tuple[str, Optional[int]]],
+) -> None:
+    """Report to the alert channel when a member picks a watched simple colour.
+
+    *colours* is ``(slot label, value)`` pairs, e.g.
+    ``(('Primary', primary), ('Secondary', secondary))``. Slots left as ``None``
+    are ignored. Does nothing when nothing matched, and never raises.
+    """
+    matches, highlight = _watched_matches(colours)
+    if not matches:
+        return
+
+    channel = client.get_channel(COLOUR_ALERT_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await client.fetch_channel(COLOUR_ALERT_CHANNEL_ID)
+        except discord.HTTPException as exc:
+            print(f"[Nitro Colour] Could not reach alert channel {COLOUR_ALERT_CHANNEL_ID}: {exc}")
+            return
+
+    slots = sorted({label for labels in matches.values() for label in labels})
+    applied = [
+        f"**{label}**: `{format_colour(value)}` ({simple_colour_of(value)})"
+        for label, value in colours
+        if value is not None
+    ]
+    embed = discord.Embed(
+        title="⚠️ Watched Colour Used",
+        description=f"{member.mention} set {role.mention} to a watched colour.",
+        color=discord.Colour(highlight if highlight is not None else 0x800080),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(
+        name="Simple colour",
+        value=", ".join(f"`{name}`" for name in sorted(matches)),
+        inline=True,
+    )
+    embed.add_field(name="Slot(s)", value=", ".join(slots), inline=True)
+    if applied:
+        embed.add_field(name="New colours", value="\n".join(applied), inline=False)
+    embed.set_footer(text=f"User ID: {member.id}")
+
+    try:
+        await channel.send(embed=embed)
+    except discord.HTTPException as exc:
+        print(f"[Nitro Colour] Failed to post colour alert: {exc}")

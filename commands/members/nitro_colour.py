@@ -11,7 +11,9 @@ from utils.nitro_roles import (
     format_colour,
     guild_has_enhanced_colours,
     link_entry,
+    load_alert_config,
     load_store,
+    notify_watched_colours,
     parse_hex_colour,
     random_colour,
     save_store,
@@ -106,9 +108,10 @@ def _success_embed(
 class _ColourModal(discord.ui.Modal):
     """Applies the submitted colours to the member's own colour role."""
 
-    def __init__(self, role: discord.Role, *, title: str):
+    def __init__(self, role: discord.Role, *, title: str, previous=None):
         super().__init__(title=title)
         self.role = role
+        self.previous = previous
 
     def _read_colours(self):
         """Return ``(primary, secondary, tertiary)``; raise ValueError on bad input."""
@@ -149,6 +152,23 @@ class _ColourModal(discord.ui.Modal):
             ephemeral=True,
         )
 
+        previous_primary, previous_secondary = self.previous or (None, None)
+        if primary == previous_primary and secondary == previous_secondary:
+            return
+        try:
+            await notify_watched_colours(
+                interaction.client,
+                interaction.user,
+                self.role,
+                (
+                    ("Primary", primary),
+                    ("Secondary", secondary),
+                    ("Tertiary", tertiary),
+                ),
+            )
+        except Exception as exc:
+            print(f"[Nitro Colour] Watched-colour alert failed: {exc}")
+
 
 class NormalColourModal(_ColourModal):
     colour = discord.ui.TextInput(
@@ -159,8 +179,8 @@ class NormalColourModal(_ColourModal):
         required=True,
     )
 
-    def __init__(self, role: discord.Role, primary: int):
-        super().__init__(role, title="Solid Role Colour")
+    def __init__(self, role: discord.Role, primary: int, secondary=None):
+        super().__init__(role, title="Solid Role Colour", previous=(primary, secondary))
         self.colour.default = format_colour(primary)
 
     def _read_colours(self):
@@ -185,7 +205,7 @@ class GradientColourModal(_ColourModal):
     )
 
     def __init__(self, role: discord.Role, primary: int, secondary):
-        super().__init__(role, title="Role Gradient")
+        super().__init__(role, title="Role Gradient", previous=(primary, secondary))
         self.primary.default = format_colour(primary)
         self.secondary.default = format_colour(
             secondary if secondary is not None else random_colour()
@@ -243,8 +263,10 @@ class ColourTypeView(discord.ui.View):
     async def _normal(self, interaction: discord.Interaction):
         if not await _owned_by(interaction, self.author_id):
             return
-        primary, _ = await fetch_role_colours(self.bot, interaction.guild, self.role)
-        await interaction.response.send_modal(NormalColourModal(self.role, primary))
+        primary, secondary = await fetch_role_colours(self.bot, interaction.guild, self.role)
+        await interaction.response.send_modal(
+            NormalColourModal(self.role, primary, secondary)
+        )
 
     async def _gradient(self, interaction: discord.Interaction):
         if not await _owned_by(interaction, self.author_id):
@@ -386,6 +408,8 @@ class LinkRoleView(discord.ui.View):
 
 
 def setup(bot):
+    load_alert_config(force=True)
+
     @bot.tree.command(
         name=COLOUR_COMMAND_NAME,
         description="Customise the colours of your Nitro boost role.",

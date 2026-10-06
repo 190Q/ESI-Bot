@@ -249,6 +249,9 @@ temp_vc_channels/
 temp_vc_config.json
 duke_first_time_pings.json
 tests/
+config/nitro_colour_alerts.json
+config/activity_logger.json
+config/welcome.json
 
 playtime_tracking.db.filepart
 

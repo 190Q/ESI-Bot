@@ -3,6 +3,7 @@ import random
 
 import discord
 
+from utils import errors
 from utils.usage import record_feature
 
 TRIGGER_PREFIXES = [
@@ -14,6 +15,9 @@ MAX_REPLY_DELAY = 2.5
 
 # Chance that a message ending in "?" gets answered even without a trigger word.
 UNTRIGGERED_QUESTION_CHANCE = 0.003
+
+# Chance that a nonsense reply is sent instead of a real one.
+NONSENSE_REPLY_CHANCE = 0.01
 
 REASON_TRIGGER = "trigger"
 REASON_REPLY = "reply"
@@ -27,10 +31,6 @@ GROK_SHARED_REPLIES = [
     "You look like you can't center a div.",
     "Twin, you look easy to draw, don't even talk to me.",
     "Do not bite the hand that fingers you, or whatever the saying is.",
-    "You might be the smartest person in this chat. Low bar, though.",
-    "Keep going. You're almost not wrong.",
-    "Credit where it's due: that was almost smart.",
-    "Consider never speaking again.",
     "Smash.",
     "https://cdn.discordapp.com/attachments/1459362186316222616/1544795902906998814/image.gif",
     "https://cdn.discordapp.com/attachments/1415428699490222121/1555318673109950675/togif.gif?backend=b2",
@@ -79,6 +79,10 @@ GROK_REPLIES = [
     "The answer is yes. The question was still bad.",
     "Hard pass.",
     "Cannot predict now. Cannot be bothered either.",
+    "You might be the smartest person in this chat. Low bar, though.",
+    "Credit where it's due: that was almost smart.",
+    "Consider never speaking again.",
+    "Keep going. You're almost not wrong.",
     "Is that really the best you could come up with?",
     "Try asking someone who cares.",
     "If I had a coin for every dumb question, I still won't be paid enough for this one.",
@@ -139,6 +143,10 @@ GROK_REPLIES_UNIVERSAL = [
     "Delete this and we never speak of it :wilted_flower:",
     "Mhm. Sure. Whatever you say twin.",
     "I'm a bot, not your therapist.",
+    "You might be the smartest person in this chat. Low bar, though.",
+    "Credit where it's due: that was almost smart.",
+    "Consider never speaking again.",
+    "Keep going. You're almost not wrong.",
     "You woke up and chose to type that?",
     "Incredible. Never speak again.",
     "Whatever helps you sleep at night twin.",
@@ -171,7 +179,53 @@ GROK_PING_REPLIES = [
     "I came all the way here for this bitch?",
     "Was there a reason, or do you just enjoy being an idiot?",
     "Pinging a bot. Truly the peak of your life.",
+    "Consider never speaking again.",
     "I'm not paid enough to be summoned like this.",
+]
+
+GROK_NONSENSE_REPLIES = [
+    "asdkjhasd lkjqwe oiuzxc",
+    "hjkl;'",
+    "zxcvbnm,./",
+    "!!!!!!!!!!!!!!!!!!",
+    "???",
+    "...",
+    "null",
+    "undefined",
+    "NaN",
+    errors.custom("Error 404", "Reply not found."),
+    errors.custom("Segmentation Fault", "core dumped"),
+    errors.custom("TypeError", "'vro' object is not callable"),
+    errors.custom("ERR_SKILL_ISSUE_NOT_FOUND", "Skill issue not found."),
+    "01001000 01101001",
+    "0xDEADBEEF",
+    "{{reply}}",
+    "%s %s %s",
+    "<script>alert(1)</script>",
+    "||spoiler|| ||spoiler||",
+    "**this text is bold and never closes",
+    "```this code block never ends",
+    "\\\\\\\\\\\\\\\\",
+    "~~~~~~~~~~~~~~~~",
+    "Minulla on kuusi kissaa ja yksi sanomalehti.",
+    "Watashi no neko wa tsukue no ue de nemashita.",
+    "Cras nihil est, sed tamen aliquid.",
+    "Der Kuehlschrank hat gestern Abend gekuendigt.",
+    "Benim balkonumdaki sandalye cok uzgun.",
+    "Kot ma dwa kapelusze i zadnego pomyslu.",
+    "Mbuzi wangu amekula ramani.",
+    "Mae'r gadair yn dweud na.",
+    "Potato.",
+    "The carpet is blue on Thursdays.",
+    "Seven hats walked into a sandwich.",
+    "Banana protocol initiated.",
+    "Yes, but only on the third Tuesday of a leap month.",
+    "The mitochondria is the powerhouse of the cell.",
+    "Who's soup?",
+    "Chair.",
+    "Beep boop, but backwards.",
+    "lorem ipsum dolor sit grok",
+    "ahhh eeeee oooooo",
 ]
 
 # Store reference to listener for cleanup
@@ -260,8 +314,14 @@ async def detect_reply_reason(message: discord.Message, bot_user: discord.Client
     return None
 
 
-def select_reply(content: str, reason: str) -> str:
-    """Pick a single reply from the pool matching the winning reason."""
+def select_reply(content: str, reason: str) -> str | errors.CommandError:
+    """Pick a single reply from the pool matching the winning reason.
+
+    Rarely, a nonsense reply is returned instead of a real one.
+    """
+    if random.random() < NONSENSE_REPLY_CHANCE:
+        return random.choice(GROK_NONSENSE_REPLIES)
+
     if reason == REASON_TRIGGER:
         body = _body_after_trigger(content).strip()
         if not body:
@@ -293,7 +353,11 @@ def setup(bot, has_required_role, config):
 
             async with message.channel.typing():
                 await asyncio.sleep(_reply_delay())
-                await message.reply(select_reply(message.content, reason))
+                reply = select_reply(message.content, reason)
+                if isinstance(reply, errors.CommandError):
+                    await message.reply(embed=reply.build_embed())
+                else:
+                    await message.reply(reply)
 
             record_feature(
                 "Grok replies",

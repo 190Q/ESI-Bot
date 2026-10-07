@@ -21,6 +21,7 @@ Usage:
   python scripts/list_guild_questers.py --format csv --output questers.csv
   python scripts/list_guild_questers.py --source db       # offline roster
   python scripts/list_guild_questers.py --min-points 10
+  python scripts/list_guild_questers.py --days 30        # quested in the last 30 days
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -71,6 +73,19 @@ def badge_for_points(points: int) -> str:
     return "No badge"
 
 
+def parse_timestamp(value: Optional[str]) -> Optional[datetime]:
+    """Parse a quest_progress timestamp into an aware UTC datetime."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 class Member:
     __slots__ = ("username", "uuid", "rank")
 
@@ -84,13 +99,14 @@ class Member:
 
 
 class Quester:
-    __slots__ = ("username", "uuid", "rank", "points")
+    __slots__ = ("username", "uuid", "rank", "points", "last_updated")
 
-    def __init__(self, member: Member, points: int) -> None:
+    def __init__(self, member: Member, points: int, last_updated: Optional[datetime]) -> None:
         self.username = member.username
         self.uuid = member.uuid
         self.rank = member.rank
         self.points = points
+        self.last_updated = last_updated
 
     def dedupe_key(self) -> str:
         return (self.uuid or self.username).lower()
@@ -164,25 +180,40 @@ def load_roster(
 # --------------------------------------------------------------------------- #
 # Quest points (who has completed quests)
 # --------------------------------------------------------------------------- #
-def load_quest_points(db_path: Path) -> Dict[str, int]:
-    """Return {player_key_lower: points} from quest_progress (max per key)."""
+def load_quest_points(db_path: Path) -> Dict[str, Tuple[int, Optional[datetime]]]:
+    """Return {player_key_lower: (points, last_updated)} from quest_progress."""
     conn = sqlite3.connect(str(db_path))
     try:
-        rows = conn.execute("SELECT player, COALESCE(points, 0) FROM quest_progress").fetchall()
+        rows = conn.execute(
+            "SELECT player, COALESCE(points, 0), last_updated FROM quest_progress"
+        ).fetchall()
     finally:
         conn.close()
 
-    points: Dict[str, int] = {}
-    for player, value in rows:
+    entries: Dict[str, Tuple[int, Optional[datetime]]] = {}
+    for player, value, updated in rows:
         if not player:
             continue
         key = str(player).lower()
-        points[key] = max(points.get(key, 0), int(value or 0))
-    return points
+        points = int(value or 0)
+        updated_dt = parse_timestamp(updated)
+        existing = entries.get(key)
+        if existing is None or points > existing[0]:
+            entries[key] = (points, updated_dt)
+    return entries
 
 
-def match_questers(members: List[Member], quest_points: Dict[str, int], min_points: int) -> List[Quester]:
-    """Keep members that appear in quest_progress with at least ``min_points``."""
+def match_questers(
+    members: List[Member],
+    quest_points: Dict[str, Tuple[int, Optional[datetime]]],
+    min_points: int,
+    days: Optional[int],
+) -> List[Quester]:
+    """Keep members with at least ``min_points`` that quested within ``days`` (if given)."""
+    cutoff = None
+    if days is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
     index: Dict[str, Member] = {}
     for member in members:
         if member.uuid:
@@ -190,15 +221,17 @@ def match_questers(members: List[Member], quest_points: Dict[str, int], min_poin
         index[member.username.lower()] = member
 
     best: Dict[str, Quester] = {}
-    for key, points in quest_points.items():
+    for key, (points, last_updated) in quest_points.items():
         if points < min_points:
             continue
+        if cutoff is not None and (last_updated is None or last_updated < cutoff):
+            continue  # no quest activity within the requested window
         member = index.get(key)
         if member is None:
             continue  # has quest points but is not in the guild right now
         existing = best.get(member.dedupe_key())
         if existing is None or points > existing.points:
-            best[member.dedupe_key()] = Quester(member, points)
+            best[member.dedupe_key()] = Quester(member, points, last_updated)
 
     return sorted(best.values(), key=lambda q: (-q.points, q.username.lower()))
 
@@ -216,6 +249,7 @@ def render(questers: List[Quester], fmt: str) -> str:
                     "rank": q.rank,
                     "quest_points": q.points,
                     "badge": badge_for_points(q.points),
+                    "last_updated": q.last_updated.isoformat() if q.last_updated else None,
                 }
                 for q in questers
             ],
@@ -226,20 +260,33 @@ def render(questers: List[Quester], fmt: str) -> str:
     if fmt == "csv":
         buffer = io.StringIO()
         writer = csv.writer(buffer, lineterminator="\n")
-        writer.writerow(["username", "uuid", "rank", "quest_points", "badge"])
+        writer.writerow(["username", "uuid", "rank", "quest_points", "badge", "last_updated"])
         for q in questers:
-            writer.writerow([q.username, q.uuid or "", q.rank or "", q.points, badge_for_points(q.points)])
+            writer.writerow(
+                [
+                    q.username,
+                    q.uuid or "",
+                    q.rank or "",
+                    q.points,
+                    badge_for_points(q.points),
+                    q.last_updated.isoformat() if q.last_updated else "",
+                ]
+            )
         return buffer.getvalue().rstrip("\n")
 
     if fmt == "detailed":
         width = max((len(q.username) for q in questers), default=8)
         width = max(width, len("username"))
-        lines = [f"{'rank':<10} | {'username':<{width}} | {'points':>6} | {'badge':<11} | uuid"]
+        lines = [
+            f"{'rank':<10} | {'username':<{width}} | {'points':>6} | {'badge':<11} | "
+            f"{'last quest':<10} | uuid"
+        ]
         lines.append("-" * len(lines[0]))
         for q in questers:
+            last = q.last_updated.strftime("%Y-%m-%d") if q.last_updated else ""
             lines.append(
                 f"{q.rank or '':<10} | {q.username:<{width}} | {q.points:>6} | "
-                f"{badge_for_points(q.points):<11} | {q.uuid or ''}"
+                f"{badge_for_points(q.points):<11} | {last:<10} | {q.uuid or ''}"
             )
         return "\n".join(lines)
 
@@ -279,6 +326,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum quest points to include (default: 1 = at least one completed quest).",
     )
     parser.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help="Only include members who completed a quest within the last N days "
+        "(based on quest_progress.last_updated). Default: no time limit.",
+    )
+    parser.add_argument(
         "--format",
         choices=["names", "detailed", "csv", "json"],
         default="names",
@@ -307,7 +361,7 @@ def main() -> int:
         return 1
 
     quest_points = load_quest_points(quests_db)
-    questers = match_questers(members, quest_points, args.min_points)
+    questers = match_questers(members, quest_points, args.min_points, args.days)
 
     body = render(questers, args.format)
     if body:
@@ -319,8 +373,9 @@ def main() -> int:
         out_path.write_text(body + ("\n" if body else ""), encoding="utf-8")
         print(f"Wrote {len(questers)} member(s) to {out_path}", file=sys.stderr)
 
+    window = f" in the last {args.days} day(s)" if args.days is not None else ""
     print(
-        f"{len(questers)} guild member(s) with >= {args.min_points} quest point(s) "
+        f"{len(questers)} guild member(s) with >= {args.min_points} quest point(s){window} "
         f"out of {len(members)} in the guild [roster: {roster_source}]",
         file=sys.stderr,
     )

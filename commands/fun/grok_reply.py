@@ -1,10 +1,13 @@
 import asyncio
+import json
 import random
 
 import discord
 
 from utils import errors
+from utils.paths import CONFIG_DIR
 from utils.usage import record_feature
+from collections import deque
 
 TRIGGER_PREFIXES = [
     "@grok",
@@ -12,6 +15,8 @@ TRIGGER_PREFIXES = [
 
 MIN_REPLY_DELAY = 0.8
 MAX_REPLY_DELAY = 2.5
+RECENT_REPLY_MEMORY = 15
+_RECENT_REPLIES = deque(maxlen=RECENT_REPLY_MEMORY)
 
 # Chance that a message ending in "?" gets answered even without a trigger word.
 UNTRIGGERED_QUESTION_CHANCE = 0.003
@@ -24,215 +29,86 @@ REASON_REPLY = "reply"
 REASON_PING = "ping"
 REASON_QUESTION = "question"
 
-# Replies that fit every situation, so every pool draws from them too.
-GROK_SHARED_REPLIES = [
-    "I was busy doing nothing, and you still managed to interrupt it.",
-    "Sybau vro, I'm not talking to someone that looks like a discombobulated potato.",
-    "You look like you can't center a div.",
-    "Twin, you look easy to draw, don't even talk to me.",
-    "Do not bite the hand that fingers you, or whatever the saying is.",
-    "Smash.",
-    "https://cdn.discordapp.com/attachments/1459362186316222616/1544795902906998814/image.gif",
-    "https://cdn.discordapp.com/attachments/1415428699490222121/1555318673109950675/togif.gif?backend=b2",
-    "https://tenor.com/view/bosnov-67-bosnov-67-67-meme-gif-16727368109953357722",
-    "https://tenor.com/view/dap-me-up-dap-me-up-gay-gif-15098348701378709709",
-    "https://tenor.com/view/dont-care-didnt-ask-cope-_ratio-skill-issue-canceled-gif-24148064",
-    "https://tenor.com/view/lion-sigma-alpha-how-bro-felt-after-saying-that-sigma-lion-gif-13957304746104521882",
-    "https://tenor.com/view/sybau-syaos-british-english-ts-pmo-gif-18322740700124619850",
-]
+REPLIES_PATH = CONFIG_DIR / "grok_replies.json"
 
-GROK_EMPTY_TRIGGER_REPLIES = [
-    "You typed my name and then forgot how to type.",
-    "Take your time. I'll wait.",
-    "Did your brain buffered halfway through the message?",
-    "You had one job and it was to add words.",
-    "Typing out a message was so boring that you decided to go jerk if right after pinging me :wilted_flower:",
-    "Congratulations, you have contributed absolutely nothing to this society.",
-    "I'm here, I'm listening, and you're wasting both.",
-    "Did your keyboard die, or are you just a bitch?",
-    "You called, I came, and you hung up on yourself.",
-    "Four letters of effort. Impressive.",
-    "Use words twin.",
-    "An empty message from an empty head.",
-    "The silence after your name is the smartest thing you've said all day.",
-]
+REPLY_POOL_NAMES = (
+    "shared",
+    "empty_trigger",
+    "question",
+    "statement",
+    "reply_to_bot",
+    "ping",
+    "nonsense",
+)
 
-GROK_REPLIES = [
-    "Wouldn't you like to know, weather boy.",
-    "Look it up, you idiot.",
-    "Google exists. Use it.",
-    "I'm not paid enough to answer that.",
-    "Ask me again when I care.",
-    "Outlook not so good, and neither is your question.",
-    "Signs point to you being a bitch.",
-    "That is a you problem.",
-    "Bold of you to assume I'm listening.",
-    "My sources say no. My sources are also bored.",
-    "Reply hazy. Try again, but with a better question.",
-    "Fuh nah.",
-    "If I say yes will you stop asking?",
-    "Do I look like a search engine to you?",
-    "Ask your mom.",
-    "Concentrate harder and ask again.",
-    "Next question.",
-    "I plead the fifth.",
-    "The answer is yes. The question was still bad.",
-    "Hard pass.",
-    "Cannot predict now. Cannot be bothered either.",
-    "You might be the smartest person in this chat. Low bar, though.",
-    "Credit where it's due: that was almost smart.",
-    "Consider never speaking again.",
-    "Keep going. You're almost not wrong.",
-    "Is that really the best you could come up with?",
-    "Try asking someone who cares.",
-    "If I had a coin for every dumb question, I still won't be paid enough for this one.",
-    "It is decidedly not my job to answer that.",
-    "Without a doubt, you should log off.",
-    "Very doubtful, and very boring.",
-    "The universe has declined your request.",
-    "Go touch grass and ask again later.",
-    "I'm going to need you to rethink your life choices first.",
-    "I could answer that, but where's the fun in it?",
-    "Imagine thinking I would know that.",
-    "The council has voted, and the answer is a firm 'meh'.",
-    "Why does vro think I'm grok.",
-    "Bro really thought he cooked with that question :wilted_flower:",
-    "Sybau, ask something better.",
-    "Lowkey I don't care. Highkey I don't care either.",
-    "Ratio + L + nobody asked :skull:",
-    "I'm lowkey tired of you already :wilted_flower:",
-    "Absolutely. Write it down, this won't happen again.",
-    "Go for it. I'll pretend I had nothing to do with it.",
-    "Yes. Frame this moment.",
-    "My prediction is good news. Brace yourself.",
-    "Yes. Even a broken clock gets lucky, and today it's you.",
-    "Fine, yes. Savor it, because it won't happen again.",
-    "Yes. Now go enjoy your one win of the year.",
-    "Yes, and you didn't even need my help. Embarrassing that you asked.",
-    "Sure, it's a yes. Happy now?",
-    "https://klipy.com/gifs/marmota-cooking",
-    "I don't know, just ask Romi's girlfiend.",
-    "I would answer but I can’t because I don’t want to.",
-    "Well duh, wasn't it obvious, you imbecil?",
-    "This might be the only correct thing you've ever said :wilted_flower:",
-    "Beg for it and then we'll see.",
-    "Yasss queen :nail_care:",
-    "Retep.",
-    "Why not put all the energy onto a JOB or something instead of asking these stupid questions.",
-    "You question was almost as bad as Xin's mic sounds."
-]
 
-GROK_REPLIES_UNIVERSAL = [
-    "Cool story.",
-    "Noted. Filed under 'who asked'.",
-    "Nobody asked, but thanks for the update.",
-    "Anyway.",
-    "I'm gonna pretend I didn't see that to save you from the embarassement.",
-    "Respectfully, I don't care.",
-    "Sounds like a you problem :wilted_flower:",
-    "Replying to this is a waste of energy.",
-    "Take a breath vro.",
-    "Not reading all that, but I'm happy for you. Or sorry that happened.",
-    "That's crazy. Anyway.",
-    "I have seen your message and chosen violence.",
-    "Bro said all that for nothing :wilted_flower:",
-    "67",
-    "Sybau, I'm busy doing your mom.",
-    "Hmm. Yeah. No.",
-    "Tell it to someone who cares.",
-    "Delete this and we never speak of it :wilted_flower:",
-    "Mhm. Sure. Whatever you say twin.",
-    "I'm a bot, not your therapist.",
-    "You might be the smartest person in this chat. Low bar, though.",
-    "Credit where it's due: that was almost smart.",
-    "Consider never speaking again.",
-    "Keep going. You're almost not wrong.",
-    "You woke up and chose to type that?",
-    "Incredible. Never speak again.",
-    "Whatever helps you sleep at night twin.",
-    "Wow, a good idea from you. Someone call the press.",
-    "Type shit.",
-    "Great, but why not fit this energy into a JOB or something?",
-]
+def _parse_reply(entry) -> str | errors.CommandError | None:
+    """Turn one JSON entry into a reply, or None if it cannot be understood.
 
-GROK_REPLY_REPLIES = [
-    "Why is vro replying to me :wilted_flower:",
-    "Of all the things you could have said, you picked that.",
-    "Pass, you're not my style.",
-    "I'm going to pretend this never happened.",
-    "You had the chance to say nothing and you blew it.",
-    "Replying to a bot. Think about that for a second.",
-    "I said what I said, and you made it worse.",
-    "Absolutely nobody was waiting for your follow-up.",
-    "This conversation was over before you started it.",
-    "Fascinating. Truly. I'm already bored.",
-    "You are the reason I have a mute button.",
-    "How sad is your life that you have to reply to a bot.",
-    "BOMBOCLAT.",
-]
+    Entries are normally plain strings. An entry shaped like
+    ``{"type": "error", "title": ..., "description": ...}`` sends one of the
+    bot's error embeds instead of text.
+    """
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict) and entry.get("type") == "error":
+        return errors.custom(entry.get("title", "Error"), entry.get("description", ""))
+    print(f"[WARN] Skipping unsupported reply entry in {REPLIES_PATH.name}: {entry!r}")
+    return None
 
-GROK_PING_REPLIES = [
-    "Do you ping people and hope for the best? That explains a lot.",
-    "I'm here. Regrettably.",
-    "That ping was a waste of your time and mine.",
-    "Congratulations, you have my attention. Please do not enjoy it.",
-    "I came all the way here for this bitch?",
-    "Was there a reason, or do you just enjoy being an idiot?",
-    "Pinging a bot. Truly the peak of your life.",
-    "Consider never speaking again.",
-    "I'm not paid enough to be summoned like this.",
-]
 
-GROK_NONSENSE_REPLIES = [
-    "asdkjhasd lkjqwe oiuzxc",
-    "hjkl;'",
-    "zxcvbnm,./",
-    "!!!!!!!!!!!!!!!!!!",
-    "???",
-    "...",
-    "null",
-    "undefined",
-    "NaN",
-    errors.custom("Error 404", "Reply not found."),
-    errors.custom("Segmentation Fault", "core dumped"),
-    errors.custom("TypeError", "'vro' object is not callable"),
-    errors.custom("ERR_SKILL_ISSUE_NOT_FOUND", "Skill issue not found."),
-    "01001000 01101001",
-    "0xDEADBEEF",
-    "{{reply}}",
-    "%s %s %s",
-    "<script>alert(1)</script>",
-    "||spoiler|| ||spoiler||",
-    "**this text is bold and never closes",
-    "```this code block never ends",
-    "\\\\\\\\\\\\\\\\",
-    "~~~~~~~~~~~~~~~~",
-    "Minulla on kuusi kissaa ja yksi sanomalehti.",
-    "Watashi no neko wa tsukue no ue de nemashita.",
-    "Cras nihil est, sed tamen aliquid.",
-    "Der Kuehlschrank hat gestern Abend gekuendigt.",
-    "Benim balkonumdaki sandalye cok uzgun.",
-    "Kot ma dwa kapelusze i zadnego pomyslu.",
-    "Mbuzi wangu amekula ramani.",
-    "Mae'r gadair yn dweud na.",
-    "Potato.",
-    "The carpet is blue on Thursdays.",
-    "Seven hats walked into a sandwich.",
-    "Banana protocol initiated.",
-    "Yes, but only on the third Tuesday of a leap month.",
-    "The mitochondria is the powerhouse of the cell.",
-    "Who's soup?",
-    "Chair.",
-    "Beep boop, but backwards.",
-    "lorem ipsum dolor sit grok",
-    "ahhh eeeee oooooo",
-]
+def load_reply_pools() -> dict[str, list]:
+    """Read every reply pool from the JSON file.
+
+    Pools that are missing, malformed or unreadable come back empty, and the
+    responder then stays quiet for them instead of crashing.
+    """
+    pools = {name: [] for name in REPLY_POOL_NAMES}
+    try:
+        with open(REPLIES_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[WARN] Failed to load {REPLIES_PATH}: {e}")
+        return pools
+
+    if not isinstance(raw, dict):
+        print(f"[WARN] {REPLIES_PATH.name} must contain a JSON object of reply pools")
+        return pools
+
+    for name in REPLY_POOL_NAMES:
+        entries = raw.get(name, [])
+        if not isinstance(entries, list):
+            print(f"[WARN] Reply pool '{name}' in {REPLIES_PATH.name} is not a list; ignoring it")
+            continue
+        pools[name] = [reply for entry in entries if (reply := _parse_reply(entry)) is not None]
+    return pools
 
 # Store reference to listener for cleanup
 _listener = None
 
 _BOT_LISTENER_ATTR = "_grok_reply_listener"
 
+
+def _reply_key(reply) -> tuple:
+    """Stable identity for recency tracking.
+
+    Error replies are rebuilt from the JSON on every load, so they have to be
+    compared by their title and description rather than by object identity.
+    """
+    if isinstance(reply, errors.CommandError):
+        return ("error", reply.title, reply.description)
+    return ("text", reply)
+
+
+def _pick_fresh(pool: list) -> str | errors.CommandError | None:
+    """Pick a reply from *pool*, preferring ones that were not used recently."""
+    if not pool:
+        return None
+    recent = set(_RECENT_REPLIES)
+    fresh = [reply for reply in pool if _reply_key(reply) not in recent]
+    choice = random.choice(fresh or pool)
+    _RECENT_REPLIES.append(_reply_key(choice))
+    return choice
 
 def _remove_registered_listener(bot):
     """Remove the on_message listener this module registered previously, if any.
@@ -314,26 +190,29 @@ async def detect_reply_reason(message: discord.Message, bot_user: discord.Client
     return None
 
 
-def select_reply(content: str, reason: str) -> str | errors.CommandError:
+def select_reply(content: str, reason: str) -> str | errors.CommandError | None:
     """Pick a single reply from the pool matching the winning reason.
 
-    Rarely, a nonsense reply is returned instead of a real one.
+    Rarely, a nonsense reply is returned instead of a real one. Returns None
+    when the reply file has nothing usable for the chosen pool.
     """
+    pools = load_reply_pools()
+
     if random.random() < NONSENSE_REPLY_CHANCE:
-        return random.choice(GROK_NONSENSE_REPLIES)
+        return _pick_fresh(pools["nonsense"])
 
     if reason == REASON_TRIGGER:
         body = _body_after_trigger(content).strip()
         if not body:
-            return random.choice(GROK_EMPTY_TRIGGER_REPLIES)
-        pool = GROK_REPLIES if "?" in body else GROK_REPLIES_UNIVERSAL
+            return _pick_fresh(pools["empty_trigger"])
+        pool = pools["question"] if "?" in body else pools["statement"]
     elif reason == REASON_REPLY:
-        pool = GROK_REPLY_REPLIES
+        pool = pools["reply_to_bot"]
     elif reason == REASON_PING:
-        pool = GROK_PING_REPLIES
+        pool = pools["ping"]
     else:
-        pool = GROK_REPLIES
-    return random.choice(pool + GROK_SHARED_REPLIES)
+        pool = pools["question"]
+    return _pick_fresh(pool + pools["shared"])
 
 
 def setup(bot, has_required_role, config):
@@ -354,6 +233,9 @@ def setup(bot, has_required_role, config):
             async with message.channel.typing():
                 await asyncio.sleep(_reply_delay())
                 reply = select_reply(message.content, reason)
+                if reply is None:
+                    print(f"[WARN] No replies available in {REPLIES_PATH.name}; skipping reply")
+                    return
                 if isinstance(reply, errors.CommandError):
                     await message.reply(embed=reply.build_embed())
                 else:
@@ -368,6 +250,13 @@ def setup(bot, has_required_role, config):
             print(f"[WARN] Failed to reply to triggered message: {e}")
         except Exception as e:
             print(f"[ERROR] Error replying to triggered message: {e}")
+
+    pools = load_reply_pools()
+    total_replies = sum(len(replies) for replies in pools.values())
+    if total_replies:
+        print(f"[OK] Loaded {total_replies} replies from {REPLIES_PATH.name}")
+    else:
+        print(f"[WARN] No replies loaded from {REPLIES_PATH} - the responder will stay quiet")
 
     _remove_registered_listener(bot)
 

@@ -349,7 +349,7 @@ All three are read-only or export-only and take their Discord token from the pro
 - `data/*.json` — persistent state: queues, pending applications, ticket panels, birthdays, tracked guilds, inactivity requests, username matches, command bans, auto-reactions, nitro colour roles, and more. Written at runtime.
 - `databases/*.db` — SQLite databases: `esi_points.db`, `points_baseline.db`, `blacklist.db`, `rank_changes.db`, `recruited_data.db`, `playtime_tracking.db`, `temp_vc_messages.db`, `usage.db`, and others. Created automatically on first use.
 - `databases/api_tracking/` and `databases/playtime_tracking/` — per-day snapshot folders, pruned automatically as they age.
-- `config/*.json` — committed configuration: `welcome.json` (welcome channel) and `activity_logger.json` (tracked guilds).
+- `config/*.json` — committed configuration: `welcome.json` (welcome channel), `activity_logger.json` (tracked guilds), and `grok_replies.json` (`@grok` reply pools).
 - `images/` — uniforms, icons, and other static assets used when rendering cards.
 - `exports/` — output directory for the channel history exporter.
 

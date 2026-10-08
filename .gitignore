@@ -252,6 +252,7 @@ tests/
 config/nitro_colour_alerts.json
 config/activity_logger.json
 config/welcome.json
+config/grok_replies.json
 
 playtime_tracking.db.filepart
 

@@ -1,5 +1,6 @@
 import discord
 from discord import app_commands
+from discord.ext import tasks
 from datetime import datetime, timedelta, timezone
 import os
 import sqlite3
@@ -23,6 +24,11 @@ DB_FOLDER = Path(os.path.dirname(os.path.dirname(os.path.dirname((os.path.abspat
 PLAYTIME_TRACKING_FOLDER = DB_FOLDER / "playtime_tracking"
 
 SKIP_IF_NO_DATA = False
+
+EXEMPTIONS_DB_PATH = DB_FOLDER / "inactivity_exemptions.db"
+PERMANENT_EXEMPT_UNTIL = "2125-01-01T00:00:00+00:00"
+EXEMPTIONS_DB_SYNC_MINUTES = 10
+_exemptions_sync_task = None
 
 # Default settings
 DEFAULT_MIN_PLAYTIME_HOURS = 2
@@ -281,13 +287,148 @@ def load_exemptions():
 
 
 def save_exemptions(exemptions):
-    """Save inactivity exemptions to JSON file."""
+    """Save inactivity exemptions to JSON file.
+
+    The JSON is the source of truth; the website's analytics panel instead
+    reads a small ``exemptions`` table, so the mirror is refreshed here too.
+    """
     try:
         with open(INACTIVITY_EXEMPTIONS_PATH, 'w', encoding='utf-8') as f:
             json.dump(exemptions, f, indent=2)
+        sync_exemptions_database(exemptions)
         return True
     except Exception as e:
         print(f"[INAC_CHECK] Error saving exemptions: {e}")
+        return False
+
+
+def _load_username_index():
+    """discord id -> (minecraft username, uuid) from username_matches.json."""
+    index = {}
+    try:
+        with open(USERNAME_MATCHES_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return index
+    if not isinstance(data, dict):
+        return index
+    for key, entry in data.items():
+        if isinstance(entry, dict):
+            index[str(key)] = (entry.get("username"), entry.get("uuid"))
+        elif isinstance(entry, str):
+            index[str(key)] = (entry, None)
+    return index
+
+
+def _exemption_rows(exemptions):
+    """Flatten the exemptions JSON into one DB row per user with a live exemption.
+
+    A user counts as exempt when they have at least one week entry (matching
+    ``is_user_exempt``, which treats a weeks-less record as not exempt), so
+    reason-only records are skipped. ``exempt_until`` is the latest expiry
+    across the user's weeks, or the permanent sentinel.
+    """
+    index = _load_username_index()
+    by_username = {}
+    for username, uuid in index.values():
+        if isinstance(username, str):
+            by_username.setdefault(username.lower(), uuid)
+
+    rows = []
+    for user_key, data in (exemptions or {}).items():
+        username = None
+        uuid = None
+        if isinstance(data, list):
+            weeks, reason = data, None
+        elif isinstance(data, dict):
+            weeks = data.get("weeks") or []
+            reason = data.get("reason")
+            username = data.get("username")
+        else:
+            continue
+
+        key = str(user_key)
+        if key.startswith("mc_"):
+            username = username or key[3:]
+            uuid = by_username.get(username.lower())
+        else:
+            match = index.get(key)
+            if match:
+                username = username or match[0]
+                uuid = uuid or match[1]
+
+        if "permanent" in weeks:
+            exempt_until = PERMANENT_EXEMPT_UNTIL
+        else:
+            expiries = [e for e in (_week_expiry(w) for w in weeks) if e is not None]
+            if not expiries:
+                continue
+            exempt_until = max(expiries).isoformat()
+
+        rows.append((uuid, username or key, exempt_until, reason))
+    return rows
+
+
+def sync_exemptions_database(exemptions=None):
+    """Mirror data/inactivity_exemptions.json into databases/inactivity_exemptions.db.
+
+    The website's bot-analytics panel reads the ``exemptions`` table (one row
+    per user, ``exempt_until`` as an ISO-8601 UTC timestamp) to count active and
+    soon-to-expire exemptions, so this keeps that table in step with the JSON.
+
+    Best-effort: any failure is logged and swallowed, because a broken mirror
+    must never cost someone their exemption. Returns True when the table was
+    rewritten.
+    """
+    if exemptions is None:
+        exemptions = load_exemptions()
+
+    try:
+        rows = _exemption_rows(exemptions)
+    except Exception as e:
+        print(f"[INAC_CHECK] Could not build exemption rows: {e}")
+        return False
+
+    try:
+        DB_FOLDER.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(EXEMPTIONS_DB_PATH), timeout=10)
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS exemptions (
+                uuid TEXT,
+                username TEXT,
+                exempt_until TEXT,
+                reason TEXT,
+                added_by TEXT,
+                added_at TEXT
+            )
+        """)
+
+        previous = {}
+        try:
+            for uname, added_by, added_at in c.execute(
+                "SELECT username, added_by, added_at FROM exemptions"
+            ):
+                if uname:
+                    previous[str(uname).lower()] = (added_by, added_at)
+        except sqlite3.Error:
+            previous = {}
+
+        now = datetime.now(timezone.utc).isoformat()
+        c.execute("DELETE FROM exemptions")
+        for uuid, username, exempt_until, reason in rows:
+            added_by, added_at = previous.get(str(username).lower(), (None, None))
+            c.execute(
+                "INSERT INTO exemptions"
+                " (uuid, username, exempt_until, reason, added_by, added_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (uuid, username, exempt_until, reason, added_by, added_at or now),
+            )
+        conn.commit()
+        conn.close()
+        return True
+    except (sqlite3.Error, OSError) as e:
+        print(f"[INAC_CHECK] Could not mirror exemptions to the database: {e}")
         return False
 
 
@@ -332,8 +473,8 @@ def cleanup_expired_exemptions():
         print(f"[INAC_CHECK] Cleaned up expired exemptions for {len(users_to_remove)} users")
 
 
-def _is_week_valid(week_key: str, now: datetime) -> bool:
-    """Check if a week exemption is still valid.
+def _week_expiry(week_key: str):
+    """The UTC datetime a week exemption expires, or None if unparseable.
 
     Exemptions expire on Thursday at 23:59 UTC of the week their end date falls in.
     This ensures they are cleaned up before the second check runs.
@@ -346,17 +487,21 @@ def _is_week_valid(week_key: str, now: datetime) -> bool:
         days_to_thursday = (3 - end_date.weekday()) % 7
         expiry_date = end_date + timedelta(days=days_to_thursday)
 
-        expiry_dt = datetime(
+        return datetime(
             expiry_date.year,
             expiry_date.month,
             expiry_date.day,
             23, 59, 0,
             tzinfo=timezone.utc
         )
+    except Exception:
+        return None
 
-        return now <= expiry_dt
-    except:
-        return False
+
+def _is_week_valid(week_key: str, now: datetime) -> bool:
+    """Check if a week exemption is still valid."""
+    expiry_dt = _week_expiry(week_key)
+    return expiry_dt is not None and now <= expiry_dt
 
 
 def get_user_exemption_data(discord_id: int):
@@ -1420,8 +1565,34 @@ async def run_inactivity_check(interaction: discord.Interaction, start_date, end
         pass
 
 
+def teardown(bot):
+    """Stop the exemptions DB sync task when the module is reloaded."""
+    global _exemptions_sync_task
+    if _exemptions_sync_task is not None and _exemptions_sync_task.is_running():
+        _exemptions_sync_task.stop()
+        print("[INAC_CHECK] Stopped exemptions DB sync task")
+    _exemptions_sync_task = None
+
+
 def setup(bot, has_required_role, config):
     """Setup function for bot integration"""
+
+    sync_exemptions_database()
+
+    @tasks.loop(minutes=EXEMPTIONS_DB_SYNC_MINUTES)
+    async def exemptions_db_sync():
+        """Re-mirror the exemptions JSON into the website's database."""
+        sync_exemptions_database()
+
+    @exemptions_db_sync.before_loop
+    async def before_exemptions_db_sync():
+        await bot.wait_until_ready()
+
+    global _exemptions_sync_task
+    if _exemptions_sync_task is not None and _exemptions_sync_task.is_running():
+        _exemptions_sync_task.stop()
+    _exemptions_sync_task = exemptions_db_sync
+    exemptions_db_sync.start()
 
     @bot.tree.command(
         name="inactivity_check",

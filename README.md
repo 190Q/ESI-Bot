@@ -221,8 +221,6 @@ Commands are discovered by scanning `commands/**/*.py` at startup — every file
 | `/demote` | Demote a user to a lower rank |
 | *Demote User* | Context menu — demote a user |
 | `/get_uniform` | Render your Minecraft character wearing an ESI uniform |
-| `/inactivity_check` | Check player inactivity for a specific week |
-| `/inactivity_manage` | Manage inactivity exemptions for a user |
 | `/inactivity_hub_setup` | Set up the Inactivity Exemption Hub in a channel |
 | `/refresh_inactivity_requests` | Refresh open inactivity request views and the public roster |
 | `/manage_queue` | Manage the guild member waiting queue |

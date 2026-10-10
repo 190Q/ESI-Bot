@@ -10,7 +10,6 @@ from typing import Optional, List, Tuple
 import discord
 from discord import app_commands
 
-from utils.permissions import has_roles
 from utils import errors
 from utils.paths import PROJECT_ROOT, DATA_DIR
 from utils.tickets import (
@@ -23,15 +22,14 @@ from utils.tickets import (
     SINDIAN_CITIZEN_ROLE_ID,
     TICKET_PERMS,
 )
-from commands.members.inactivity_check import (
+from utils.inactivity import (
     get_future_weeks,
     load_exemptions,
     save_exemptions,
     get_user_exemption_data,
     cleanup_expired_exemptions,
-    _is_week_valid,
+    is_week_valid,
     is_restricted_user,
-    REQUIRED_ROLES,
 )
 
 INACTIVITY_HUB_PATH = DATA_DIR / "inactivity_hub.json"
@@ -168,7 +166,7 @@ def build_roster_embed() -> discord.Embed:
             continue
 
         # Filter to currently valid weeks
-        valid_weeks = [w for w in weeks if _is_week_valid(w, now)]
+        valid_weeks = [w for w in weeks if is_week_valid(w, now)]
         if not valid_weeks:
             continue
 
@@ -1063,10 +1061,10 @@ class StaffReviewView(discord.ui.View):
             return True
 
         user_role_ids = [r.id for r in getattr(user, "roles", [])]
-        if PARLIAMENT_ROLE_ID in user_role_ids or RECRUITMENT_MANAGER_ROLE_ID in user_role_ids:
-            return True
-
-        return has_roles(user, REQUIRED_ROLES)
+        return (
+            PARLIAMENT_ROLE_ID in user_role_ids
+            or RECRUITMENT_MANAGER_ROLE_ID in user_role_ids
+        )
 
     @discord.ui.button(
         label="Edit Request",

@@ -9,7 +9,7 @@ import signal
 import atexit
 from pathlib import Path
 from dotenv import load_dotenv
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 import sys
 import importlib.util
 import inspect
@@ -20,6 +20,8 @@ try:
 except ImportError:
     def setup_logging():
         pass  # Fallback if diagnostics not available
+
+from utils.status import BOT_STATUS_PATH, HEARTBEAT_INTERVAL_SECONDS, write_status
 
 # Import player stats scheduler
 try:
@@ -94,6 +96,53 @@ PYTHON_COMMANDS_DIR = _BOT_DIR / 'commands'
 PYTHON_COMMANDS_DIR.mkdir(exist_ok=True)
 
 print(f"[OK] Commands directory: {PYTHON_COMMANDS_DIR} ({len(list(PYTHON_COMMANDS_DIR.rglob('*.py')))} .py files)")
+
+MAX_CONSECUTIVE_CRASHES = 5
+
+_STATUS_STARTED_AT = datetime.now(timezone.utc)
+_STATUS = {
+    "errors_total": 0,
+    "last_error": None,
+    "crashes_total": 0,
+    "last_crash": None,
+    "restart_count": 0,
+    "last_restart_at": None,
+}
+
+
+def _record_status_error(where, message):
+    """Remember the most recent error for the status file."""
+    _STATUS["errors_total"] += 1
+    _STATUS["last_error"] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "where": str(where),
+        "message": str(message)[:500],
+    }
+
+
+def write_bot_status(bot=None, **overrides):
+    """Publish data/bot_status.json. Never raises."""
+    fields = {
+        "ready": bool(getattr(bot, "_ready", False)) if bot is not None else False,
+        "restart_count": _STATUS["restart_count"],
+        "max_consecutive_crashes": MAX_CONSECUTIVE_CRASHES,
+        "errors_total": _STATUS["errors_total"],
+        "last_error": _STATUS["last_error"],
+        "crashes_total": _STATUS["crashes_total"],
+        "last_crash": _STATUS["last_crash"],
+        "last_restart_at": _STATUS["last_restart_at"],
+    }
+    if bot is not None:
+        try:
+            latency = bot.latency
+            fields["guilds"] = len(bot.guilds)
+            fields["members_cached"] = sum(len(guild.members) for guild in bot.guilds)
+            fields["latency_ms"] = round(latency * 1000, 1) if latency and latency > 0 else None
+            fields["command_modules"] = len(getattr(bot, "_loaded_command_modules", None) or {})
+        except Exception:
+            pass
+    fields.update(overrides)
+    return write_status(BOT_STATUS_PATH, "esi-bot", _STATUS_STARTED_AT, **fields)
 
 class WynncraftAPI:
     """Helper class for Wynncraft API requests with key rotation"""
@@ -249,6 +298,10 @@ class MultiLangBot(commands.Bot):
             self.daily_restart.start()
             print("[OK] Daily restart scheduled for 00:00")
             
+            write_bot_status(self)
+            self.status_heartbeat.start()
+            print("[OK] Status heartbeat started")
+            
             # Initialize player stats scheduler
             await self._init_player_stats_scheduler()
             
@@ -343,6 +396,15 @@ class MultiLangBot(commands.Bot):
     @daily_restart.before_loop
     async def before_daily_restart(self):
         """Wait until the bot is ready before starting the task"""
+        await self.wait_until_ready()
+    
+    @tasks.loop(seconds=HEARTBEAT_INTERVAL_SECONDS)
+    async def status_heartbeat(self):
+        """Publish data/bot_status.json for the control panel."""
+        write_bot_status(self)
+    
+    @status_heartbeat.before_loop
+    async def before_status_heartbeat(self):
         await self.wait_until_ready()
     
     def has_required_role(self, user, role_ids=None):
@@ -660,6 +722,12 @@ class MultiLangBot(commands.Bot):
             traceback.print_exc()
         
         finally:
+            try:
+                if self.status_heartbeat.is_running():
+                    self.status_heartbeat.stop()
+            except Exception:
+                pass
+            write_bot_status(self, ready=False, shutting_down=True)
             print("[SHUTDOWN] Shutdown sequence complete")
 
 def create_bot():
@@ -703,6 +771,8 @@ def create_bot():
             print("[STARTUP] Waiting for ticket handler to initialize...")
             await asyncio.sleep(2)  
 
+        write_bot_status(bot)
+
         # Manually trigger refresh after startup (always run, not just first time)
         print("[STARTUP] Refreshing ticket panels, buttons, and vote buttons...")
         try:
@@ -744,6 +814,8 @@ def create_bot():
         print(f"\n[ERROR] Unhandled error in {event}:")
         import traceback
         traceback.print_exc()
+        _record_status_error(event, sys.exc_info()[1] or "unhandled error")
+        write_bot_status(bot)
         # Bot continues running instead of crashing
     
     @bot.tree.error
@@ -762,6 +834,12 @@ def create_bot():
             )
         except Exception as exc:
             print(f"[USAGE] Failed to record command failure: {exc}")
+
+        _record_status_error(
+            f"command:{interaction.command.name if interaction.command else 'unknown'}",
+            error,
+        )
+        write_bot_status(bot)
         
         # Prevent duplicate responses
         if interaction.response.is_done():
@@ -958,9 +1036,11 @@ if __name__ == '__main__':
     print("=" * 60 + "\n")
     
     restart_count = 0
-    max_consecutive_crashes = 5
+    max_consecutive_crashes = MAX_CONSECUTIVE_CRASHES
     last_crash_time = None
-    
+
+    write_bot_status()
+
     while True:
         try:
             # Safety check: don't allow infinite restart loops
@@ -989,6 +1069,12 @@ if __name__ == '__main__':
             print(f"[ERROR] Bot crashed: {e}")
             import traceback
             traceback.print_exc()
+            _STATUS["crashes_total"] += 1
+            _STATUS["last_crash"] = {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "message": f"{type(e).__name__}: {e}"[:500],
+            }
+            write_bot_status()
         
         # Check if we should restart
         if hasattr(bot, 'should_restart') and not bot.should_restart:
@@ -1000,6 +1086,10 @@ if __name__ == '__main__':
             print("[ERROR] Maximum restart attempts exceeded - exiting")
             break
         
+        _STATUS["restart_count"] = restart_count
+        _STATUS["last_restart_at"] = datetime.now(timezone.utc).isoformat()
+        write_bot_status()
+
         print(f"[RESTART] Restarting bot in 5 seconds... (Restart count: {restart_count})")
         import time
         time.sleep(5)

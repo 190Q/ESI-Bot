@@ -35,6 +35,40 @@ CATEGORY_ROLES = {
     "Other":            [BASE_TICKET_ROLE, DEVELOPER_ROLE, USER_SUPPORT_ROLE],
 }
 
+TICKETS_FILE = os.path.join(str(PROJECT_ROOT), "data", "support_tickets.json")
+_listener = None
+_ticket_cache = {"mtime": None, "tickets": {}}
+
+
+def utc_now_iso() -> str:
+    """UTC timestamp in the same naive ISO format as created_at / closed_at."""
+    return datetime.utcnow().isoformat()
+
+
+def load_open_tickets_cached() -> dict:
+    """Return the open tickets, re-reading the file only when it changed."""
+    try:
+        mtime = os.path.getmtime(TICKETS_FILE)
+    except OSError:
+        _ticket_cache["mtime"] = None
+        _ticket_cache["tickets"] = {}
+        return {}
+
+    if mtime != _ticket_cache["mtime"]:
+        try:
+            with open(TICKETS_FILE, "r") as f:
+                data = json.load(f)
+            tickets = data.get("tickets", {}) if isinstance(data, dict) else {}
+        except (FileNotFoundError, json.JSONDecodeError):
+            tickets = {}
+        if not isinstance(tickets, dict):
+            tickets = {}
+        _ticket_cache["mtime"] = mtime
+        _ticket_cache["tickets"] = tickets
+
+    return _ticket_cache["tickets"]
+
+
 def setup(bot, has_required_role, config):
     """Setup function for bot integration"""
     
@@ -251,13 +285,16 @@ def setup(bot, has_required_role, config):
                         await cleanup_empty_categories(ticket_channel.guild, pending_base)
                 
                 # Update ticket status in JSON to track acknowledgment
-                tickets_file = os.path.join(str(PROJECT_ROOT), "data", "support_tickets.json")
+                tickets_file = TICKETS_FILE
                 try:
                     with open(tickets_file, "r") as f:
                         data = json.load(f)
                     
                     if "tickets" in data and str(self.ticket_channel_id) in data["tickets"]:
-                        data["tickets"][str(self.ticket_channel_id)]["acknowledged"] = True
+                        ticket = data["tickets"][str(self.ticket_channel_id)]
+                        ticket["acknowledged"] = True
+                        if not ticket.get("acknowledged_at"):
+                            ticket["acknowledged_at"] = utc_now_iso()
                         
                         with open(tickets_file, "w") as f:
                             json.dump(data, f, indent=4)
@@ -368,6 +405,9 @@ def setup(bot, has_required_role, config):
                                     "opened_at": td["created_at"],
                                     "closed_at": datetime.utcnow().isoformat(),
                                 }
+                                for stamp_field in ("acknowledged_at", "first_staff_reply_at"):
+                                    if td.get(stamp_field):
+                                        archived_ticket[stamp_field] = td[stamp_field]
                                 if close_reason:
                                     archived_ticket["close_reason"] = close_reason
 
@@ -640,8 +680,61 @@ def setup(bot, has_required_role, config):
         )
         await interaction.followup.send(embed=result_embed, ephemeral=True)
     
+    async def on_message(message: discord.Message):
+        """Record the first staff reply on an open support ticket.
+
+        The website's bot analytics panel reports a ticket's first response
+        time, so each open ticket keeps a ``first_staff_reply_at`` stamp taken
+        from the first message in its channel that was not sent by the ticket
+        opener (or a bot).
+        """
+        if message.author.bot or message.guild is None:
+            return
+
+        try:
+            ticket = load_open_tickets_cached().get(str(message.channel.id))
+            if not isinstance(ticket, dict) or ticket.get("first_staff_reply_at"):
+                return
+            if str(ticket.get("user_id")) == str(message.author.id):
+                return
+
+            try:
+                with open(TICKETS_FILE, "r") as f:
+                    data = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                return
+
+            entry = data.get("tickets", {}).get(str(message.channel.id))
+            if not isinstance(entry, dict) or entry.get("first_staff_reply_at"):
+                return
+
+            entry["first_staff_reply_at"] = utc_now_iso()
+            with open(TICKETS_FILE, "w") as f:
+                json.dump(data, f, indent=4)
+
+            _ticket_cache["mtime"] = None  # force a refresh on the next message
+            print(f"[SUPPORT] First staff reply on ticket {message.channel.id} by {message.author}")
+        except Exception as e:
+            print(f"[SUPPORT] Error recording first staff reply: {e}")
+
+    global _listener
+    if _listener is not None:
+        bot.remove_listener(_listener, 'on_message')
+    _listener = on_message
+    bot.add_listener(on_message, 'on_message')
+
     # Store the restore function on the bot for on_ready to call
     bot._restore_support_ticket_views = lambda: restore_ticket_views(bot)
     
     print("[OK] Loaded contact_support command")
     print("[OK] Loaded refresh_support_tickets command")
+    print("[OK] Loaded support ticket first-response listener")
+
+
+def teardown(bot):
+    """Unregister the on_message listener when the module is reloaded."""
+    global _listener
+    if _listener is not None:
+        bot.remove_listener(_listener, 'on_message')
+        _listener = None
+    print("[OK] Unloaded support ticket first-response listener")

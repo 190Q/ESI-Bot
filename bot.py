@@ -303,11 +303,38 @@ class MultiLangBot(commands.Bot):
             except Exception as e:
                 print(f"[WARNING] Failed to start player stats scheduler: {e}")
     
+    async def _backup_before_restart(self):
+        """Take a backup of the databases and data files before restarting.
+
+        Best-effort: any failure is logged and swallowed so a broken backup can
+        never stop the bot from restarting. Set BACKUP_ON_RESTART=0 to disable.
+        """
+        if os.getenv("BACKUP_ON_RESTART", "1").strip().lower() in {"0", "false", "no", "off"}:
+            print("[BACKUP] Skipped (BACKUP_ON_RESTART is disabled)")
+            return
+
+        try:
+            from utils.backup import create_backup
+
+            result = await asyncio.to_thread(
+                create_backup,
+                log=lambda message: print(f"[BACKUP] {message}"),
+            )
+            if result.ok:
+                print(f"[BACKUP] Backup complete: {result.path}")
+            else:
+                print(f"[BACKUP] Backup finished with problems: {result.path}")
+                for warning in result.warnings:
+                    print(f"[BACKUP]   - {warning}")
+        except Exception as e:
+            print(f"[BACKUP] Backup failed: {e}")
+
     @tasks.loop(time=time(hour=0, minute=0))
     async def daily_restart(self):
         """Restart the bot every day at 00:00"""
         try:
             print(f"[RESTART] Daily restart triggered at {datetime.now()}")
+            await self._backup_before_restart()
             self.should_restart = True
             await self.close()
         except Exception as e:

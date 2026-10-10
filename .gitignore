@@ -260,3 +260,4 @@ blacklist.db
 
 # Channel history exports (scripts/export_channel_history.py)
 exports/
+

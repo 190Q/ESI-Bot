@@ -102,6 +102,8 @@ Different parts of the project read different key slots, so it is worth filling 
 | `WYNNCRAFT_KEY_7` | Recommended | `trackers/guild_tracker.py`, `trackers/claim_tracker.py`, `/guild_tracker`, `/claim_tracker` | Guild membership and territory tracking |
 | `WYNNCRAFT_KEY_11` | Recommended | `trackers/playtime_tracker.py`, `/playtime`, `/fetch_playtime`, `/get_uniform` | Playtime tracking |
 | `RUN_LIVE_TESTS` | No | `tests/` | Set to `1` to run tests that hit live Minecraft APIs |
+| `BACKUP_ON_RESTART` | No | `bot.py` | Set to `0` to skip the automatic backup before the daily 00:00 restart |
+| `BACKUP_DEST` | No | `utils/backup.py` | Directory to hold backup runs (default: `backups/` next to the repository) |
 
 Notes:
 
@@ -124,6 +126,7 @@ The bot and the background trackers are separate processes, each managed in its 
 | Restart the trackers | `bash scripts/restart_trackers.sh` |
 | View live bot logs | `bash scripts/view_bot_logs.sh` |
 | View live tracker logs | `bash scripts/view_tracker_logs.sh` |
+| Back up databases and data | `bash scripts/backup.sh` |
 
 To detach from a session without stopping it, press `Ctrl+A` then `D`.
 
@@ -354,6 +357,85 @@ All three are read-only or export-only and take their Discord token from the pro
 - `exports/` — output directory for the channel history exporter.
 
 Databases, `data/` state files, `.env`, and `exports/` are all gitignored.
+
+---
+
+## Backups
+
+`utils/backup.py` snapshots the bot's persistent state: every SQLite database in `databases/` and every file in `data/`. The same code also runs automatically before the daily 00:00 restart.
+
+SQLite databases are copied through SQLite's online backup API rather than a plain file copy. `shop.db` runs in WAL mode, so copying just the `.db` file can capture a torn state and silently drop whatever is still sitting in its `-wal` sidecar; the backup API produces a consistent snapshot even while the bot and the trackers are writing.
+
+### What a run contains
+
+```
+<run>/
+├── databases/        # every databases/*.db, copied consistently
+├── data/             # every file under data/, same layout
+└── manifest.json     # timestamp, git commit, per-file size + sha256, integrity results
+```
+
+Each run is written to a temporary directory and only renamed into place once every file is copied, so an interrupted run never leaves a half-written backup that looks valid. A lock file (`.lock` in the backup folder) stops two runs overlapping, and is reclaimed automatically if a previous run crashed and left it behind.
+
+`manifest.json` records a `PRAGMA quick_check` result for every database. A database that fails its check marks the run as not-ok and makes the CLI exit with code `2`.
+
+### Where backups go
+
+By default each run lands in `backups/` **next to** the repository, not inside it, so a bad checkout or an accidental delete in the repo cannot take the backups with it:
+
+```
+coding/
+├── esi-bot/
+└── backups/
+    └── 2026-10-10_131754/
+```
+
+Point them somewhere else with `--dest` or the `BACKUP_DEST` environment variable. A backup on the same disk is no protection against that disk failing — for real safety, point `--dest` at another drive, a NAS mount, or a cloud-synced folder.
+
+The newest 14 runs are kept by default; older runs are pruned automatically. Pruning only ever removes directories whose name is one of our own timestamps, so anything else you keep in the backup folder is left alone.
+
+### Running a backup
+
+| Command | Purpose |
+| --- | --- |
+| `bash scripts/backup.sh` | Back up to the default location |
+| `bash scripts/backup.sh --dest /mnt/backups/esi-bot --keep 30` | Back up elsewhere, keeping 30 runs |
+| `bash scripts/backup.sh --dry-run` | Show what would be copied, write nothing |
+| `bash scripts/backup.sh --include-snapshots --zip` | Also copy the per-day snapshot folders, as one `.zip` |
+| `python scripts/backup.py --help` | Full option list |
+
+Options: `--dest`, `--keep`, `--include-snapshots`, `--include-exports`, `--zip`, `--dry-run`, `--quiet`.
+
+Exit codes: `0` success, `1` the run could not start (for example another run holds the lock), `2` the run completed but something was skipped or failed its integrity check.
+
+The `databases/api_tracking/` and `databases/playtime_tracking/` snapshot folders and `exports/` are excluded by default: they are already historical copies and can run to tens of gigabytes. Add them with `--include-snapshots` / `--include-exports`.
+
+To run it from cron on the host:
+
+```cron
+0 4 * * * cd /path/to/ESI-Bot && bash scripts/backup.sh --quiet >> /var/log/esi-bot-backup.log 2>&1
+```
+
+### Automatic backup before the daily restart
+
+The bot takes a backup just before its daily 00:00 restart, using the same code and the same defaults. It runs off the event loop and is best-effort: if it fails, the failure is logged and the restart continues regardless. Disable it with `BACKUP_ON_RESTART=0` in `.env`.
+
+### Restoring
+
+Stop the bot and the trackers first, then copy the run's contents back over the originals:
+
+```bash
+bash scripts/stop_bot.sh
+bash scripts/stop_trackers.sh
+
+cp -a ../backups/2026-10-10_131754/databases/. databases/
+cp -a ../backups/2026-10-10_131754/data/. data/
+
+bash scripts/start_trackers.sh
+bash scripts/start_bot.sh
+```
+
+Check `manifest.json` in the run you are restoring to confirm it is `"ok": true` and that the databases you care about passed their integrity checks.
 
 ---
 

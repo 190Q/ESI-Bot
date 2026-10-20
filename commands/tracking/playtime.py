@@ -382,6 +382,9 @@ def setup(bot, has_required_role, config):
             return
         
         try:
+            # Acknowledge right away: Discord kills the token after 3 seconds
+            await interaction.response.defer()
+
             # Check if tracking folder exists
             if not PLAYTIME_TRACKING_FOLDER.exists():
                 await errors.NO_DATA_AVAILABLE.send(
@@ -392,12 +395,16 @@ def setup(bot, has_required_role, config):
             
             # Resolve player identity and aliases (e.g. past usernames)
             from utils.player_resolver import resolve_player_identity
-            _p_uuid, _resolved_uname, player_aliases = resolve_player_identity(username)
+            _p_uuid, _resolved_uname, player_aliases = await asyncio.to_thread(
+                resolve_player_identity, username
+            )
             if _resolved_uname:
                 username = _resolved_uname
 
             # Get daily playtime data
-            daily_data, user_found = get_daily_playtime_data(username, delta, aliases=player_aliases)
+            daily_data, user_found = await asyncio.to_thread(
+                get_daily_playtime_data, username, delta, aliases=player_aliases
+            )
             
             start_date = daily_data[0]['date'].strftime('%Y-%m-%d')
             end_date = daily_data[-1]['date'].strftime('%Y-%m-%d')
@@ -421,8 +428,6 @@ def setup(bot, has_required_role, config):
                 # Use the correct username from Wynncraft
                 if player_exists:
                     username = correct_username
-
-            await interaction.response.defer()
             
             # Calculate total playtime
             total_playtime = sum(d['playtime_seconds'] for d in daily_data)
@@ -435,7 +440,7 @@ def setup(bot, has_required_role, config):
             max_playtime = max(playtime_values)
             max_day = next(d for d in daily_data if d['playtime_seconds'] == max_playtime)
             
-            # Generate graph
+            # Generate graph (pyplot keeps global state, so it stays on the event loop)
             avg_hours = avg_playtime / 3600
             median_hours = median_playtime / 3600
             graph_buffer = create_playtime_graph(username, daily_data, delta, avg_hours, median_hours)

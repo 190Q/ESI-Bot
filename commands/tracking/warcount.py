@@ -3,6 +3,7 @@ from discord import app_commands
 import sqlite3
 import os
 import glob
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import matplotlib
@@ -207,6 +208,35 @@ def get_daily_warcount_deltas(databases: list, username: str, aliases: list = No
     return daily_deltas
 
 
+def build_all_player_deltas(oldest_db: str, latest_db: str) -> list:
+    """Build warcount deltas for every player between two snapshots."""
+    conn_latest = sqlite3.connect(latest_db)
+    cursor_latest = conn_latest.cursor()
+    cursor_latest.execute("SELECT username FROM player_stats WHERE username IS NOT NULL")
+    all_players = [row[0] for row in cursor_latest.fetchall()]
+    conn_latest.close()
+    
+    player_deltas = []
+    for player in all_players:
+        oldest_warcount = get_player_warcount(oldest_db, player)
+        latest_warcount = get_player_warcount(latest_db, player)
+        
+        if oldest_warcount is not None and latest_warcount is not None:
+            delta = latest_warcount - oldest_warcount
+            # Only include players with non-zero delta
+            if delta != 0:
+                player_deltas.append({
+                    'username': player,
+                    'old_count': oldest_warcount,
+                    'new_count': latest_warcount,
+                    'delta': delta
+                })
+    
+    # Sort by delta (highest first)
+    player_deltas.sort(key=lambda x: x['delta'], reverse=True)
+    return player_deltas
+
+
 def fill_daily_deltas(daily_deltas: list, days: int) -> list:
     """Fill missing days with 0 delta, covering the full requested range.
     
@@ -272,8 +302,11 @@ def setup(bot, has_required_role, config):
         show_all = username.lower() == "%all%"
         
         try:
+            # Acknowledge right away: Discord kills the token after 3 seconds
+            await interaction.response.defer()
+
             # Get databases for specified days
-            databases, error = get_databases_in_timeframe(delta)
+            databases, error = await asyncio.to_thread(get_databases_in_timeframe, delta)
             
             if not databases:
                 await errors.send_custom_error(
@@ -296,39 +329,15 @@ def setup(bot, has_required_role, config):
             latest_db, latest_time = databases[-1]
             
             if show_all:
-                # Get all players and their warcount deltas
-                conn_latest = sqlite3.connect(latest_db)
-                cursor_latest = conn_latest.cursor()
-                cursor_latest.execute("SELECT username FROM player_stats WHERE username IS NOT NULL")
-                all_players = [row[0] for row in cursor_latest.fetchall()]
-                conn_latest.close()
-                
-                player_deltas = []
-                for player in all_players:
-                    oldest_warcount = get_player_warcount(oldest_db, player)
-                    latest_warcount = get_player_warcount(latest_db, player)
-                    
-                    if oldest_warcount is not None and latest_warcount is not None:
-                        delta = latest_warcount - oldest_warcount
-                        # Only include players with non-zero delta
-                        if delta != 0:
-                            player_deltas.append({
-                                'username': player,
-                                'old_count': oldest_warcount,
-                                'new_count': latest_warcount,
-                                'delta': delta
-                            })
-                
-                # Sort by delta (highest first)
-                player_deltas.sort(key=lambda x: x['delta'], reverse=True)
+                player_deltas = await asyncio.to_thread(
+                    build_all_player_deltas, oldest_db, latest_db
+                )
                 
                 if not player_deltas:
                     await errors.NO_DATA_AVAILABLE.send(
                         interaction, reason="No player data found."
                     )
                     return
-
-                await interaction.response.defer()
                 
                 # Create text file with all players
                 actual_days = (latest_time - oldest_time).total_seconds() / 86400
@@ -421,22 +430,29 @@ def setup(bot, has_required_role, config):
             
             # Single player logic
             from utils.player_resolver import resolve_player_identity
-            p_uuid, resolved_uname, player_aliases = resolve_player_identity(username)
+            p_uuid, resolved_uname, player_aliases = await asyncio.to_thread(
+                resolve_player_identity, username
+            )
             if resolved_uname:
                 username = resolved_uname
 
             # Validate username exists in the guild (latest database)
-            if get_player_warcount(latest_db, username, aliases=player_aliases, player_uuid=p_uuid) is None:
+            latest_warcount = await asyncio.to_thread(
+                get_player_warcount, latest_db, username,
+                aliases=player_aliases, player_uuid=p_uuid,
+            )
+            if latest_warcount is None:
                 await errors.PLAYER_NOT_IN_GUILD.send(
                     interaction,
                     username=username,
                 )
                 return
 
-            await interaction.response.defer()
-
             # Calculate daily deltas and fill missing days with 0
-            daily_deltas = get_daily_warcount_deltas(databases, username, aliases=player_aliases, player_uuid=p_uuid)
+            daily_deltas = await asyncio.to_thread(
+                get_daily_warcount_deltas, databases, username,
+                aliases=player_aliases, player_uuid=p_uuid,
+            )
             daily_deltas = fill_daily_deltas(daily_deltas, delta)
             
             # Calculate stats

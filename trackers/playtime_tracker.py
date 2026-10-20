@@ -13,8 +13,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from utils.backup import copy_sqlite_consistent
 from utils.coverage_utils import (
     coverage_db_path_for_day,
+    delete_empty_snapshot_db_files,
     list_snapshot_db_files,
     record_daily_coverage,
 )
@@ -142,31 +144,29 @@ def create_daily_backup():
     day_string = get_current_day_string()
     day_folder = get_day_folder_path(day_string)
     day_folder.mkdir(exist_ok=True)
-    
+
+    if not PLAYTIME_DB_PATH.exists():
+        return None
+
+    # Check size against the most recent existing backup
+    existing_backups = list_snapshot_db_files(day_folder)
+    if existing_backups:
+        last_backup_size = existing_backups[-1].stat().st_size
+        current_size = PLAYTIME_DB_PATH.stat().st_size
+        if last_backup_size > 0 and current_size < last_backup_size * 0.85:
+            print(f"[PLAYTIME] Skipping backup: size too small ({current_size} bytes)")
+            return None
+
     # Create backup filename with timestamp
     timestamp = datetime.now(timezone.utc).strftime("%H%M%S")
-    backup_filename = f"playtime_{day_string}_{timestamp}.db"
-    backup_path = day_folder / backup_filename
-    
-    # Copy the database
-    if PLAYTIME_DB_PATH.exists():
-        # Check size against the most recent existing backup
-        existing_backups = list_snapshot_db_files(day_folder)
-        if existing_backups:
-            last_backup_size = existing_backups[-1].stat().st_size
-            current_size = PLAYTIME_DB_PATH.stat().st_size
-            if last_backup_size > 0 and current_size < last_backup_size * 0.85:
-                print(f"[PLAYTIME] Skipping backup: size too small ({current_size} bytes)")
-                return None
-        
-        shutil.copy2(PLAYTIME_DB_PATH, backup_path)
-        # Delete the backup if it was created with 0 bytes
-        if backup_path.exists() and backup_path.stat().st_size == 0:
-            backup_path.unlink()
-            print(f"[PLAYTIME] Deleted empty backup: {backup_path}")
-            return None
-        print(f"[PLAYTIME] Created backup: {backup_path}")
-    
+    backup_path = day_folder / f"playtime_{day_string}_{timestamp}.db"
+
+    # Copy through the SQLite backup API so a killed run cannot leave a broken file
+    if not copy_sqlite_consistent(PLAYTIME_DB_PATH, backup_path):
+        print(f"[PLAYTIME] Skipping backup: could not copy {PLAYTIME_DB_PATH.name}")
+        return None
+
+    print(f"[PLAYTIME] Created backup: {backup_path}")
     return backup_path
 
 
@@ -175,13 +175,9 @@ def cleanup_daily_folder(day_folder):
     if not day_folder.exists():
         return
     
-    # Get snapshot .db files in the folder (exclude coverage.db)
+    # Get snapshot .db files in the folder (exclude coverage.db and empty files)
+    delete_empty_snapshot_db_files(day_folder)
     db_files = list_snapshot_db_files(day_folder)
-    
-    if len(db_files) <= 1:
-        return
-    
-    db_files = [f for f in db_files if not (f.stat().st_size == 0 and f.unlink() is None)]
     
     if len(db_files) <= 1:
         return
@@ -238,8 +234,8 @@ def cleanup_old_day_folders():
             date_str = folder.name.replace("playtime_", "")
             folder_date = datetime.strptime(date_str, "%d-%m-%Y").date()
             days_old = (today - folder_date).days
+            delete_empty_snapshot_db_files(folder)
             db_files = list_snapshot_db_files(folder)
-            db_files = [f for f in db_files if not (f.stat().st_size == 0 and f.unlink() is None)]
             should_record_coverage = 1 <= days_old < 7
             should_record_before_collapse = days_old >= 7 and len(db_files) > 1
             if should_record_coverage or should_record_before_collapse:

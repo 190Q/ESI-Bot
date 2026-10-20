@@ -24,7 +24,11 @@ def is_coverage_db(path_value: PathLike) -> bool:
 
 
 def list_snapshot_db_files(day_folder: PathLike) -> List[Path]:
-    """Return snapshot .db files in a day folder, excluding coverage.db."""
+    """Return snapshot .db files in a day folder, excluding coverage.db.
+
+    Empty files are left out: a zero byte file is a valid SQLite database with
+    no schema at all, so anything reading it fails with "no such table".
+    """
     folder = _as_path(day_folder)
     if not folder.exists():
         return []
@@ -32,10 +36,31 @@ def list_snapshot_db_files(day_folder: PathLike) -> List[Path]:
         (
             path
             for path in folder.glob("*.db")
-            if path.is_file() and not is_coverage_db(path)
+            if path.is_file()
+            and not is_coverage_db(path)
+            and path.stat().st_size > 0
         ),
         key=lambda path: path.stat().st_mtime,
     )
+
+
+def delete_empty_snapshot_db_files(day_folder: PathLike) -> int:
+    """Delete zero byte snapshot files in a day folder, returning how many went."""
+    folder = _as_path(day_folder)
+    if not folder.exists():
+        return 0
+
+    removed = 0
+    for path in folder.glob("*.db"):
+        if not path.is_file() or is_coverage_db(path):
+            continue
+        try:
+            if path.stat().st_size == 0:
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def coverage_db_path_for_day(day_folder: PathLike) -> Path:

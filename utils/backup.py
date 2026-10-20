@@ -137,6 +137,42 @@ def _copy_sqlite(src: Path, dest: Path) -> str:
         return "file-copy"
 
 
+def copy_sqlite_consistent(src: Path, dest: Path) -> bool:
+    """Write a consistent copy of *src* to *dest*.
+
+    Uses SQLite's online backup API and renames the copy into place only once it
+    is complete, so a crashed or interrupted run cannot leave a half written
+    database behind. Returns False when there was nothing to copy or the copy
+    failed.
+    """
+    src = Path(src)
+    dest = Path(dest)
+    if not src.exists() or src.stat().st_size == 0:
+        return False
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    temp = dest.with_name(dest.name + ".tmp")
+
+    try:
+        if temp.exists():
+            temp.unlink()
+        with closing(sqlite3.connect(str(src), timeout=SQLITE_TIMEOUT_SECONDS)) as source:
+            with closing(sqlite3.connect(str(temp))) as target:
+                source.backup(target)
+        if temp.stat().st_size == 0:
+            temp.unlink()
+            return False
+        temp.replace(dest)
+        return True
+    except (sqlite3.Error, OSError) as exc:
+        print(f"[BACKUP] Failed to copy {src} to {dest}: {exc}")
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        return False
+
+
 def _iter_files(root: Path):
     if not root.exists():
         return

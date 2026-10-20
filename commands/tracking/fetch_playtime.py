@@ -9,8 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from utils.permissions import has_roles
 from utils import errors
+from utils.backup import copy_sqlite_consistent
 from utils.coverage_utils import (
     coverage_db_path_for_day,
+    delete_empty_snapshot_db_files,
     list_snapshot_db_files,
     record_daily_coverage,
 )
@@ -139,16 +141,19 @@ def create_daily_backup():
     day_folder = get_day_folder_path(day_string)
     day_folder.mkdir(exist_ok=True)
     
+    if not PLAYTIME_DB_PATH.exists():
+        return None
+
     # Create backup filename with timestamp
     timestamp = datetime.now(timezone.utc).strftime("%H%M%S")
-    backup_filename = f"playtime_{day_string}_{timestamp}.db"
-    backup_path = day_folder / backup_filename
-    
-    # Copy the database
-    if PLAYTIME_DB_PATH.exists():
-        shutil.copy2(PLAYTIME_DB_PATH, backup_path)
-        print(f"[PLAYTIME] Created backup: {backup_path}")
-    
+    backup_path = day_folder / f"playtime_{day_string}_{timestamp}.db"
+
+    # Copy through the SQLite backup API so a killed run cannot leave a broken file
+    if not copy_sqlite_consistent(PLAYTIME_DB_PATH, backup_path):
+        print(f"[PLAYTIME] Skipping backup: could not copy {PLAYTIME_DB_PATH.name}")
+        return None
+
+    print(f"[PLAYTIME] Created backup: {backup_path}")
     return backup_path
 
 
@@ -157,7 +162,8 @@ def cleanup_daily_folder(day_folder):
     if not day_folder.exists():
         return
     
-    # Get snapshot .db files in the folder (exclude coverage.db)
+    # Get snapshot .db files in the folder (exclude coverage.db and empty files)
+    delete_empty_snapshot_db_files(day_folder)
     db_files = list_snapshot_db_files(day_folder)
     
     if len(db_files) <= 1:
@@ -221,6 +227,7 @@ def cleanup_old_day_folders():
             
             # Keep only latest file for folders 4-6 days old OR 14-17 days old
             if 4 <= days_old <= 30:
+                delete_empty_snapshot_db_files(folder)
                 db_files = list_snapshot_db_files(folder)
                 
                 if len(db_files) <= 1:

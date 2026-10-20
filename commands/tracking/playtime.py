@@ -147,49 +147,73 @@ def get_available_days():
     return day_folders
 
 
-def get_final_playtime_for_day(day_folder: Path, username: str, aliases: list = None) -> Optional[int]:
-    """Get the final playtime for a user from a day's backup folder.
-    
-    Returns the playtime from the most recent backup of that day.
+def _read_playtime_from_snapshot(db_path: Path, names: list) -> Tuple[bool, Optional[int]]:
+    """Read playtime for *names* from one snapshot.
+
+    Returns (readable, playtime). readable is False when the file is empty or
+    has no playtime table, so the caller can try an older snapshot instead of
+    losing the whole day.
     """
-    if not day_folder.exists():
-        return None
-    
-    # Get snapshot .db files only (exclude coverage.db)
-    from utils.coverage_utils import list_snapshot_db_files
-    db_files = list_snapshot_db_files(day_folder)
-    
-    if not db_files:
-        return None
-    
-    # Use the most recent backup
-    latest_db = db_files[-1]
-    names = [username.lower()]
-    if aliases:
-        names.extend([a.lower() for a in aliases if a])
-    names = list(set(names))
-    
+    conn = None
     try:
-        conn = sqlite3.connect(latest_db)
+        if db_path.stat().st_size == 0:
+            return False, None
+
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        
+
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='playtime'")
+        if not cursor.fetchone():
+            return False, None
+
         placeholders = ",".join("?" * len(names))
         cursor.execute(
             f"SELECT playtime_seconds FROM playtime WHERE LOWER(username) IN ({placeholders})",
             names,
         )
-        
+
         rows = cursor.fetchall()
-        conn.close()
-        
+
         if rows:
             max_secs = max([r[0] for r in rows if r and r[0] is not None], default=None)
-            return max_secs
+            return True, max_secs
+        return True, None
+
+    except (sqlite3.Error, OSError) as e:
+        print(f"[PLAYTIME] Error querying database {db_path}: {e}")
+        return False, None
+
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def get_final_playtime_for_day(day_folder: Path, username: str, aliases: list = None) -> Optional[int]:
+    """Get the final playtime for a user from a day's backup folder.
+
+    Walks the snapshots newest first and falls back to older ones when a
+    snapshot is empty or unreadable, so one bad file cannot blank out the day.
+    """
+    if not day_folder.exists():
         return None
-    
-    except Exception as e:
-        print(f"[PLAYTIME] Error querying database {latest_db}: {e}")
+
+    # Get snapshot .db files only (exclude coverage.db)
+    from utils.coverage_utils import list_snapshot_db_files
+    db_files = list_snapshot_db_files(day_folder)
+
+    if not db_files:
         return None
+
+    names = [username.lower()]
+    if aliases:
+        names.extend([a.lower() for a in aliases if a])
+    names = list(set(names))
+
+    for db_file in reversed(db_files):
+        readable, playtime = _read_playtime_from_snapshot(db_file, names)
+        if readable:
+            return playtime
+    return None
 
 
 def get_daily_playtime_data(username: str, days: int, aliases: list = None) -> Tuple[list, bool]:

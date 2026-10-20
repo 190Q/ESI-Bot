@@ -18,8 +18,9 @@ MAX_REPLY_DELAY = 2.5
 RECENT_REPLY_MEMORY = 15
 _RECENT_REPLIES = deque(maxlen=RECENT_REPLY_MEMORY)
 
-# Chance that a message ending in "?" gets answered even without a trigger word.
-UNTRIGGERED_QUESTION_CHANCE = 0.003
+# How many of our own sent replies can still be replied to. Cleared on restart.
+RECENT_SENT_MEMORY = 200
+_RECENT_SENT = deque(maxlen=RECENT_SENT_MEMORY)
 
 # Chance that a nonsense reply is sent instead of a real one.
 NONSENSE_REPLY_CHANCE = 0.01
@@ -27,7 +28,6 @@ NONSENSE_REPLY_CHANCE = 0.01
 REASON_TRIGGER = "trigger"
 REASON_REPLY = "reply"
 REASON_PING = "ping"
-REASON_QUESTION = "question"
 
 REPLIES_PATH = CONFIG_DIR / "grok_replies.json"
 
@@ -144,33 +144,42 @@ def _body_after_trigger(content: str) -> str:
     return ""
 
 
-def _is_ping(message: discord.Message, bot_user: discord.ClientUser) -> bool:
-    """Return True if the message mentions the bot."""
-    return any(user.id == bot_user.id for user in message.mentions)
+async def _is_ping(message: discord.Message, bot_user: discord.ClientUser) -> bool:
+    """Return True if the message mentions the bot on purpose.
 
+    Replying to a message makes Discord add a mention of its author, so
+    replying to any of the bot's messages (a command output, a panel, ...)
+    would otherwise look like a ping. Those mentions do not count.
+    """
+    if not any(user.id == bot_user.id for user in message.mentions):
+        return False
 
-async def _is_reply_to_bot(message: discord.Message, bot_user: discord.ClientUser) -> bool:
-    """Return True if the message replies to one of the bot's messages."""
     reference = message.reference
     if reference is None:
-        return False
+        return True
 
     resolved = reference.resolved
     if resolved is None:
         try:
             resolved = await message.channel.fetch_message(reference.message_id)
         except discord.HTTPException:
-            return False
+            return True
 
     author = getattr(resolved, "author", None)
-    return author is not None and author.id == bot_user.id
+    return author is None or author.id != bot_user.id
 
 
-def _should_answer_untriggered_question(content: str) -> bool:
-    """Rarely answer a question mark message that never used a trigger word."""
-    if not content.rstrip().endswith("?"):
+def _is_reply_to_grok_reply(message: discord.Message) -> bool:
+    """Return True if the message replies to a reply this responder sent.
+
+    Only the replies sent since the bot started are remembered, so replying to
+    any other bot output (a command result, a panel, a log message, ...) is
+    ignored.
+    """
+    reference = message.reference
+    if reference is None:
         return False
-    return random.random() < UNTRIGGERED_QUESTION_CHANCE
+    return reference.message_id in _RECENT_SENT
 
 
 async def detect_reply_reason(message: discord.Message, bot_user: discord.ClientUser) -> str | None:
@@ -181,12 +190,10 @@ async def detect_reply_reason(message: discord.Message, bot_user: discord.Client
     """
     if matches_trigger(message.content):
         return REASON_TRIGGER
-    if await _is_reply_to_bot(message, bot_user):
+    if _is_reply_to_grok_reply(message):
         return REASON_REPLY
-    if _is_ping(message, bot_user):
+    if await _is_ping(message, bot_user):
         return REASON_PING
-    if _should_answer_untriggered_question(message.content):
-        return REASON_QUESTION
     return None
 
 
@@ -208,10 +215,8 @@ def select_reply(content: str, reason: str) -> str | errors.CommandError | None:
         pool = pools["question"] if "?" in body else pools["statement"]
     elif reason == REASON_REPLY:
         pool = pools["reply_to_bot"]
-    elif reason == REASON_PING:
-        pool = pools["ping"]
     else:
-        pool = pools["question"]
+        pool = pools["ping"]
     return _pick_fresh(pool + pools["shared"])
 
 
@@ -237,9 +242,10 @@ def setup(bot, has_required_role, config):
                     print(f"[WARN] No replies available in {REPLIES_PATH.name}; skipping reply")
                     return
                 if isinstance(reply, errors.CommandError):
-                    await message.reply(embed=reply.build_embed())
+                    sent = await message.reply(embed=reply.build_embed())
                 else:
-                    await message.reply(reply)
+                    sent = await message.reply(reply)
+                _RECENT_SENT.append(sent.id)
 
             record_feature(
                 "Grok replies",
@@ -264,7 +270,7 @@ def setup(bot, has_required_role, config):
     bot.add_listener(on_message, 'on_message')
     setattr(bot, _BOT_LISTENER_ATTR, on_message)
 
-    print(f"[OK] Loaded trigger responder (prefixes: {', '.join(TRIGGER_PREFIXES)}; replies to bot messages and pings)")
+    print(f"[OK] Loaded trigger responder (prefixes: {', '.join(TRIGGER_PREFIXES)}; replies to pings and to its own replies)")
 
 
 def teardown(bot):

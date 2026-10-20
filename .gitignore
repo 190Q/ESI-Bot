@@ -230,6 +230,7 @@ auto_reactions.json
 birthdays.json
 channel_openers.json
 forwarded_applications.json
+grok_reply_stats.json
 guild_member_queue.json
 guild_territories.json
 inactivity_exemptions.json

@@ -17,7 +17,7 @@ from utils.coverage_utils import (
 PathLike = Union[str, Path]
 
 # Sanity caps: a player realistically cannot gain more than this many per cycle
-MAX_NEW_WARS_PER_CYCLE = 20
+MAX_NEW_WARS_PER_CYCLE = 25
 MAX_NEW_GRAIDS_PER_CYCLE = 5
 STALE_OFFSET_REBASE_THRESHOLD = 50
 

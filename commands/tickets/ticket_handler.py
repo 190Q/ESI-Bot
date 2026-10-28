@@ -898,7 +898,9 @@ class ApplicationVoteView(View):
                 item.disabled = True
     
     async def _record_and_refresh(self, interaction: discord.Interaction, vote_type: str):
-        """Load app data, record vote, persist, and refresh the view."""
+        """Acknowledge the click before the blocking file/DB writes, then record the vote."""
+        await interaction.response.defer()
+
         apps = load_forwarded_apps()
         app_data = apps.get(str(self.app_data['message_id']))
 
@@ -910,7 +912,6 @@ class ApplicationVoteView(View):
         apps[str(self.app_data['message_id'])] = app_data
         save_forwarded_apps(apps)
 
-        await interaction.response.defer()
         await self.check_and_update_view(interaction, app_data)
 
     async def approve_callback(self, interaction: discord.Interaction):
@@ -1260,7 +1261,9 @@ class ApplicationMixedView(View):
         await interaction.response.send_message(embed=embed, view=detail_view, ephemeral=True)
     
     async def _record_and_refresh(self, interaction: discord.Interaction, vote_type: str):
-        """Load app data, record vote, persist, and refresh the mixed view."""
+        """Acknowledge the click before the blocking file/DB writes, then record the vote."""
+        await interaction.response.defer()
+
         apps = load_forwarded_apps()
         app_data = apps.get(str(self.app_data['message_id']))
 
@@ -1272,7 +1275,6 @@ class ApplicationMixedView(View):
         apps[str(self.app_data['message_id'])] = app_data
         save_forwarded_apps(apps)
 
-        await interaction.response.defer()
         await self.check_and_update_mixed_view(interaction, app_data)
 
     async def approve_callback(self, interaction: discord.Interaction):

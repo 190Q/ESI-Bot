@@ -896,6 +896,14 @@ class AcceptConfirmView(discord.ui.View):
                         # Mark as accepted instead of removing
                         apps[str(self.source_message_id)]['status'] = 'accepted'
                         apps[str(self.source_message_id)]['buttons_enabled'] = False
+                        # Details the ticket reminders need to chase the join
+                        apps[str(self.source_message_id)]['accepted_at'] = datetime.now(timezone.utc).timestamp()
+                        apps[str(self.source_message_id)]['accepted_rank'] = self.rank_key
+                        apps[str(self.source_message_id)]['accepted_username'] = self.username
+                        apps[str(self.source_message_id)]['accepted_uuid'] = self.uuid
+                        apps[str(self.source_message_id)]['join_reminders'] = (
+                            self.rank_key != "envoy" and not self.queued
+                        )
                         save_forwarded_apps(apps)
                         
                         # Get the message and disable its buttons

@@ -39,6 +39,9 @@ PANEL_REQUIRED_ROLES = [
     600185623474601995 # Parliament
 ]
 
+# Registered on_member_remove handler, kept so a reload can remove it
+_member_remove_listener = None
+
 async def refresh_all_panels_and_buttons(bot):
     """Refresh all ticket panels and control buttons across all guilds"""
     try:
@@ -1482,178 +1485,200 @@ class ConfirmCloseView(View):
             pass
     
     async def close_application_logic(self, interaction: discord.Interaction):
-        from datetime import timezone
-        
-        channel = interaction.channel
-        
-        # Get channel creation time from the first message or channel itself
-        created_at = channel.created_at
-        closed_at = datetime.now(timezone.utc)
-        
-        # Calculate open duration
-        duration = closed_at - created_at
-        hours, remainder = divmod(int(duration.total_seconds()), 3600)
-        minutes, seconds = divmod(remainder, 60)
-        duration_str = f"{hours}h {minutes}m {seconds}s"
-        
-        # Find who opened the ticket (first user mentioned or channel creator)
-        opened_by = None
+        """Close the ticket the staff member asked for, with them as the closer."""
+        await close_application_channel(
+            channel=interaction.channel,
+            guild=interaction.guild,
+            application_name=self.application_name,
+            panel_data=self.panel_data,
+            closed_by=interaction.user,
+            reason=self.reason,
+            progress_interaction=interaction,
+        )
+
+
+async def close_application_channel(
+    channel,
+    guild,
+    application_name,
+    panel_data,
+    closed_by,
+    reason=None,
+    progress_interaction=None,
+):
+    """Close an application channel: transcript, log, DM, cleanup, then delete.
+
+    ``closed_by`` is the member shown as the closer, a staff member for manual
+    closes or the bot itself for automatic ones. When ``progress_interaction``
+    is given, an ephemeral "creating transcript" notice is sent first.
+    """
+    created_at = channel.created_at
+    closed_at = datetime.now(timezone.utc)
+
+    # Calculate open duration
+    duration = closed_at - created_at
+    hours, remainder = divmod(int(duration.total_seconds()), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    duration_str = f"{hours}h {minutes}m {seconds}s"
+
+    # The saved opener is the applicant, and stays correct even if they left the server
+    channel_openers = load_channel_openers()
+    opener_id = channel_openers.get(str(channel.id))
+    opened_by = guild.get_member(opener_id) if opener_id else None
+
+    if not opener_id:
+        # Tickets opened before openers were tracked: fall back to the mention in the first embed
         async for message in channel.history(limit=10, oldest_first=True):
             if message.embeds and message.embeds[0].description:
-                # Try to find user mention in the embed
                 mentions = re.findall(r'<@!?(\d+)>', message.embeds[0].description)
                 if mentions:
-                    opened_by = interaction.guild.get_member(int(mentions[0]))
+                    opener_id = int(mentions[0])
+                    opened_by = guild.get_member(opener_id)
                     break
-        
-        if not opened_by:
-            # Fallback: check channel permissions for non-staff users
-            for overwrite in channel.overwrites:
-                if isinstance(overwrite, discord.Member) and overwrite != interaction.guild.me:
-                    opened_by = overwrite
-                    break
-        
-        # Create transcript
-        await interaction.response.send_message("📝 Creating transcript...", ephemeral=True)
-        transcript_text = await create_transcript(channel)
-        
-        # Create transcript file
-        transcript_bytes = io.BytesIO(transcript_text.encode('utf-8'))
-        transcript_file = discord.File(
-            fp=transcript_bytes,
-            filename=f"transcript-{channel.name}-{int(closed_at.timestamp())}.txt"
-        )
-        
-        # Send to transcript/logging channel
-        if 'logging_channel_id' in self.panel_data:
-            log_channel = interaction.guild.get_channel(self.panel_data['logging_channel_id'])
-            if log_channel:
-                close_embed = discord.Embed(
-                    title="Application Closed",
-                    color=0x5865F2,
-                    timestamp=closed_at
-                )
-                close_embed.add_field(name="Application Type", value=self.application_name, inline=True)
-                close_embed.add_field(name="Channel", value=channel.name, inline=True)
-                close_embed.add_field(name="Opened By", value=opened_by.mention if opened_by else "Unknown", inline=True)
-                close_embed.add_field(name="Closed By", value=interaction.user.mention, inline=True)
-                close_embed.add_field(name="Open Duration", value=duration_str, inline=True)
-                close_embed.add_field(name="Reason", value=self.reason if self.reason else "No reason provided", inline=True)
-                close_embed.set_footer(text=f"Closed at")
-                
-                try:
-                    await log_channel.send(embed=close_embed, file=transcript_file)
-                except discord.Forbidden:
-                    print(f"Missing permissions to send log to channel {log_channel.id}")
-                except Exception as e:
-                    print(f"Error sending log message: {e}")
-        
-        # Send DM if enabled
-        settings = self.panel_data.get('settings', {}).get(self.application_name, {})
-        dm_enabled = settings.get('dm_on_close', True)
-        
-        if dm_enabled and opened_by:
+
+    opener_mention = opened_by.mention if opened_by else (f"<@{opener_id}>" if opener_id else "Unknown")
+
+    # Create transcript
+    if progress_interaction is not None:
+        await progress_interaction.response.send_message("📝 Creating transcript...", ephemeral=True)
+    transcript_text = await create_transcript(channel)
+
+    # Create transcript file
+    transcript_bytes = io.BytesIO(transcript_text.encode('utf-8'))
+    transcript_file = discord.File(
+        fp=transcript_bytes,
+        filename=f"transcript-{channel.name}-{int(closed_at.timestamp())}.txt"
+    )
+
+    # Send to transcript/logging channel
+    if 'logging_channel_id' in panel_data:
+        log_channel = guild.get_channel(panel_data['logging_channel_id'])
+        if log_channel:
+            close_embed = discord.Embed(
+                title="Application Closed",
+                color=0x5865F2,
+                timestamp=closed_at
+            )
+            close_embed.add_field(name="Application Type", value=application_name, inline=True)
+            close_embed.add_field(name="Channel", value=channel.name, inline=True)
+            close_embed.add_field(name="Opened By", value=opener_mention, inline=True)
+            close_embed.add_field(name="Closed By", value=closed_by.mention, inline=True)
+            close_embed.add_field(name="Open Duration", value=duration_str, inline=True)
+            close_embed.add_field(name="Reason", value=reason if reason else "No reason provided", inline=True)
+            close_embed.set_footer(text=f"Closed at")
+
             try:
-                dm_embed = discord.Embed(
-                    title=f"🔒 Your {self.application_name} Application Has Been Closed",
-                    description=f"Your application in **{interaction.guild.name}** has been closed.",
-                    color=0xFF0000,
-                    timestamp=closed_at
-                )
-                dm_embed.add_field(name="Closed By", value=interaction.user.name, inline=True)
-                dm_embed.add_field(name="Open Duration", value=duration_str, inline=True)
-                dm_embed.add_field(name="Reason", value=self.reason if self.reason else "No reason provided", inline=False)
-                
-                await opened_by.send(embed=dm_embed)
+                await log_channel.send(embed=close_embed, file=transcript_file)
             except discord.Forbidden:
-                pass  # User has DMs disabled
-        
-        # Clean up the channel opener mapping
-        channel_openers = load_channel_openers()
-        if str(channel.id) in channel_openers:
-            del channel_openers[str(channel.id)]
-            save_channel_openers(channel_openers)
-            
-        # Remove any forwarded applications associated with this ticket channel
-        apps = load_forwarded_apps()
-        apps_to_remove = []
-        for message_id, app_data in apps.items():
-            if app_data.get('ticket_channel_id') == channel.id:
-                apps_to_remove.append(message_id)
-                
-                # Disable buttons on the forwarded application message
-                try:
-                    # Check if the channel is a thread
-                    forwarded_channel_or_thread = interaction.guild.get_channel_or_thread(app_data['channel_id'])
-                    if forwarded_channel_or_thread:
-                        try:
-                            forwarded_message = await forwarded_channel_or_thread.fetch_message(app_data['message_id'])
-                            
-                            # Determine which view to create based on current state
-                            threshold = app_data.get('threshold', calculate_threshold(interaction.guild))
-                            approve_count = app_data.get('approve_count', 0)
-                            deny_count = app_data.get('deny_count', 0)
-                            
-                            # Check if we need mixed view or vote view
-                            if app_data.get('approve_notified') or app_data.get('deny_notified'):
-                                disabled_view = ApplicationMixedView(
-                                    app_data,
-                                    approve_count,
-                                    deny_count,
-                                    show_approve_action=app_data.get('approve_notified', False),
-                                    show_deny_action=app_data.get('deny_notified', False),
-                                    threshold=threshold
-                                )
-                            else:
-                                disabled_view = ApplicationVoteView(
-                                    app_data,
-                                    approve_count,
-                                    deny_count,
-                                    threshold
-                                )
-                            
-                            # Disable all buttons
-                            for item in disabled_view.children:
-                                item.disabled = True
-                            
-                            await forwarded_message.edit(view=disabled_view)
-                            print(f"[DEBUG] Disabled buttons for forwarded application {message_id}")
-                        except discord.NotFound:
-                            print(f"[DEBUG] Forwarded message {message_id} not found")
-                        except Exception as e:
-                            print(f"[DEBUG] Error disabling buttons for forwarded application {message_id}: {e}")
-                except Exception as e:
-                    print(f"[DEBUG] Error processing forwarded application {message_id}: {e}")
+                print(f"Missing permissions to send log to channel {log_channel.id}")
+            except Exception as e:
+                print(f"Error sending log message: {e}")
 
-        for message_id in apps_to_remove:
-            # Remove user from guild queue if they were queued
-            user_id = apps[message_id].get('user_id')
-            if user_id:
-                removed = remove_from_queue(user_id)
-                if removed:
-                    print(f"[DEBUG] Removed user {user_id} from guild queue (ticket closed)")
-            del apps[message_id]
-            print(f"[DEBUG] Removed application {message_id} from forwarded_applications.json (ticket closed)")
+    # Send DM if enabled
+    settings = panel_data.get('settings', {}).get(application_name, {})
+    dm_enabled = settings.get('dm_on_close', True)
 
-        if apps_to_remove:
-            save_forwarded_apps(apps)
-        
-        # Remove any pending applications associated with this ticket channel
-        pending_apps = load_pending_apps()
-        pending_keys_to_remove = []
-        for pending_key, pending_data in pending_apps.items():
-            if pending_data.get('channel_id') == channel.id:
-                pending_keys_to_remove.append(pending_key)
+    if dm_enabled and opened_by:
+        try:
+            dm_embed = discord.Embed(
+                title=f"🔒 Your {application_name} Application Has Been Closed",
+                description=f"Your application in **{guild.name}** has been closed.",
+                color=0xFF0000,
+                timestamp=closed_at
+            )
+            dm_embed.add_field(name="Closed By", value=closed_by.name, inline=True)
+            dm_embed.add_field(name="Open Duration", value=duration_str, inline=True)
+            dm_embed.add_field(name="Reason", value=reason if reason else "No reason provided", inline=False)
 
-        for pending_key in pending_keys_to_remove:
-            del pending_apps[pending_key]
-            print(f"[DEBUG] Removed pending application {pending_key} from pending_applications.json (ticket closed)")
+            await opened_by.send(embed=dm_embed)
+        except discord.Forbidden:
+            pass  # User has DMs disabled
 
-        if pending_keys_to_remove:
-            save_pending_apps(pending_apps)
-        
-        # Delete the channel
-        await channel.delete(reason=f"Application closed by {interaction.user}")
+    # Clean up the channel opener mapping
+    if str(channel.id) in channel_openers:
+        del channel_openers[str(channel.id)]
+        save_channel_openers(channel_openers)
+
+    # Remove any forwarded applications associated with this ticket channel
+    apps = load_forwarded_apps()
+    apps_to_remove = []
+    for message_id, app_data in apps.items():
+        if app_data.get('ticket_channel_id') == channel.id:
+            apps_to_remove.append(message_id)
+
+            # Disable buttons on the forwarded application message
+            try:
+                # Check if the channel is a thread
+                forwarded_channel_or_thread = guild.get_channel_or_thread(app_data['channel_id'])
+                if forwarded_channel_or_thread:
+                    try:
+                        forwarded_message = await forwarded_channel_or_thread.fetch_message(app_data['message_id'])
+
+                        # Determine which view to create based on current state
+                        threshold = app_data.get('threshold', calculate_threshold(guild))
+                        approve_count = app_data.get('approve_count', 0)
+                        deny_count = app_data.get('deny_count', 0)
+
+                        # Check if we need mixed view or vote view
+                        if app_data.get('approve_notified') or app_data.get('deny_notified'):
+                            disabled_view = ApplicationMixedView(
+                                app_data,
+                                approve_count,
+                                deny_count,
+                                show_approve_action=app_data.get('approve_notified', False),
+                                show_deny_action=app_data.get('deny_notified', False),
+                                threshold=threshold
+                            )
+                        else:
+                            disabled_view = ApplicationVoteView(
+                                app_data,
+                                approve_count,
+                                deny_count,
+                                threshold
+                            )
+
+                        # Disable all buttons
+                        for item in disabled_view.children:
+                            item.disabled = True
+
+                        await forwarded_message.edit(view=disabled_view)
+                        print(f"[DEBUG] Disabled buttons for forwarded application {message_id}")
+                    except discord.NotFound:
+                        print(f"[DEBUG] Forwarded message {message_id} not found")
+                    except Exception as e:
+                        print(f"[DEBUG] Error disabling buttons for forwarded application {message_id}: {e}")
+            except Exception as e:
+                print(f"[DEBUG] Error processing forwarded application {message_id}: {e}")
+
+    for message_id in apps_to_remove:
+        # Remove user from guild queue if they were queued
+        user_id = apps[message_id].get('user_id')
+        if user_id:
+            removed = remove_from_queue(user_id)
+            if removed:
+                print(f"[DEBUG] Removed user {user_id} from guild queue (ticket closed)")
+        del apps[message_id]
+        print(f"[DEBUG] Removed application {message_id} from forwarded_applications.json (ticket closed)")
+
+    if apps_to_remove:
+        save_forwarded_apps(apps)
+
+    # Remove any pending applications associated with this ticket channel
+    pending_apps = load_pending_apps()
+    pending_keys_to_remove = []
+    for pending_key, pending_data in pending_apps.items():
+        if pending_data.get('channel_id') == channel.id:
+            pending_keys_to_remove.append(pending_key)
+
+    for pending_key in pending_keys_to_remove:
+        del pending_apps[pending_key]
+        print(f"[DEBUG] Removed pending application {pending_key} from pending_applications.json (ticket closed)")
+
+    if pending_keys_to_remove:
+        save_pending_apps(pending_apps)
+
+    # Delete the channel
+    await channel.delete(reason=f"Application closed by {closed_by}")
 
 class CloseReasonModal(Modal, title="Close Application"):
     reason_input = TextInput(
@@ -3251,6 +3276,59 @@ async def create_application_channel(interaction: discord.Interaction, applicati
     except Exception as e:
         await errors.UNEXPECTED_ERROR.send(interaction)
 
+def get_application_name_for_channel(channel, panel_data=None):
+    """Name of the application a ticket channel belongs to."""
+    try:
+        for app_data in load_forwarded_apps().values():
+            if app_data.get('ticket_channel_id') == channel.id and app_data.get('app_type'):
+                return app_data['app_type']
+    except Exception as e:
+        print(f"[TICKETS] Could not read the forwarded applications: {e}")
+
+    for app in (panel_data or {}).get('applications', []):
+        if app.get('name', '').lower().replace(' ', '-') in channel.name.lower():
+            return app['name']
+
+    return "Application"
+
+
+async def close_applications_for_departed_member(bot, member):
+    """Close every open application channel owned by a member who left the server."""
+    guild = member.guild
+
+    try:
+        channel_openers = load_channel_openers()
+    except Exception as e:
+        print(f"[TICKETS] Could not read the channel openers: {e}")
+        return
+
+    for channel_id, opener_id in list(channel_openers.items()):
+        if str(opener_id) != str(member.id):
+            continue
+
+        try:
+            channel = guild.get_channel(int(channel_id)) or guild.get_thread(int(channel_id))
+        except (TypeError, ValueError):
+            continue
+        if channel is None:
+            continue
+
+        _, panel_data = get_panel_data_from_channel(channel)
+
+        try:
+            await close_application_channel(
+                channel=channel,
+                guild=guild,
+                application_name=get_application_name_for_channel(channel, panel_data),
+                panel_data=panel_data or {},
+                closed_by=guild.me,
+                reason="applicant left the server",
+            )
+            print(f"[TICKETS] Closed {channel.name} because {member} left the server")
+        except Exception as e:
+            print(f"[TICKETS] Failed to close {channel.name} after {member} left: {e}")
+
+
 def setup(bot, has_required_role, config):
     """Setup function for bot integration"""
     
@@ -3516,3 +3594,25 @@ def setup(bot, has_required_role, config):
         await interaction.followup.send(result_msg, ephemeral=True)
     
     print("[OK] Loaded application handler")
+
+    # Close the application of anyone who leaves the server
+    teardown(bot)
+
+    async def on_member_remove(member):
+        await close_applications_for_departed_member(bot, member)
+
+    global _member_remove_listener
+    _member_remove_listener = on_member_remove
+    bot.add_listener(on_member_remove, "on_member_remove")
+    print("[OK] Loaded application cleanup for members who leave")
+
+
+def teardown(bot):
+    """Remove the member-remove listener so reloads do not stack handlers."""
+    global _member_remove_listener
+    if _member_remove_listener is not None:
+        try:
+            bot.remove_listener(_member_remove_listener, "on_member_remove")
+        except Exception as e:
+            print(f"[TICKETS] Failed to remove the member-remove listener: {e}")
+        _member_remove_listener = None

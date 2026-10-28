@@ -26,7 +26,7 @@ _SENT_REPLIES: dict[int, dict] = {}
 
 # Recent traffic per channel, used to back off when the bot already talks a lot.
 ACTIVITY_WINDOW = 20
-MIN_REPLY_CHANCE = 0.15
+MIN_REPLY_CHANCE = 1.0
 _CHANNEL_ACTIVITY: dict[int, deque] = {}
 
 # How many channels keep a mood, and how often answering our own reply keeps it.

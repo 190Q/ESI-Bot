@@ -80,6 +80,30 @@ async def validate_wynncraft_username(username: str) -> Tuple[bool, str, str]:
     except Exception as e:
         return False, f"âš ï¸ Error validating username: {str(e)}", None
 
+async def fetch_player_api_data(username: str) -> dict:
+    """Fetch the raw Wynncraft player payload. Returns an empty dict when the lookup fails."""
+    if not username:
+        return {}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"https://api.wynncraft.com/v3/player/{username}") as response:
+                if response.status == 200:
+                    return await response.json()
+                print(f"[WARN] Wynncraft lookup for {username} returned status {response.status}")
+    except Exception as e:
+        print(f"[WARN] Failed to fetch Wynncraft data for {username}: {e}")
+    return {}
+
+
+async def fetch_player_guild_name(username: str) -> str | None:
+    """Return the name of the guild the player is currently in, or None."""
+    data = await fetch_player_api_data(username)
+    guild = data.get("guild")
+    if not isinstance(guild, dict):
+        return None
+    return guild.get("name") or None
+
+
 def _load_username_match_db():
     """Load the username match DB from disk.
 
@@ -749,21 +773,18 @@ class AcceptConfirmView(discord.ui.View):
             except Exception as e:
                 print(f"[WARN] Failed to log rank change: {e}")
             
+            # Check if the accepted player is already in another in-game guild
+            in_guild = await fetch_player_guild_name(self.username)
+            print(f"[GUILD] {self.username} is in guild: {in_guild}")
+
             # Save alt account info to JSON
-            in_guild = None
             if self.is_alt and self.main_username:
                 try:
                     # Fetch UUID for main username if not already available
-                    main_uuid = None
-                    try:
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(f"https://api.wynncraft.com/v3/player/{self.main_username}") as response:
-                                if response.status == 200:
-                                    data = await response.json()
-                                    main_uuid = data.get('uuid')
-                                    in_guild = data.get('guild').get('name') if data.get('guild').get('name') else None
-                    except Exception as uuid_error:
-                        print(f"[WARN] Could not fetch UUID for main username {self.main_username}: {uuid_error}")
+                    main_data = await fetch_player_api_data(self.main_username)
+                    main_uuid = main_data.get('uuid')
+                    if not main_uuid:
+                        print(f"[WARN] Could not fetch UUID for main username {self.main_username}")
                     
                     alt_accounts_file = Path('alt_accounts.json')
                     alt_accounts = {}
@@ -1048,19 +1069,24 @@ class AcceptConfirmView(discord.ui.View):
                     description += (
                         f"```Hello there {self.user.mention}, welcome back! You have been accepted into the guild! "
                         f"Feel free to check out <#606712832716832778>, <#1023821930404532286> and <#1515395575363797173> "
-                        f"to catch up on what you've missed. You can join the guild in-game by typing '/gu join ESI' "
-                        f"the next time you log on.\n\nIf you want to show off with "
-                        f"guild badges, make sure your API is on so we can track your achievements and rank you up! "
-                        f"(API is on by default)```"
+                        f"to catch up on what you've missed. "
+                    )
+                    if in_guild:
+                        description += (
+                            f"Please make sure to leave your current guild so we can invite you and let us know "
+                            f"when you do!\n\n"
+                        )
+                    else:
+                        description += (
+                            f"You can join the guild in-game by typing '/gu join ESI' the next time you log on.\n\n"
+                        )
+                    description += (
+                        f"If you want to show off with guild badges, make sure your API is on so we can track your "
+                        f"achievements and rank you up! (API is on by default)```"
                     )
                     description += f"\n\n**Guild invite command:**\n```/gu invite {self.username}```"
             else:
                 description += f"**Accept message:**\n"
-                mention_nova = (
-                    f"(and thank Nova for his amazing job on the handbook). "
-                    if self.executor_id == 967867229410574340
-                    else ""
-                )
                 if self.queued:
                     description += (
                         f"```Congrats {self.user.mention}, your application has been accepted! However, the guild is currently "
@@ -1068,7 +1094,7 @@ class AcceptConfirmView(discord.ui.View):
                         f"We will notify you as soon as a slot opens up! In the meantime, feel free to check out "
                         f"the new channels you have access to such as <#1381289736903065662>, <#1381836409689870406> and "
                         f"<#1369575540675313674> if you want to grab some special roles. Also don't hesitate to head over "
-                        f"to <#1515395575363797173> for more details on the guild! {mention_nova}"
+                        f"to <#1515395575363797173> for more details on the guild! "
                         f"If you want to show off with guild badges, make sure your API is on so we can track your "
                         f"achievements and rank you up! (API is on by default)```"
                     )
@@ -1078,7 +1104,7 @@ class AcceptConfirmView(discord.ui.View):
                         f"```Congrats {self.user.mention}, your application has been accepted! Feel free to check out "
                         f"the new channels you have access to such as <#1381289736903065662>, <#1381836409689870406> and "
                         f"<#1369575540675313674> if you want to grab some special roles. Also don't hesitate to head over "
-                        f"to <#1515395575363797173> for more details on the guild! {mention_nova}"
+                        f"to <#1515395575363797173> for more details on the guild! "
                     )
                     if in_guild:
                         description += (

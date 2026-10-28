@@ -219,7 +219,9 @@ def _get_textures(mc_data: dict) -> dict:
             if skin_url.startswith("/"):
                 skin_url = f"https://vrc.lol{skin_url}"
             textures.setdefault("skin", {"url": skin_url})
-            textures["skin"]["is_default"] = java.get("skin_is_default", True)
+            reported_default = java.get("skin_is_default")
+            if reported_default is not None:
+                textures["skin"]["is_default"] = bool(reported_default)
         if java.get("cape_url"):
             cape_url = java["cape_url"]
             if cape_url.startswith("/"):
@@ -237,7 +239,7 @@ def _get_textures(mc_data: dict) -> dict:
                 skins[0],
             )
             if isinstance(active, dict):
-                textures.setdefault("skin", {"url": None, "is_default": False, "laby": active})
+                textures.setdefault("skin", {"url": None, "laby": active})
         if isinstance(capes, list) and capes and "cape" not in textures:
             textures.setdefault("cape", {"url": None, "laby": capes[0]})
 
@@ -336,10 +338,14 @@ def _get_cape_count(mc_data: dict) -> int:
     return len(capes) if isinstance(capes, list) else 0
 
 
-def _is_default_skin(skin_url: str | None) -> bool:
-    """Return True if the skin URL matches a known default Steve/Alex texture."""
+def _is_default_skin(skin_url: str | None) -> bool | None:
+    """
+    Return True when the skin matches a known default texture.
+    Returns None when there is no skin URL at all, because a failed lookup is
+    not the same thing as a default skin.
+    """
     if not skin_url:
-        return True
+        return None
     # Texture hashes are the last path segment of a textures.minecraft.net URL
     hash_part = skin_url.rstrip("/").rsplit("/", 1)[-1]
     return hash_part.lower() in DEFAULT_SKIN_HASHES
@@ -386,28 +392,36 @@ def _score_player(
 
     # Global stats
     global_data: dict = data.get("globalData", {}) or {}
+    restrictions: dict = data.get("restrictions", {}) or {}
+    stats_hidden = bool(restrictions.get("mainAccess")) or not global_data
 
-    total_levels: int = global_data.get("totalLevel", 0) or 0
-    if total_levels < TOTAL_LEVEL_ALT_THRESHOLD:
-        score += 2
-        red_flags.append(f"Very low combined character levels ({total_levels})")
-    elif total_levels > 300:
-        score -= 2
-        green_flags.append(f"High combined character levels ({total_levels})")
-
-    completed_quests: int = global_data.get("completedQuests", 0) or 0
-    if completed_quests < QUESTS_ALT_THRESHOLD:
+    if stats_hidden:
         score += 1
-        red_flags.append(f"Almost no quests completed ({completed_quests})")
-    elif completed_quests > 100:
-        score -= 1
-        green_flags.append(f"Many quests completed ({completed_quests})")
+        red_flags.append(
+            "Stats are hidden on the Wynncraft API, so level and quest checks are skipped"
+        )
+    else:
+        total_levels: int = global_data.get("totalLevel", 0) or 0
+        if total_levels < TOTAL_LEVEL_ALT_THRESHOLD:
+            score += 2
+            red_flags.append(f"Very low combined character levels ({total_levels})")
+        elif total_levels > 300:
+            score -= 2
+            green_flags.append(f"High combined character levels ({total_levels})")
 
-    raids_total: int = (global_data.get("raids") or {}).get("total", 0)
-    dungeons_total: int = (global_data.get("dungeons") or {}).get("total", 0)
-    if raids_total == 0 and dungeons_total == 0 and account_age_days > 60:
-        score += 1
-        red_flags.append("Zero raids and dungeons on a non-brand-new account")
+        completed_quests: int = global_data.get("completedQuests", 0) or 0
+        if completed_quests < QUESTS_ALT_THRESHOLD:
+            score += 1
+            red_flags.append(f"Almost no quests completed ({completed_quests})")
+        elif completed_quests > 100:
+            score -= 1
+            green_flags.append(f"Many quests completed ({completed_quests})")
+
+        raids_total: int = (global_data.get("raids") or {}).get("total", 0)
+        dungeons_total: int = (global_data.get("dungeons") or {}).get("total", 0)
+        if raids_total == 0 and dungeons_total == 0 and account_age_days > 60:
+            score += 1
+            red_flags.append("Zero raids and dungeons on a non-brand-new account")
 
     # Guild membership
     guild = data.get("guild")
@@ -428,11 +442,6 @@ def _score_player(
         score -= 2
         green_flags.append(f"Has a support rank ({support_rank})")
 
-    forum_link = data.get("forumLink")
-    if not forum_link and account_age_days > ACCOUNT_AGE_THRESHOLD_DAYS:
-        score += 1
-        red_flags.append("No forum account linked on an old Wynncraft account")
-
     # Character-level login count
     characters: dict = data.get("characters", {}) or {}
     total_logins = sum(
@@ -446,14 +455,6 @@ def _score_player(
     elif total_logins > 200:
         score -= 1
         green_flags.append(f"High total login count ({total_logins})")
-
-    # Public profile hidden
-    public_profile: bool = data.get("publicProfile", True)
-    if not public_profile and playtime_hours < PLAYTIME_ALT_THRESHOLD_HOURS:
-        score += 1
-        red_flags.append(
-            "Profile is hidden despite very low activity (nothing to hide on a main)"
-        )
 
     # Discord account age
     discord_age_days = (
@@ -474,19 +475,23 @@ def _score_player(
     # Minecraft metadata checks
     combined_textures = _get_textures(mc_data)
 
-    # Account creation date (Ashcon gives an estimate)
+    # Account creation date
     created_at = _get_created_at(mc_data)
+    age_source = "ashcon"
+    if not created_at:
+        created_at = _get_first_seen_estimate(mc_data)
+        age_source = "laby.net first seen, a lower bound"
     if created_at:
         mc_age_days = _days_since(created_at)
         if mc_age_days < MC_ACCOUNT_AGE_YOUNG_DAYS:
             score += 2
             red_flags.append(
-                f"Minecraft account is only {mc_age_days:.0f} days old"
+                f"Minecraft account is only {mc_age_days:.0f} days old ({age_source})"
             )
         elif mc_age_days > MC_ACCOUNT_AGE_OLD_DAYS:
             score -= 1
             green_flags.append(
-                f"Minecraft account is {mc_age_days:.0f} days old"
+                f"Minecraft account is {mc_age_days:.0f} days old ({age_source})"
             )
     elif not mc_data.get("uuid"):
         score += 1
@@ -500,7 +505,9 @@ def _score_player(
         if isinstance(skin_info, dict) and "is_default" in skin_info
         else _is_default_skin(skin_url)
     )
-    if skin_is_default:
+    if skin_is_default is None:
+        pass
+    elif skin_is_default:
         score += MC_DEFAULT_SKIN_PENALTY
         red_flags.append("Still using a default Minecraft skin (Steve/Alex)")
     else:

@@ -109,9 +109,6 @@ class PermitSelectorView(UserBoundView):
                 if target_id in self.banned_user_ids:
                     ignored.append(f"{target.mention} (currently banned)")
                     continue
-                if isinstance(target, discord.Member) and any(role.id in self.banned_role_ids for role in target.roles):
-                    ignored.append(f"{target.mention} (has a banned role)")
-                    continue
                 selected_user_ids.append(target_id)
         return list(dict.fromkeys(selected_user_ids)), list(dict.fromkeys(selected_role_ids)), ignored
 
@@ -185,13 +182,11 @@ class PermitSelectorView(UserBoundView):
             rid for rid in self.pending_role_ids
             if rid not in self.blocked_role_ids and rid not in self.banned_role_ids
         ]
-        blocked_by_banned_role_user_ids: set[int] = set()
+        overriding_banned_role_user_ids: set[int] = set()
         for user_id in safe_user_ids:
             member = interaction.guild.get_member(int(user_id))
             if member and any(role.id in self.banned_role_ids for role in member.roles):
-                blocked_by_banned_role_user_ids.add(int(user_id))
-        if blocked_by_banned_role_user_ids:
-            safe_user_ids = [uid for uid in safe_user_ids if uid not in blocked_by_banned_role_user_ids]
+                overriding_banned_role_user_ids.add(int(user_id))
         if self.owner_id and self.owner_id not in safe_user_ids:
             safe_user_ids.append(self.owner_id)
         selected_user_set = set(safe_user_ids)
@@ -228,8 +223,10 @@ class PermitSelectorView(UserBoundView):
             lines.append(f"Roles added: {self._format_roles(interaction.guild, added_role_ids)}")
         if removed_role_ids:
             lines.append(f"Roles removed: {self._format_roles(interaction.guild, removed_role_ids)}")
-        if blocked_by_banned_role_user_ids:
-            lines.append(f"Blocked (has banned role): {self._format_users(interaction.guild, blocked_by_banned_role_user_ids)}")
+        if overriding_banned_role_user_ids:
+            lines.append(
+                f"Permit overrides banned role: {self._format_users(interaction.guild, overriding_banned_role_user_ids)}"
+            )
         if self.ignored_targets:
             lines.append(f"Ignored: {', '.join(self.ignored_targets)}")
 
@@ -972,9 +969,6 @@ class PresetPermitSelectorView(UserBoundView):
                 if target_id in self.banned_user_ids:
                     ignored.append(f"{target.mention} (currently banned)")
                     continue
-                if isinstance(target, discord.Member) and any(role.id in self.banned_role_ids for role in target.roles):
-                    ignored.append(f"{target.mention} (has a banned role)")
-                    continue
                 selected_user_ids.append(target_id)
         return list(dict.fromkeys(selected_user_ids)), list(dict.fromkeys(selected_role_ids)), ignored
 
@@ -1024,13 +1018,11 @@ class PresetPermitSelectorView(UserBoundView):
             if rid not in self.blocked_role_ids and rid not in self.banned_role_ids
         ]
 
-        blocked_by_banned_role_user_ids: set[int] = set()
+        overriding_banned_role_user_ids: set[int] = set()
         for user_id in safe_user_ids:
             member = interaction.guild.get_member(int(user_id))
             if member and any(role.id in self.banned_role_ids for role in member.roles):
-                blocked_by_banned_role_user_ids.add(int(user_id))
-        if blocked_by_banned_role_user_ids:
-            safe_user_ids = [uid for uid in safe_user_ids if uid not in blocked_by_banned_role_user_ids]
+                overriding_banned_role_user_ids.add(int(user_id))
         if self.owner_id and self.owner_id not in safe_user_ids:
             safe_user_ids.append(self.owner_id)
 
@@ -1055,8 +1047,10 @@ class PresetPermitSelectorView(UserBoundView):
             lines.append(f"Roles added: {self._format_roles(interaction.guild, added_role_ids)}")
         if removed_role_ids:
             lines.append(f"Roles removed: {self._format_roles(interaction.guild, removed_role_ids)}")
-        if blocked_by_banned_role_user_ids:
-            lines.append(f"Blocked (has banned role): {self._format_users(interaction.guild, blocked_by_banned_role_user_ids)}")
+        if overriding_banned_role_user_ids:
+            lines.append(
+                f"Permit overrides banned role: {self._format_users(interaction.guild, overriding_banned_role_user_ids)}"
+            )
         if self.ignored_targets:
             lines.append(f"Ignored: {', '.join(self.ignored_targets)}")
 
@@ -1757,7 +1751,7 @@ class PresetBuilderView(UserBoundView):
                 title="Permit Users/Roles",
                 description=(
                     "Edit the draft access list below. Keep selected entries to retain access, unselect to remove.\n"
-                    "Banned users/roles cannot be permitted until they are unbanned.\n"
+                    "A permitted user keeps access even if a role they hold is banned.\n"
                     "Changes are only applied when you click Save; Cancel discards them.\n"
                     f"You can choose up to {editable_count} entries."
                 ),
@@ -2375,7 +2369,7 @@ class VCPanelView(UserBoundView):
                 title="Permit Users/Roles",
                 description=(
                     "Edit the access list below. Keep selected entries to retain access, unselect to remove.\n"
-                    "Banned users/roles cannot be permitted until they are unbanned.\n"
+                    "A permitted user keeps access even if a role they hold is banned.\n"
                     "Changes are only applied when you click Save; Cancel discards them.\n"
                     f"You can choose up to {editable_count} entries."
                 ),

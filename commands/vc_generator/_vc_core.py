@@ -164,9 +164,7 @@ class KnockResponseView(discord.ui.View):
 
         requester_id = int(self.requester_id)
         entry.setdefault("banned_users", [])
-        entry.setdefault("banned_roles", [])
         banned_user_ids = {int(uid) for uid in entry.get("banned_users", []) if str(uid).isdigit()}
-        banned_role_ids = {int(rid) for rid in entry.get("banned_roles", []) if str(rid).isdigit()}
 
         requester = interaction.guild.get_member(requester_id)
         if requester is None:
@@ -174,15 +172,13 @@ class KnockResponseView(discord.ui.View):
                 requester = await interaction.guild.fetch_member(requester_id)
             except Exception:
                 requester = None
-        requester_role_ids = {role.id for role in requester.roles} if requester else set()
 
-        if requester_id in banned_user_ids or (requester_role_ids & banned_role_ids):
-            block_reason = "user is explicitly banned" if requester_id in banned_user_ids else "user has a banned role"
+        if requester_id in banned_user_ids:
             self.system.add_log(
                 entry,
                 interaction.user.id,
                 "knock_allow_blocked",
-                f"Tried allowing banned requester {requester_id} ({block_reason})",
+                f"Tried allowing banned requester {requester_id} (user is explicitly banned)",
             )
             await self.system.upsert_entry(channel.id, entry)
             await errors.send_custom_error(
@@ -1621,6 +1617,9 @@ class TempVCSystem:
         banned_user_ids = {int(uid) for uid in entry.get("banned_users", []) if str(uid).isdigit()}
         if int(member.id) in banned_user_ids:
             return True
+        permitted_user_ids = {int(uid) for uid in entry.get("permitted_users", []) if str(uid).isdigit()}
+        if int(member.id) in permitted_user_ids:
+            return False
         banned_role_ids = {int(rid) for rid in entry.get("banned_roles", []) if str(rid).isdigit()}
         if not banned_role_ids:
             return False
@@ -2283,10 +2282,7 @@ class TempVCSystem:
             return "This temporary VC has no owner to notify."
         if requester.id == owner_id:
             return "You already own this temporary VC."
-        banned_users = {int(uid) for uid in entry.get("banned_users", []) if str(uid).isdigit()}
-        banned_roles = {int(rid) for rid in entry.get("banned_roles", []) if str(rid).isdigit()}
-        requester_role_ids = {role.id for role in requester.roles}
-        if requester.id in banned_users or (requester_role_ids & banned_roles):
+        if self._member_is_banned_from_entry(requester, entry):
             return "You are banned from this VC and cannot knock."
         permissions = channel.permissions_for(requester)
         if permissions.view_channel and permissions.connect:

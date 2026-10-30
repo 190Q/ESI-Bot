@@ -20,11 +20,10 @@ _UUID_RE = re.compile(
 def _get_latest_api_db() -> Path | None:
     if not API_TRACKING_DIR.exists():
         return None
-    from utils.coverage_utils import is_coverage_db
+    from utils.coverage_utils import is_coverage_db, newest_usable_snapshot_dbs
     all_dbs = [p for p in API_TRACKING_DIR.rglob("*.db") if not is_coverage_db(p) and p.is_file()]
-    if not all_dbs:
-        return None
-    return max(all_dbs, key=lambda p: p.stat().st_mtime)
+    usable = newest_usable_snapshot_dbs(all_dbs, limit=1)
+    return usable[0] if usable else None
 
 def _fetch_uuid_online(username: str) -> tuple[str | None, str | None]:
     """Fetch UUID and canonical username from Wynncraft API or Mojang API."""
@@ -92,18 +91,29 @@ def resolve_player_identity(username_or_uuid: str) -> tuple[str | None, str, lis
             pass
 
     if not resolved_uuid and not is_uuid and API_TRACKING_DIR.exists():
-        try:
-            from utils.coverage_utils import is_coverage_db
-            all_dbs = sorted([p for p in API_TRACKING_DIR.rglob("*.db") if not is_coverage_db(p) and p.is_file()], key=lambda p: p.stat().st_mtime, reverse=True)
-            for db_path in all_dbs[:50]:
+        from utils.coverage_utils import is_coverage_db, is_empty_snapshot_db
+        all_dbs = sorted(
+            [
+                p
+                for p in API_TRACKING_DIR.rglob("*.db")
+                if not is_coverage_db(p) and p.is_file() and not is_empty_snapshot_db(p)
+            ],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for db_path in all_dbs[:50]:
+            try:
                 conn = sqlite3.connect(db_path)
-                row = conn.execute("SELECT uuid, username FROM player_stats WHERE LOWER(username) = LOWER(?) LIMIT 1", (raw,)).fetchone()
-                conn.close()
-                if row and row[0]:
-                    resolved_uuid = row[0]
-                    break
-        except Exception:
-            pass
+                try:
+                    row = conn.execute("SELECT uuid, username FROM player_stats WHERE LOWER(username) = LOWER(?) LIMIT 1", (raw,)).fetchone()
+                finally:
+                    conn.close()
+            except Exception:
+                # An unreadable snapshot must not stop the search
+                continue
+            if row and row[0]:
+                resolved_uuid = row[0]
+                break
 
     # 2. Check tracked_guild.json
     if TRACKED_GUILD.exists():

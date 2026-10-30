@@ -1,4 +1,5 @@
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Union
@@ -7,6 +8,9 @@ from typing import Dict, Iterable, List, Optional, Union
 PathLike = Union[str, Path]
 
 COVERAGE_DB_NAME = "coverage.db"
+PARTIAL_SNAPSHOT_SUFFIX = ".partial"
+STALE_PARTIAL_SECONDS = 60 * 60
+SQLITE_TIMEOUT_SECONDS = 5
 SECONDS_PER_DAY = 24 * 60 * 60
 SLOT_SECONDS = 30 * 60
 MATCH_TOLERANCE_SECONDS = 10 * 60
@@ -56,6 +60,91 @@ def delete_empty_snapshot_db_files(day_folder: PathLike) -> int:
             continue
         try:
             if path.stat().st_size == 0:
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def is_empty_snapshot_db(path_value: PathLike) -> bool:
+    """True for a zero byte file, which is what an interrupted write leaves."""
+    try:
+        return _as_path(path_value).stat().st_size == 0
+    except OSError:
+        return True
+
+
+def is_usable_snapshot_db(path_value: PathLike) -> bool:
+    """True when the file is a snapshot database holding at least one table.
+
+    A write killed part way through can leave a zero byte file, or one with no
+    tables at all, behind under a name the commands read. Both answer every
+    query with "no such table", so neither may be picked as a snapshot.
+    """
+    path = _as_path(path_value)
+    if is_empty_snapshot_db(path):
+        return False
+
+    try:
+        conn = sqlite3.connect(str(path), timeout=SQLITE_TIMEOUT_SECONDS)
+        try:
+            found = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        return False
+
+    return found is not None
+
+
+def newest_usable_snapshot_dbs(db_files: Iterable[PathLike], limit: Optional[int] = 1) -> List[Path]:
+    """Return the newest usable snapshot files, newest first.
+
+    Unusable files are skipped, so a snapshot broken by an interrupted write
+    never wins over an older good one. Pass limit=None for every usable file.
+    """
+    candidates = sorted(
+        (
+            path
+            for path in (_as_path(value) for value in db_files)
+            if not is_empty_snapshot_db(path)
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+
+    usable = []
+    for path in candidates:
+        if not is_usable_snapshot_db(path):
+            continue
+        usable.append(path)
+        if limit is not None and len(usable) >= limit:
+            break
+
+    return usable
+
+
+def delete_stale_partial_snapshot_files(
+    day_folder: PathLike,
+    max_age_seconds: int = STALE_PARTIAL_SECONDS,
+) -> int:
+    """Delete abandoned ``<snapshot>.db.partial`` files, returning how many went.
+
+    Only files older than *max_age_seconds* are removed, so a write that is
+    still in flight is never touched.
+    """
+    folder = _as_path(day_folder)
+    if not folder.exists():
+        return 0
+
+    cutoff = time.time() - max_age_seconds
+    removed = 0
+    for path in folder.glob(f"*{PARTIAL_SNAPSHOT_SUFFIX}"):
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
                 path.unlink()
                 removed += 1
         except OSError:

@@ -14,6 +14,7 @@ import tempfile
 import statistics
 from utils.permissions import has_roles
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
+from utils.coverage_utils import is_empty_snapshot_db, newest_usable_snapshot_dbs
 from utils import errors
 
 OWNER_ID = int(os.getenv('OWNER_ID')) if os.getenv('OWNER_ID') else 0
@@ -96,12 +97,14 @@ def get_api_databases_in_timeframe(days: int):
         if not API_TRACKING_FOLDER.exists():
             return None, "API tracking folder not found"
         
-        # Collect all .db files from api_tracking day folders
+        # Collect all .db files from api_tracking day folders, skipping files an
+        # interrupted write left empty (they answer every query with "no such table")
         db_files = []
         for day_folder in API_TRACKING_FOLDER.iterdir():
             if day_folder.is_dir() and day_folder.name.startswith("api_"):
                 for db_file in day_folder.glob("ESI_*.db"):
-                    db_files.append(db_file)
+                    if not is_empty_snapshot_db(db_file):
+                        db_files.append(db_file)
         
         if not db_files:
             return None, "No database files found"
@@ -109,7 +112,11 @@ def get_api_databases_in_timeframe(days: int):
         # Sort by modification time
         db_files.sort(key=lambda f: f.stat().st_mtime)
         
-        latest_time = datetime.fromtimestamp(db_files[-1].stat().st_mtime, tz=timezone.utc)
+        latest = newest_usable_snapshot_dbs(db_files, limit=1)
+        if not latest:
+            return None, "No readable database files found"
+
+        latest_time = datetime.fromtimestamp(latest[0].stat().st_mtime, tz=timezone.utc)
         target_time = latest_time - timedelta(days=days)
         
         databases_in_range = []

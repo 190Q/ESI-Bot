@@ -6,7 +6,6 @@ Periodically fetches and saves guild member statistics without requiring the Dis
 import os
 import asyncio
 import aiohttp
-import sqlite3
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +23,7 @@ from utils.api_fetcher import (
 )
 from utils.api_tracking_utils import (
     BADGE_ROLES,
+    atomic_snapshot_db,
     get_current_day_string as shared_get_current_day_string,
     get_day_folder_path as shared_get_day_folder_path,
     cleanup_daily_folder as shared_cleanup_daily_folder,
@@ -237,81 +237,78 @@ class FetchAPI:
             db_filename = f"{guild_name}_{day_string}_{timestamp}.db"
             db_path = day_folder / db_filename
             
-            # Connect to database
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            # Save guild info (including level)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS guild_info (
-                    guild_name TEXT NOT NULL,
-                    guild_level INTEGER,
-                    timestamp TEXT NOT NULL
-                )
-            ''')
-            cursor.execute(
-                "INSERT INTO guild_info (guild_name, guild_level, timestamp) VALUES (?, ?, ?)",
-                (guild_name, guild_level, datetime.now(timezone.utc).isoformat())
-            )
-            if guild_level is not None:
-                print(f"[API] Saved guild level: {guild_level}")
+            # Write through a temp file: a run that fails or is killed must not
+            # leave an empty snapshot behind under a name the commands read
+            with atomic_snapshot_db(db_path) as conn:
+                cursor = conn.cursor()
 
-            # Save current queue counts
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS queue_stats (
-                    veteran_count INTEGER NOT NULL DEFAULT 0,
-                    normal_count INTEGER NOT NULL DEFAULT 0,
-                    total_count INTEGER NOT NULL DEFAULT 0,
-                    timestamp TEXT NOT NULL
+                # Save guild info (including level)
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS guild_info (
+                        guild_name TEXT NOT NULL,
+                        guild_level INTEGER,
+                        timestamp TEXT NOT NULL
+                    )
+                ''')
+                cursor.execute(
+                    "INSERT INTO guild_info (guild_name, guild_level, timestamp) VALUES (?, ?, ?)",
+                    (guild_name, guild_level, datetime.now(timezone.utc).isoformat())
                 )
-            ''')
-            queue_counts = get_queue_counts()
-            cursor.execute(
-                "INSERT INTO queue_stats (veteran_count, normal_count, total_count, timestamp) VALUES (?, ?, ?, ?)",
-                (
-                    queue_counts["veteran_count"],
-                    queue_counts["normal_count"],
-                    queue_counts["total_count"],
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            )
+                if guild_level is not None:
+                    print(f"[API] Saved guild level: {guild_level}")
 
-            # Save current pending invites
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS pending_invites (
-                    discord_id TEXT NOT NULL,
-                    username TEXT,
-                    uuid TEXT,
-                    invited_at TEXT,
-                    snapshot_timestamp TEXT NOT NULL
+                # Save current queue counts
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS queue_stats (
+                        veteran_count INTEGER NOT NULL DEFAULT 0,
+                        normal_count INTEGER NOT NULL DEFAULT 0,
+                        total_count INTEGER NOT NULL DEFAULT 0,
+                        timestamp TEXT NOT NULL
+                    )
+                ''')
+                queue_counts = get_queue_counts()
+                cursor.execute(
+                    "INSERT INTO queue_stats (veteran_count, normal_count, total_count, timestamp) VALUES (?, ?, ?, ?)",
+                    (
+                        queue_counts["veteran_count"],
+                        queue_counts["normal_count"],
+                        queue_counts["total_count"],
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
                 )
-            ''')
-            pending_invites = get_pending_invites_data()
-            snapshot_ts = datetime.now(timezone.utc).isoformat()
-            cursor.executemany(
-                "INSERT INTO pending_invites (discord_id, username, uuid, invited_at, snapshot_timestamp) VALUES (?, ?, ?, ?, ?)",
-                [
-                    (entry["discord_id"], entry["username"], entry["uuid"], entry["invited_at"], snapshot_ts)
-                    for entry in pending_invites
-                ],
-            )
 
-            save_result = shared_save_player_and_raid_stats(
-                cursor,
-                member_stats,
-                guild_members,
-                include_shortened_rank=False,
-            )
-            if save_result.get("guild_raid_count", 0):
-                self._detect_and_store_graid_fault_offsets(conn, db_path)
-                update_aspects_from_guild_data(guild_members)
-            
-            # Save additional data (recruited, quest progress, event progress, badges)
-            await self.save_additional_data(conn, guild_name)
-            
-            # Commit and close
-            conn.commit()
-            conn.close()
+                # Save current pending invites
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS pending_invites (
+                        discord_id TEXT NOT NULL,
+                        username TEXT,
+                        uuid TEXT,
+                        invited_at TEXT,
+                        snapshot_timestamp TEXT NOT NULL
+                    )
+                ''')
+                pending_invites = get_pending_invites_data()
+                snapshot_ts = datetime.now(timezone.utc).isoformat()
+                cursor.executemany(
+                    "INSERT INTO pending_invites (discord_id, username, uuid, invited_at, snapshot_timestamp) VALUES (?, ?, ?, ?, ?)",
+                    [
+                        (entry["discord_id"], entry["username"], entry["uuid"], entry["invited_at"], snapshot_ts)
+                        for entry in pending_invites
+                    ],
+                )
+
+                save_result = shared_save_player_and_raid_stats(
+                    cursor,
+                    member_stats,
+                    guild_members,
+                    include_shortened_rank=False,
+                )
+                if save_result.get("guild_raid_count", 0):
+                    self._detect_and_store_graid_fault_offsets(conn, db_path)
+                    update_aspects_from_guild_data(guild_members)
+
+                # Save additional data (recruited, quest progress, event progress, badges)
+                await self.save_additional_data(conn, guild_name)
             
             # Award ESI points based on war/raid increases
             award_points_from_diff(member_stats, guild_members)

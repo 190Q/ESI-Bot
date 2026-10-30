@@ -12,6 +12,7 @@ from pathlib import Path
 import json
 from utils.permissions import has_roles
 from utils import errors
+from utils.coverage_utils import is_empty_snapshot_db, newest_usable_snapshot_dbs
 
 GUILD_DB = "databases/guild_stats_data.db"
 RECRUITED_DB = "databases/recruited_data.db"
@@ -406,10 +407,15 @@ def get_latest_databases(db_folder=None, guild_prefix="ESI"):
     old_pattern = os.path.join(db_folder, f"{guild_prefix}_*.db")
     db_files.extend(glob.glob(old_pattern))
     
-    # Sort by modification time (newest first)
-    db_files = sorted(db_files, key=os.path.getmtime, reverse=True)
+    # Sort by modification time (newest first), dropping snapshots a killed
+    # write left empty so they cannot win over an older good one
+    db_files = sorted(
+        (Path(path) for path in db_files if not is_empty_snapshot_db(path)),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
     
-    return db_files[:1] if len(db_files) >= 1 else []
+    return newest_usable_snapshot_dbs(db_files, limit=1)
 
 def load_guild_data():
     """Load war data from the latest timestamped database (current guild members only)."""
@@ -490,8 +496,11 @@ def load_graid_data():
             print("[UPDATE_BADGES] No api_tracking database files found")
             return graid_counts
         
-        db_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-        latest_db = db_files[0]
+        usable_dbs = newest_usable_snapshot_dbs(db_files, limit=1)
+        if not usable_dbs:
+            print("[UPDATE_BADGES] No readable api_tracking database found")
+            return graid_counts
+        latest_db = usable_dbs[0]
         
         conn = sqlite3.connect(str(latest_db))
         cursor = conn.cursor()
@@ -772,8 +781,10 @@ def setup(bot, has_required_role, config):
                             graid_db_files.append(db_file)
                 
                 if graid_db_files:
-                    graid_db_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-                    latest_graid_db = graid_db_files[0]
+                    usable_graid_dbs = newest_usable_snapshot_dbs(graid_db_files, limit=1)
+                    if not usable_graid_dbs:
+                        raise RuntimeError("no readable api_tracking snapshot")
+                    latest_graid_db = usable_graid_dbs[0]
                     
                     conn_graid = sqlite3.connect(str(latest_graid_db))
                     cursor_graid = conn_graid.cursor()

@@ -13,6 +13,11 @@ from typing import Dict, List
 from utils.permissions import has_roles
 from utils import errors
 from utils.paths import PROJECT_ROOT, DATA_DIR, DB_DIR
+from utils.coverage_utils import (
+    is_empty_snapshot_db,
+    is_usable_snapshot_db,
+    newest_usable_snapshot_dbs,
+)
 
 DB_FILE = "databases/recruited_data.db"
 WAR_DATA_FILE = "databases/guild_stats_data.db"
@@ -234,17 +239,25 @@ def get_latest_databases(db_folder="databases", guild_prefix="ESI", hours_ago=No
     old_pattern = os.path.join(db_folder, f"{guild_prefix}_*.db")
     db_files.extend(glob.glob(old_pattern))
     
-    # Sort by modification time (newest first)
-    db_files = sorted(db_files, key=os.path.getmtime, reverse=True)
+    # Sort by modification time (newest first), dropping snapshots a killed
+    # write left empty so they cannot win over an older good one
+    db_files = sorted(
+        (Path(path) for path in db_files if not is_empty_snapshot_db(path)),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
     
     if not db_files:
         return []
     
-    latest_db = db_files[0]
+    latest_usable = newest_usable_snapshot_dbs(db_files, limit=2)
+    if not latest_usable:
+        return []
+    latest_db = latest_usable[0]
     
     # If no time comparison requested, return latest and previous
     if hours_ago is None:
-        return db_files[:2] if len(db_files) >= 2 else db_files
+        return latest_usable
     
     # Find database closest to the target time
     target_time = datetime.now() - timedelta(hours=hours_ago)
@@ -253,7 +266,9 @@ def get_latest_databases(db_folder="databases", guild_prefix="ESI", hours_ago=No
     closest_db = None
     min_diff = float('inf')
     
-    for db_file in db_files[1:]:  # Skip the latest one
+    for db_file in db_files:
+        if db_file == latest_db:  # Skip the latest one
+            continue
         db_time = datetime.fromtimestamp(os.path.getmtime(db_file))
         time_diff = abs((db_time - target_time).total_seconds())
         
@@ -261,10 +276,9 @@ def get_latest_databases(db_folder="databases", guild_prefix="ESI", hours_ago=No
             min_diff = time_diff
             closest_db = db_file
     
-    if closest_db:
+    if closest_db and is_usable_snapshot_db(closest_db):
         return [latest_db, closest_db]
-    else:
-        return [latest_db]
+    return [latest_db]
 
 def load_uuid_to_username_map(db_path):
     """Load UUID to username mapping from database."""
@@ -633,9 +647,11 @@ def setup(bot, has_required_role, config):
                                 db_files_graid.append(db_file)
                     
                     if db_files_graid:
-                        # Get the most recent database
-                        db_files_graid.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-                        latest_graid_db = db_files_graid[0]
+                        # Get the most recent readable database
+                        usable_graid_dbs = newest_usable_snapshot_dbs(db_files_graid, limit=1)
+                        if not usable_graid_dbs:
+                            raise RuntimeError("no readable api_tracking snapshot")
+                        latest_graid_db = usable_graid_dbs[0]
                         
                         conn_graid = sqlite3.connect(str(latest_graid_db))
                         cursor_graid = conn_graid.cursor()

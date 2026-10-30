@@ -19,6 +19,7 @@ from utils.api_fetcher import (
 )
 from utils.api_tracking_utils import (
     BADGE_ROLES,
+    atomic_snapshot_db,
     get_current_day_string as shared_get_current_day_string,
     get_day_folder_path as shared_get_day_folder_path,
     cleanup_daily_folder as shared_cleanup_daily_folder,
@@ -375,44 +376,41 @@ class FetchAPI:
             db_filename = f"{guild_name}_{day_string}_{timestamp}.db"
             db_path = os.path.join(day_folder, db_filename)
             
-            # Connect to database
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            # Save guild info (including level)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS guild_info (
-                    guild_name TEXT NOT NULL,
-                    guild_level INTEGER,
-                    timestamp TEXT NOT NULL
+            # Write through a temp file: a run that fails or is killed must not
+            # leave an empty snapshot behind under a name the commands read
+            with atomic_snapshot_db(db_path) as conn:
+                cursor = conn.cursor()
+
+                # Save guild info (including level)
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS guild_info (
+                        guild_name TEXT NOT NULL,
+                        guild_level INTEGER,
+                        timestamp TEXT NOT NULL
+                    )
+                ''')
+                cursor.execute(
+                    "INSERT INTO guild_info (guild_name, guild_level, timestamp) VALUES (?, ?, ?)",
+                    (guild_name, guild_level, datetime.now(timezone.utc).isoformat())
                 )
-            ''')
-            cursor.execute(
-                "INSERT INTO guild_info (guild_name, guild_level, timestamp) VALUES (?, ?, ?)",
-                (guild_name, guild_level, datetime.now(timezone.utc).isoformat())
-            )
-            if guild_level is not None:
-                print(f"[API] Saved guild level: {guild_level}")
-            
-            save_result = shared_save_player_and_raid_stats(
-                cursor,
-                member_stats,
-                guild_members,
-                include_shortened_rank=True,
-            )
-            if save_result.get("uuid_username_count", 0):
-                print(f"[SAVE_DATA] Saved {save_result['uuid_username_count']} UUID-username mappings")
-            if save_result.get("guild_raid_count", 0):
-                print(f"[API] Saved {save_result['guild_raid_count']} guild raid stats")
-                self._detect_and_store_graid_fault_offsets(conn, db_path)
-                update_aspects_from_guild_data(guild_members)
-            
-            # Save additional data (recruited, quest progress, event progress, badges)
-            await self.save_additional_data(conn, guild_name)
-            
-            # Commit and close
-            conn.commit()
-            conn.close()
+                if guild_level is not None:
+                    print(f"[API] Saved guild level: {guild_level}")
+
+                save_result = shared_save_player_and_raid_stats(
+                    cursor,
+                    member_stats,
+                    guild_members,
+                    include_shortened_rank=True,
+                )
+                if save_result.get("uuid_username_count", 0):
+                    print(f"[SAVE_DATA] Saved {save_result['uuid_username_count']} UUID-username mappings")
+                if save_result.get("guild_raid_count", 0):
+                    print(f"[API] Saved {save_result['guild_raid_count']} guild raid stats")
+                    self._detect_and_store_graid_fault_offsets(conn, db_path)
+                    update_aspects_from_guild_data(guild_members)
+
+                # Save additional data (recruited, quest progress, event progress, badges)
+                await self.save_additional_data(conn, guild_name)
 
             # Award ESI points based on war/raid increases
             award_points_from_diff(member_stats, guild_members)

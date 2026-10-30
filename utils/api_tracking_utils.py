@@ -3,12 +3,17 @@ import os
 import shutil
 import sqlite3
 import statistics
+from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Callable, Dict, Optional, Union
 from utils.coverage_utils import (
+    PARTIAL_SNAPSHOT_SUFFIX,
     coverage_db_path_for_day,
+    delete_empty_snapshot_db_files,
+    delete_stale_partial_snapshot_files,
     is_coverage_db,
+    is_empty_snapshot_db,
     list_snapshot_db_files,
     record_daily_coverage,
 )
@@ -101,6 +106,40 @@ def get_day_folder_path(api_tracking_folder: PathLike, day_string: Optional[str]
     return _as_path(api_tracking_folder) / f"api_{day_string}"
 
 
+def _remove_file(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+@contextmanager
+def atomic_snapshot_db(db_path: PathLike):
+    """Yield a connection that writes a snapshot through a temp file.
+
+    Nothing reaches *db_path* until the writes commit, so a run that fails or
+    is killed can never leave an empty or half written snapshot behind under a
+    name the commands read. The temp file is dropped when the block raises.
+    """
+    final_path = _as_path(db_path)
+    temp_path = final_path.with_name(final_path.name + PARTIAL_SNAPSHOT_SUFFIX)
+    _remove_file(temp_path)
+
+    conn = sqlite3.connect(str(temp_path))
+    try:
+        yield conn
+        conn.commit()
+    except BaseException:
+        try:
+            conn.close()
+        finally:
+            _remove_file(temp_path)
+        raise
+
+    conn.close()
+    os.replace(str(temp_path), str(final_path))
+
+
 def cleanup_daily_folder(
     day_folder: PathLike,
     cleanup_interval_minutes: int = CLEANUP_INTERVAL_MINUTES,
@@ -109,6 +148,10 @@ def cleanup_daily_folder(
     day_folder_path = _as_path(day_folder)
     if not day_folder_path.exists():
         return
+
+    # Drop snapshots a killed write left behind before deciding what to keep
+    delete_empty_snapshot_db_files(day_folder_path)
+    delete_stale_partial_snapshot_files(day_folder_path)
 
     db_files = list_snapshot_db_files(day_folder_path)
     if len(db_files) <= 1:
@@ -168,6 +211,8 @@ def cleanup_old_day_folders(
             days_old = (today - folder_date).days
         except ValueError:
             continue
+        delete_empty_snapshot_db_files(folder)
+        delete_stale_partial_snapshot_files(folder)
         db_files = list_snapshot_db_files(folder)
         should_record_coverage = 1 <= days_old < min_days_old
         within_collapse_window = (
@@ -261,7 +306,11 @@ def get_latest_fault_offsets(api_tracking_folder: PathLike, log_prefix: str = "[
         db_files = []
         for day_folder in tracking_folder.iterdir():
             if day_folder.is_dir() and day_folder.name.startswith("api_"):
-                db_files.extend(day_folder.glob("ESI_*.db"))
+                db_files.extend(
+                    path
+                    for path in day_folder.glob("ESI_*.db")
+                    if not is_empty_snapshot_db(path)
+                )
         if not db_files:
             return offsets
 
@@ -938,8 +987,11 @@ def get_previous_api_db(api_tracking_folder: PathLike, current_db_path: PathLike
             if not os.path.isdir(day_path):
                 continue
             for filename in os.listdir(day_path):
-                if filename.endswith(".db") and not is_coverage_db(filename):
-                    db_files.append(os.path.join(day_path, filename))
+                if not filename.endswith(".db") or is_coverage_db(filename):
+                    continue
+                candidate = os.path.join(day_path, filename)
+                if not is_empty_snapshot_db(candidate):
+                    db_files.append(candidate)
     db_files.sort(key=os.path.getmtime)
 
     current_abs = os.path.abspath(str(current_db_path))
@@ -982,7 +1034,9 @@ def get_previous_day_latest_db(api_tracking_folder: PathLike, current_db_path: P
             [
                 f
                 for f in os.listdir(day_path)
-                if f.endswith(".db") and not is_coverage_db(f)
+                if f.endswith(".db")
+                and not is_coverage_db(f)
+                and not is_empty_snapshot_db(os.path.join(day_path, f))
             ]
         )
         if db_files:

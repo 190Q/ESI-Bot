@@ -301,6 +301,7 @@ Some modules register event listeners instead of commands:
 - **Crab hello** and **`@grok` replies** on message content, with moods, reaction feedback and replies to its own replies
 - **Spam detection** — link/spam heuristics with per-channel role restrictions
 - **Welcome messages** for new members
+- **Default join roles** — new members are given the Traveler role and the Miscellaneous separator
 - **Role sync**, **Duke onboarding** and **Nitro boost colour roles** on `on_member_update`
 - **Rank logging** to `databases/rank_changes.db`
 - **Usage analytics** — every completed slash command is counted in `databases/usage.db`

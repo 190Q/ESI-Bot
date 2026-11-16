@@ -219,6 +219,7 @@ inactivity_exemptions.db
 playtime.db
 temp_vc_messages.db
 application_history.db
+tome_requests.db
 shop.db-shm
 shop.db-wal
 

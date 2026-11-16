@@ -224,6 +224,7 @@ Commands are discovered by scanning `commands/**/*.py` at startup — every file
 | `/inactivity_hub_setup` | Set up the Inactivity Exemption Hub in a channel |
 | `/refresh_inactivity_requests` | Refresh open inactivity request views and the public roster |
 | `/manage_queue` | Manage the guild member waiting queue |
+| `/request_tome` | Request a tome using your linked Minecraft username (Sindrian Citizen only) |
 | `/link_user` | Link a Discord user to their Minecraft IGN |
 | `/linked_users` | List all stored username matches |
 | `/nitro_colour` | Set the colour style of your Nitro boost role (normal, gradient or holographic); staff can also link a role to a member |

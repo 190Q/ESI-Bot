@@ -137,6 +137,253 @@ ACCESS_ROLE_IDS = {
     1328051378823757907: "Government-Approved Builder"
 }
 
+RANK_ORDER = {
+    "ex-citizen": -1,
+    "veteran": 0,
+    "squire": 1,
+    "knight": 2,
+    "viscount": 3,
+    "count": 4,
+    "duke": 5,
+    "grand duke": 6,
+    "archduke": 7,
+    "emperor": 8,
+}
+
+TARGET_RANKS = ("ex-citizen", "veteran", "squire", "knight", "viscount", "count")
+
+
+def get_current_rank(member):
+    user_role_ids = {role.id for role in member.roles}
+    return next((name for role_id, name in RANK_ROLES.items() if role_id in user_role_ids), "None")
+
+
+def get_demotion_error(member):
+    user_role_ids = {role.id for role in member.roles}
+    if SINDRIAN_CITIZEN_ID not in user_role_ids:
+        return (
+            f"Cannot demote {member.mention} - they don't have the **Sindrian Citizen** role.\n\n"
+            "Users without this role cannot be demoted."
+        )
+    current_rank = get_current_rank(member)
+    if RANK_ORDER.get(current_rank.lower(), 0) > 5:
+        return (
+            f"Cannot demote {member.mention} - they are **{current_rank}** which is above Duke rank.\n\n"
+            "Only users with rank Duke or below can be demoted using this command."
+        )
+    return None
+
+
+def get_demotion_targets(current_rank):
+    current_rank_value = RANK_ORDER.get(current_rank.lower(), 0)
+    return [rank for rank in TARGET_RANKS if RANK_ORDER[rank] < current_rank_value]
+
+
+def calculate_demotion(member, current_rank, target_rank):
+    user_role_ids = [role.id for role in member.roles]
+    roles_to_remove = []
+    roles_to_add = []
+
+    # Get all badge roles
+    badge_role_ids = []
+    for category in BADGE_ROLES.values():
+        for badge_id in category.values():
+            if badge_id in user_role_ids:
+                badge_role_ids.append(badge_id)
+
+    # Get all war roles
+    war_role_ids = [role_id for role_id in WAR_ROLE_IDS if role_id in user_role_ids]
+
+    # Get all notification roles
+    notification_role_ids = [role_id for role_id in NOTIFICATION_ROLE_IDS.keys() if role_id in user_role_ids]
+
+    # Get all access roles
+    access_role_ids = [role_id for role_id in ACCESS_ROLE_IDS.keys() if role_id in user_role_ids]
+
+    # Determine new nickname
+    new_nickname = None
+    if target_rank in ["ex-citizen", "veteran"]:
+        # Remove rank prefix from display name if it exists
+        display_name = member.display_name
+        preserved_suffix = ""  # To store "ess" if found
+
+        # Remove "Ex-" prefix if it exists
+        if display_name.startswith("Ex-"):
+            # Extract the old rank after "Ex-"
+            parts = display_name.split(" ", 2)  # Split into ["Ex-Rank", "restofname"] or ["Ex-Rank", "part2", "restofname"]
+            if len(parts) >= 2:
+                display_name = " ".join(parts[1:])  # Remove the "Ex-Rank" part
+
+        # Remove current rank prefix if it exists (including variations like "Viscountess")
+        for rank_name in RANK_ROLES.values():
+            # Check for feminine variation first (e.g., "Viscountess" for "Viscount")
+            if display_name.startswith(f"{rank_name}ess "):
+                preserved_suffix = "ess"
+                display_name = display_name[len(rank_name) + 4:]  # +4 for "ess "
+                break
+            # Check for exact match
+            elif display_name.startswith(f"{rank_name} "):
+                display_name = display_name[len(rank_name) + 1:]  # +1 for the space
+                break
+
+        new_nickname = f"Ex-{current_rank}{preserved_suffix} {display_name}"
+
+    if target_rank in ["ex-citizen", "veteran"]:
+        # Remove all badge roles
+        for role_id in badge_role_ids:
+            roles_to_remove.append(role_id)
+
+        # Remove all guild ranks
+        for rank_id in RANK_ROLES.keys():
+            if rank_id in user_role_ids:
+                roles_to_remove.append(rank_id)
+
+        # Remove Sindrian Citizen
+        if SINDRIAN_CITIZEN_ID in user_role_ids:
+            roles_to_remove.append(SINDRIAN_CITIZEN_ID)
+
+        # Remove all war roles
+        for role_id in war_role_ids:
+            roles_to_remove.append(role_id)
+
+        # Remove all notification roles
+        for role_id in notification_role_ids:
+            roles_to_remove.append(role_id)
+
+        # Remove all access roles
+        for role_id in access_role_ids:
+            roles_to_remove.append(role_id)
+
+        # Add appropriate role
+        if target_rank == "ex-citizen":
+            roles_to_add.append(EX_CITIZEN_ID)
+        else:  # veteran
+            roles_to_add.append(VETERAN_ID)
+
+        # Remove category separators only if we're removing roles from that category
+        if badge_role_ids and BADGE_MARKER_START in user_role_ids:
+            roles_to_remove.append(BADGE_MARKER_START)
+
+        if war_role_ids and WAR_ROLES_MARKER in user_role_ids:
+            roles_to_remove.append(WAR_ROLES_MARKER)
+
+        notification_separator = 1426273593335091200
+        if notification_role_ids and notification_separator in user_role_ids:
+            roles_to_remove.append(notification_separator)
+
+        access_separator = 1426274338373369929
+        if access_role_ids and access_separator in user_role_ids:
+            roles_to_remove.append(access_separator)
+
+    else:
+        # Find target rank in hierarchy
+        target_rank_map = {
+            "count": (1391424890938195998, "Count"),
+            "viscount": (591769392828776449, "Viscount"),
+            "knight": (688438690137243892, "Knight"),
+            "squire": (681030746651230351, "Squire")
+        }
+
+        target_rank_id, target_rank_name = target_rank_map[target_rank]
+
+        # Find current rank index
+        current_rank_index = None
+        for i, (rank_id, rank_name) in enumerate(RANK_HIERARCHY):
+            if rank_id in user_role_ids:
+                current_rank_index = i
+                break
+
+        # Find target rank index
+        target_rank_index = None
+        for i, (rank_id, rank_name) in enumerate(RANK_HIERARCHY):
+            if rank_id == target_rank_id:
+                target_rank_index = i
+                break
+
+        if current_rank_index is not None and target_rank_index is not None:
+            # Remove all ranks above target rank (including current)
+            for i in range(current_rank_index, target_rank_index):
+                rank_id, _ = RANK_HIERARCHY[i]
+                if rank_id in user_role_ids:
+                    roles_to_remove.append(rank_id)
+
+            # Add target rank if they don't have it
+            if target_rank_id not in user_role_ids:
+                roles_to_add.append(target_rank_id)
+
+    return roles_to_remove, roles_to_add, new_nickname
+
+
+async def apply_demotion(member, guild, roles_to_remove, roles_to_add, new_nickname, executor):
+    # Remove roles
+    roles_to_remove_objects = [guild.get_role(role_id) for role_id in roles_to_remove]
+    roles_to_remove_objects = [role for role in roles_to_remove_objects if role is not None]
+
+    if roles_to_remove_objects:
+        await member.remove_roles(*roles_to_remove_objects, reason=f"Demotion by {executor.name}")
+
+    # Add roles
+    roles_to_add_objects = [guild.get_role(role_id) for role_id in roles_to_add]
+    roles_to_add_objects = [role for role in roles_to_add_objects if role is not None]
+
+    if roles_to_add_objects:
+        await member.add_roles(*roles_to_add_objects, reason=f"Demotion by {executor.name}")
+
+    # Change nickname if applicable
+    if new_nickname:
+        await member.edit(nick=new_nickname, reason=f"Demotion by {executor.name}")
+
+    # Log the demotion
+    try:
+        from commands.tickets.rank_logger import log_rank_change
+
+        # Get current rank from member before demotion
+        current_rank = "None"
+        for rank_id, rank_name in RANK_ROLES.items():
+            if rank_id in [role.id for role in member.roles]:
+                current_rank = rank_name
+                break
+
+        # Determine new rank from roles being added
+        new_rank = "Unknown"
+        for role_id in roles_to_add:
+            if role_id == EX_CITIZEN_ID:
+                new_rank = "Ex-Citizen"
+                break
+            elif role_id == VETERAN_ID:
+                new_rank = "Veteran"
+                break
+            else:
+                # Check if it's a rank role
+                role = guild.get_role(role_id)
+                if role and role_id in RANK_ROLES:
+                    new_rank = RANK_ROLES[role_id]
+                    break
+
+        # Additional info for demotion logs
+        additional_info = {
+            'roles_removed_count': len(roles_to_remove),
+            'roles_added_count': len(roles_to_add),
+            'nickname_changed': new_nickname is not None,
+            'new_nickname': new_nickname
+        }
+
+        log_rank_change(
+            target_user_id=member.id,
+            target_username=str(member),
+            executor_user_id=executor.id,
+            executor_username=str(executor),
+            previous_rank=current_rank,
+            new_rank=new_rank,
+            action_type='demote',
+            guild_id=guild.id,
+            guild_name=guild.name,
+            additional_info=additional_info
+        )
+    except Exception as e:
+        print(f"[WARN] Failed to log demotion: {e}")
+
+
 class ConfirmDemotionView(discord.ui.View):
     def __init__(self, member: discord.Member, roles_to_remove: list, roles_to_add: list, new_nickname: str = None):
         super().__init__(timeout=180)
@@ -151,73 +398,10 @@ class ConfirmDemotionView(discord.ui.View):
         await interaction.response.defer()
         
         try:
-            # Remove roles
-            roles_to_remove_objects = [interaction.guild.get_role(role_id) for role_id in self.roles_to_remove]
-            roles_to_remove_objects = [role for role in roles_to_remove_objects if role is not None]
-            
-            if roles_to_remove_objects:
-                await self.member.remove_roles(*roles_to_remove_objects, reason=f"Demotion by {interaction.user.name}")
-            
-            # Add roles
-            roles_to_add_objects = [interaction.guild.get_role(role_id) for role_id in self.roles_to_add]
-            roles_to_add_objects = [role for role in roles_to_add_objects if role is not None]
-            
-            if roles_to_add_objects:
-                await self.member.add_roles(*roles_to_add_objects, reason=f"Demotion by {interaction.user.name}")
-            
-            # Change nickname if applicable
-            if self.new_nickname:
-                await self.member.edit(nick=self.new_nickname, reason=f"Demotion by {interaction.user.name}")
-            
-            # Log the demotion
-            try:
-                from rank_logger import log_rank_change
-                
-                # Get current rank from member before demotion
-                current_rank = "None"
-                for rank_id, rank_name in RANK_ROLES.items():
-                    if rank_id in [role.id for role in self.member.roles]:
-                        current_rank = rank_name
-                        break
-                
-                # Determine new rank from roles being added
-                new_rank = "Unknown"
-                for role_id in self.roles_to_add:
-                    if role_id == EX_CITIZEN_ID:
-                        new_rank = "Ex-Citizen"
-                        break
-                    elif role_id == VETERAN_ID:
-                        new_rank = "Veteran"
-                        break
-                    else:
-                        # Check if it's a rank role
-                        role = interaction.guild.get_role(role_id)
-                        if role and role_id in RANK_ROLES:
-                            new_rank = RANK_ROLES[role_id]
-                            break
-                
-                # Additional info for demotion logs
-                additional_info = {
-                    'roles_removed_count': len(self.roles_to_remove),
-                    'roles_added_count': len(self.roles_to_add),
-                    'nickname_changed': self.new_nickname is not None,
-                    'new_nickname': self.new_nickname
-                }
-                
-                log_rank_change(
-                    target_user_id=self.member.id,
-                    target_username=str(self.member),
-                    executor_user_id=interaction.user.id,
-                    executor_username=str(interaction.user),
-                    previous_rank=current_rank,
-                    new_rank=new_rank,
-                    action_type='demote',
-                    guild_id=interaction.guild.id,
-                    guild_name=interaction.guild.name,
-                    additional_info=additional_info
-                )
-            except Exception as e:
-                print(f"[WARN] Failed to log demotion: {e}")
+            await apply_demotion(
+                self.member, interaction.guild, self.roles_to_remove,
+                self.roles_to_add, self.new_nickname, interaction.user
+            )
             
             # Success embed
             success_embed = discord.Embed(
@@ -268,38 +452,9 @@ class RankSelect(discord.ui.Select):
         self.member = member
         self.current_rank = current_rank
         
-        # Define rank hierarchy order
-        rank_order = {
-            "ex-citizen": -1,
-            "veteran": 0,
-            "squire": 1,
-            "knight": 2,
-            "viscount": 3,
-            "count": 4,
-            "duke": 5,
-            "grand duke": 6,
-            "archduke": 7,
-            "emperor": 8
-        }
-        
-        # Get current rank value
-        current_rank_value = rank_order.get(current_rank.lower(), 0)
-        
-        # All possible options
-        all_options = [
-            ("Ex-Citizen", "ex-citizen", -1),
-            ("Veteran", "veteran", 0),
-            ("Squire", "squire", 1),
-            ("Knight", "knight", 2),
-            ("Viscount", "viscount", 3),
-            ("Count", "count", 4),
-        ]
-        
-        # Filter options to only show ranks below current rank
         options = [
-            discord.SelectOption(label=label, value=value)
-            for label, value, rank_value in all_options
-            if rank_value < current_rank_value
+            discord.SelectOption(label=rank.title(), value=rank)
+            for rank in get_demotion_targets(current_rank)
         ]
         
         # If no valid options, add a placeholder
@@ -318,27 +473,9 @@ class RankSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         target_rank = self.values[0]
         
-        user_role_ids = [role.id for role in self.member.roles]
-        roles_to_remove = []
-        roles_to_add = []
-        
-        # Define rank hierarchy order for comparison
-        rank_order = {
-            "emperor": 8,
-            "archduke": 7,
-            "grand duke": 6,
-            "duke": 5,
-            "count": 4,
-            "viscount": 3,
-            "knight": 2,
-            "squire": 1,
-            "veteran": 0,
-            "ex-citizen": -1
-        }
-        
         # Get current rank order value
-        current_rank_value = rank_order.get(self.current_rank.lower(), 0)
-        target_rank_value = rank_order.get(target_rank, 0)
+        current_rank_value = RANK_ORDER.get(self.current_rank.lower(), 0)
+        target_rank_value = RANK_ORDER.get(target_rank, 0)
         
         # Check if this is a promotion (not allowed)
         if target_rank_value > current_rank_value:
@@ -348,132 +485,9 @@ class RankSelect(discord.ui.Select):
             )
             return
         
-        # Get all badge roles
-        badge_role_ids = []
-        for category in BADGE_ROLES.values():
-            for badge_id in category.values():
-                if badge_id in user_role_ids:
-                    badge_role_ids.append(badge_id)
-        
-        # Get all war roles
-        war_role_ids = [role_id for role_id in WAR_ROLE_IDS if role_id in user_role_ids]
-        
-        # Get all notification roles
-        notification_role_ids = [role_id for role_id in NOTIFICATION_ROLE_IDS.keys() if role_id in user_role_ids]
-        
-        # Get all access roles
-        access_role_ids = [role_id for role_id in ACCESS_ROLE_IDS.keys() if role_id in user_role_ids]
-        
-        # Determine new nickname
-        new_nickname = None
-        if target_rank in ["ex-citizen", "veteran"]:
-            # Remove rank prefix from display name if it exists
-            display_name = self.member.display_name
-            preserved_suffix = ""  # To store "ess" if found
-            
-            # Remove "Ex-" prefix if it exists
-            if display_name.startswith("Ex-"):
-                # Extract the old rank after "Ex-"
-                parts = display_name.split(" ", 2)  # Split into ["Ex-Rank", "restofname"] or ["Ex-Rank", "part2", "restofname"]
-                if len(parts) >= 2:
-                    display_name = " ".join(parts[1:])  # Remove the "Ex-Rank" part
-            
-            # Remove current rank prefix if it exists (including variations like "Viscountess")
-            for rank_name in RANK_ROLES.values():
-                # Check for feminine variation first (e.g., "Viscountess" for "Viscount")
-                if display_name.startswith(f"{rank_name}ess "):
-                    preserved_suffix = "ess"
-                    display_name = display_name[len(rank_name) + 4:]  # +4 for "ess "
-                    break
-                # Check for exact match
-                elif display_name.startswith(f"{rank_name} "):
-                    display_name = display_name[len(rank_name) + 1:]  # +1 for the space
-                    break
-            
-            new_nickname = f"Ex-{self.current_rank}{preserved_suffix} {display_name}"
-        
-        if target_rank in ["ex-citizen", "veteran"]:
-            # Remove all badge roles
-            for role_id in badge_role_ids:
-                roles_to_remove.append(role_id)
-                
-            # Remove all guild ranks
-            for rank_id in RANK_ROLES.keys():
-                if rank_id in user_role_ids:
-                    roles_to_remove.append(rank_id)
-            
-            # Remove Sindrian Citizen
-            if SINDRIAN_CITIZEN_ID in user_role_ids:
-                roles_to_remove.append(SINDRIAN_CITIZEN_ID)
-            
-            # Remove all war roles
-            for role_id in war_role_ids:
-                roles_to_remove.append(role_id)
-            
-            # Remove all notification roles
-            for role_id in notification_role_ids:
-                roles_to_remove.append(role_id)
-            
-            # Remove all access roles
-            for role_id in access_role_ids:
-                roles_to_remove.append(role_id)
-            
-            # Add appropriate role
-            if target_rank == "ex-citizen":
-                roles_to_add.append(EX_CITIZEN_ID)
-            else:  # veteran
-                roles_to_add.append(VETERAN_ID)
-            
-            # Remove category separators only if we're removing roles from that category
-            if badge_role_ids and BADGE_MARKER_START in user_role_ids:
-                roles_to_remove.append(BADGE_MARKER_START)
-            
-            if war_role_ids and WAR_ROLES_MARKER in user_role_ids:
-                roles_to_remove.append(WAR_ROLES_MARKER)
-            
-            notification_separator = 1426273593335091200
-            if notification_role_ids and notification_separator in user_role_ids:
-                roles_to_remove.append(notification_separator)
-            
-            access_separator = 1426274338373369929
-            if access_role_ids and access_separator in user_role_ids:
-                roles_to_remove.append(access_separator)
-            
-        else:
-            # Find target rank in hierarchy
-            target_rank_map = {
-                "count": (1391424890938195998, "Count"),
-                "viscount": (591769392828776449, "Viscount"),
-                "knight": (688438690137243892, "Knight"),
-                "squire": (681030746651230351, "Squire")
-            }
-            
-            target_rank_id, target_rank_name = target_rank_map[target_rank]
-            
-            # Find current rank index
-            current_rank_index = None
-            for i, (rank_id, rank_name) in enumerate(RANK_HIERARCHY):
-                if rank_id in user_role_ids:
-                    current_rank_index = i
-                    break
-            
-            # Find target rank index
-            target_rank_index = None
-            for i, (rank_id, rank_name) in enumerate(RANK_HIERARCHY):
-                if rank_id == target_rank_id:
-                    target_rank_index = i
-                    break
-            
-            if current_rank_index is not None and target_rank_index is not None:
-                # Remove all ranks above target rank (including current)
-                for i in range(current_rank_index, target_rank_index):
-                    rank_id, _ = RANK_HIERARCHY[i]
-                    if rank_id in user_role_ids:
-                        roles_to_remove.append(rank_id)
-                
-                # Add target rank if they don't have it
-                if target_rank_id not in user_role_ids:
-                    roles_to_add.append(target_rank_id)
+        roles_to_remove, roles_to_add, new_nickname = calculate_demotion(
+            self.member, self.current_rank, target_rank
+        )
         
         # Create confirmation embed
         confirm_embed = discord.Embed(
@@ -541,48 +555,11 @@ def setup(bot, has_required_role, config):
             await errors.NO_PERMISSION.send(interaction)
             return
         
-        user_role_ids = [role.id for role in member.roles]
-        
-        # Check if user has Sindrian Citizen role
-        print(f"User {member.id} has Sindrian Citizen role: {SINDRIAN_CITIZEN_ID in [role.id for role in member.roles]}")
-        if SINDRIAN_CITIZEN_ID not in user_role_ids:
-            await errors.send_custom_error(
-                interaction,
-                "Cannot Demote",
-                f"Cannot demote {member.mention} - they don't have the **Sindrian Citizen** role.\n\nUsers without this role cannot be demoted.",
-            )
+        error = get_demotion_error(member)
+        if error:
+            await errors.send_custom_error(interaction, "Cannot Demote", error)
             return
-        
-        # Get current rank
-        current_rank = "None"
-        for rank_id, rank_name in RANK_ROLES.items():
-            if rank_id in user_role_ids:
-                current_rank = rank_name
-                break
-        
-        # Define rank hierarchy order
-        rank_order = {
-            "emperor": 8,
-            "archduke": 7,
-            "grand duke": 6,
-            "duke": 5,
-            "count": 4,
-            "viscount": 3,
-            "knight": 2,
-            "squire": 1,
-            "veteran": 0,
-            "ex-citizen": -1
-        }
-        
-        # Check if user is above Duke
-        current_rank_value = rank_order.get(current_rank.lower(), 0)
-        if current_rank_value > 5:  # Above Duke (Grand Duke, Archduke, Emperor)
-            await errors.send_custom_error(
-                interaction,
-                "Cannot Demote",
-                f"Cannot demote {member.mention} - they are **{current_rank}** which is above Duke rank.\n\nOnly users with rank Duke or below can be demoted using this command.",
-            )
-            return
+        current_rank = get_current_rank(member)
         
         # Create and send view with select menu
         view = DemoteView(member, current_rank)
@@ -605,48 +582,11 @@ def setup(bot, has_required_role, config):
             await errors.NO_PERMISSION.send(interaction)
             return
         
-        user_role_ids = [role.id for role in member.roles]
-        
-        # Check if user has Sindrian Citizen role
-        print(f"User {member.id} has Sindrian Citizen role: {SINDRIAN_CITIZEN_ID in [role.id for role in member.roles]}")
-        if SINDRIAN_CITIZEN_ID not in user_role_ids:
-            await errors.send_custom_error(
-                interaction,
-                "Cannot Demote",
-                f"Cannot demote {member.mention} - they don't have the **Sindrian Citizen** role.\n\nUsers without this role cannot be demoted.",
-            )
+        error = get_demotion_error(member)
+        if error:
+            await errors.send_custom_error(interaction, "Cannot Demote", error)
             return
-        
-        # Get current rank
-        current_rank = "None"
-        for rank_id, rank_name in RANK_ROLES.items():
-            if rank_id in user_role_ids:
-                current_rank = rank_name
-                break
-        
-        # Define rank hierarchy order
-        rank_order = {
-            "emperor": 8,
-            "archduke": 7,
-            "grand duke": 6,
-            "duke": 5,
-            "count": 4,
-            "viscount": 3,
-            "knight": 2,
-            "squire": 1,
-            "veteran": 0,
-            "ex-citizen": -1
-        }
-        
-        # Check if user is above Duke
-        current_rank_value = rank_order.get(current_rank.lower(), 0)
-        if current_rank_value > 5:  # Above Duke (Grand Duke, Archduke, Emperor)
-            await errors.send_custom_error(
-                interaction,
-                "Cannot Demote",
-                f"Cannot demote {member.mention} - they are **{current_rank}** which is above Duke rank.\n\nOnly users with rank Duke or below can be demoted using this command.",
-            )
-            return
+        current_rank = get_current_rank(member)
         
         # Create and send view with select menu
         view = DemoteView(member, current_rank)
